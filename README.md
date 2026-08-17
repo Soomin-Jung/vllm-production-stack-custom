@@ -1,5 +1,101 @@
 # vLLM Production Stack: reference stack for production vLLM deployment
 
+> **Internal downstream production baseline**  
+> This repository preserves the upstream `vllm-project/production-stack` Git history and layers the currently operated vLLM Production Stack 0.1.8 customizations on top of the official release.
+
+## Production 0.1.8 downstream baseline
+
+### Upstream base
+
+- Upstream project: `vllm-project/production-stack`
+- Upstream tag: `vllm-stack-0.1.8`
+- Upstream commit: `a2576d6f54d244c08e810e0e7584f17d7c22509a`
+- The `vllm-stack-0.1.8` tag in this repository intentionally points to the same upstream commit.
+- Downstream changes are kept as separate commits so that a future 0.1.12+ migration can classify each change as **KEEP / UPSTREAM_REPLACED / REIMPLEMENT / DROP**.
+
+### Production values layering
+
+The production environment does not rely on one monolithic values file. Common runtime values and model-specific deployment values are layered in Helm order:
+
+```bash
+helm install lln \
+  -n inference \
+  ./vllm-stack-0.1.8/ \
+  -f ./vllm-stack-0.1.8/values.yaml \
+  -f global-values.yaml \
+  -f deploy-models.yaml
+```
+
+Within this repository, `helm/` is the upstream chart directory corresponding to the offline `./vllm-stack-0.1.8/` chart directory. Later values files override earlier values for the same key.
+
+```text
+upstream/chart defaults
+        ↓
+helm/values.yaml                 production chart baseline
+        ↓
+global-values.yaml               shared env / volumes / mounts
+        ↓
+deploy-models.yaml               model-specific final overrides
+        ↓
+/profiles/*.yaml                 vLLM runtime profiles referenced through extraArgs
+```
+
+`deploy-models.yaml` and the production profile set are separate operational inputs and are not yet captured by this baseline commit series.
+
+### Downstream change map
+
+| Area | Main files | Production behavior | Commit |
+| --- | --- | --- | --- |
+| Production chart defaults and router scheduling | `helm/values.yaml`, `helm/templates/deployment-router.yaml`, `helm/.helmignore` | Production labels, 60-minute startup window, GPU toleration, `gpu-binpack-scheduler`, pinned router image, router HA/HPA, LoadBalancer `:9400`, router resource limits, backup YAML exclusion | [`591f602`](../../commit/591f6021ea9d0f3f9975d469a4d7fe5c741e18c2) |
+| GPU-derived resource policy | `helm/templates/_helpers.tpl` | `requestGPU` is mandatory as a key, `0` is allowed, negatives are rejected; default request is 4 CPU cores + 10Gi memory per GPU; explicit CPU/memory values win | [`f9efdf7`](../../commit/f9efdf712a68ca7193cad4e75e3f2e96bfaa561c) |
+| Non-Ray vLLM runtime externalization | `helm/templates/deployment-vllm-multi.yaml` | Simplified Deployment name, global env/volume merge, profile-driven `vllm serve` arguments through `extraArgs`, legacy LMCache hook retained, `/dev/shm` always mounted from host | [`94ccabc`](../../commit/94ccabccc7e177431d0b7c257190bd567cdf681e) |
+| Ray runtime integration | `helm/templates/ray-cluster.yaml` | Global env/volume merge for head and workers, model-specific values override globals by `name`, Ray shm default 20Gi → 100Gi, entrypoint no longer passes `modelURL` directly | [`27f2966`](../../commit/27f2966b9fb5f19ded395cd9afdb9da1387b3ae3) |
+| Shared production globals | `global-values.yaml` | Offline Hugging Face mode, vLLM/HF cache paths, Responses store/stats settings, shared model/profile/cache hostPath mounts, timezone, legacy LMCache host IP | [`a2dddf7`](../../commit/a2dddf73b4a8331fcaa8b5f10f3396c67ed744d0) |
+| Baseline regression validation | `.github/workflows/downstream-baseline-validation.yml` | Helm lint/template smoke tests for non-Ray/Ray, `requestGPU: 0`, global merge, profile args, host shm, Ray shm 100Gi, and GPU-derived resource fallbacks | [`4917f7a`](../../commit/4917f7a4d66074cb345ec6799b3838b37dc384ae) |
+
+### Key runtime design
+
+#### Global values + per-model override
+
+`global.env`, `global.extraVolumes`, and `global.extraVolumeMounts` are converted to name-keyed maps in the serving templates. Per-model values are merged with `mergeOverwrite`; when the same `name` exists at both levels, the **model-specific value wins**. `deepCopy` is used before merging so one model's override does not mutate the shared global map and leak into another model.
+
+#### Profile-driven vLLM configuration
+
+For non-Ray deployments, the chart no longer owns every vLLM CLI option. The stable command skeleton is:
+
+```text
+vllm serve --host 0.0.0.0 --port <container-port> <vllmConfig.extraArgs...>
+```
+
+The production convention is to pass the model profile through `vllmConfig.extraArgs`, for example `--config /profiles/<profile>.yaml`. Model paths and engine options therefore live in profile YAML rather than requiring a Helm template change whenever vLLM adds a new CLI option.
+
+Ray follows the same profile direction for the model path: the generated `vllm-entrypoint.sh` no longer injects `modelSpec.modelURL` as the positional model argument. The remaining Ray command construction is retained from the 0.1.8 baseline.
+
+### Known operational notes / technical debt
+
+- **`values.schema.json` does not match the customized resource helper.** Upstream 0.1.8 still requires `requestCPU`, `requestMemory`, and `pvcStorage` for every `modelSpec`. Therefore the GPU-derived CPU/memory fallback cannot be reached through normal schema validation when those keys are omitted, unless the schema is later updated or schema validation is bypassed. CI tests both the upstream-schema path and the helper fallback separately.
+- **`requestGPU: 0` is intentionally supported** for special shared-GPU workloads such as embedding/reranker deployments. If CPU/memory are also omitted, the fallback becomes `0m` / `0Gi`; those workloads should explicitly provide CPU and memory requests.
+- **Non-Ray `/dev/shm` uses hostPath `/dev/shm`.** This removes the prior TP-only mount condition and exposes host shared-memory capacity to every vLLM pod, but also reduces pod-level isolation and allows same-node workloads to contend for host shared memory.
+- **Ray `/dev/shm` remains memory-backed `emptyDir`**, with the default raised from `20Gi` to `100Gi`; `modelSpec.shmSize` can still override it.
+- **LMCache is legacy-disabled in the current production path.** The template hook remains, but current model deployments use `lmcacheConfig.enabled: false`. `LMCACHE_IP=status.hostIP` remains in global values from the standalone LMCache experiment and is currently unused.
+- **`VLLM_ALLOW_RUNTIME_LORA_UPDATING=1` is still present for the current baseline.** LoRA adapters are not supported in the current production environment, and this setting prevents use of `api_server_count > 1`; removing it requires a coordinated vLLM pod restart.
+- **Router limits vary by environment.** This baseline records `cpu: 1000m` and `memory: 5Gi`; some deployments intentionally override `routerSpec.resources.limits` with `{}`.
+- Host paths in `global-values.yaml` represent the normalized intended production paths. Confirm them against the offline node filesystem before using this repository as a deployment source.
+
+### Validation
+
+The downstream workflow runs:
+
+1. `helm lint` using schema-compliant synthetic non-Ray and Ray models.
+2. `helm template` and rendered invariant checks for global env/volume merging, profile arguments, non-Ray host `/dev/shm`, Ray `100Gi` shm, and `requestGPU: 0`.
+3. A separate render with the upstream schema temporarily excluded to exercise the customized GPU-derived CPU/memory fallback (`2 GPU → 8000m / 20Gi`).
+
+---
+
+## Upstream README
+
+The content below is retained from the official vLLM Production Stack 0.1.8 repository.
+
 | [**Blog**](https://lmcache.github.io) | [**Docs**](https://docs.vllm.ai/projects/production-stack) | [**Production-Stack Slack Channel**](https://vllm-dev.slack.com/archives/C089SMEAKRA) | [**LMCache Slack**](https://join.slack.com/t/lmcacheworkspace/shared_invite/zt-2viziwhue-5Amprc9k5hcIdXT7XevTaQ) | [**Interest Form**](https://forms.gle/mQfQDUXbKfp2St1z7) | [**Official Email**](contact@lmcache.ai) |
 
 ## Latest News
@@ -93,7 +189,7 @@ helm uninstall vllm
 The Grafana dashboard provides the following insights:
 
 1. **Available vLLM Instances**: Displays the number of healthy instances.
-2. **Request Latency Distribution**: Visualizes end-to-end request latency.
+2. **Request Latency Distribution**: Monitors end-to-end response times.
 3. **Time-to-First-Token (TTFT) Distribution**: Monitors response times for token generation.
 4. **Number of Running Requests**: Tracks the number of active requests per instance.
 5. **Number of Pending Requests**: Tracks requests waiting to be processed.
