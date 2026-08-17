@@ -1,0 +1,60 @@
+global:
+  # Shared runtime environment for all vLLM deployments.
+  env:
+    - name: VLLM_CACHE_ROOT
+      value: /vllm_cache/.cache/vllm
+    - name: VLLM_CONFIG_ROOT
+      value: /vllm_cache/.config/vllm
+
+    # Runtime LoRA updating is currently enabled for compatibility with the
+    # production baseline. LoRA adapters are not supported in the current
+    # environment. Disable this when the fleet can be restarted together;
+    # enabling runtime LoRA updating prevents api_server_count > 1.
+    - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
+      value: "1"
+
+    - name: VLLM_ENABLE_RESPONSE_API_STORE
+      value: "1"
+    - name: VLLM_LOG_STATS_INTERVAL
+      value: "1"
+
+    - name: HF_HOME
+      value: /vllm_cache/.cache/huggingface
+    # Air-gapped environment: do not make HTTP calls to Hugging Face Hub.
+    - name: HF_HUB_OFFLINE
+      value: "1"
+
+    # Legacy LMCache standalone experiment. Kept for compatibility but is not
+    # consumed by the current production path.
+    - name: LMCACHE_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+
+    - name: PYTHONHASHSEED
+      value: "0"
+    - name: TZ
+      value: Asia/Seoul
+
+  # Common hostPath volumes shared by model deployments.
+  extraVolumes:
+    - name: model-weight
+      hostPath:
+        path: /user/dtgpt/model
+        type: Directory
+    - name: model-config
+      hostPath:
+        path: /user/dtgpt/vllm-production-stack/profiles
+        type: Directory
+    - name: vllm-cache
+      hostPath:
+        path: /user/dtgpt/vllm-production-stack/vllm-cache
+        type: Directory
+
+  extraVolumeMounts:
+    - name: model-weight
+      mountPath: /models
+    - name: model-config
+      mountPath: /profiles
+    - name: vllm-cache
+      mountPath: /vllm_cache
