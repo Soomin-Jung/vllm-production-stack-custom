@@ -6,6 +6,7 @@ on:
       - agent/production-0.1.8-custom-baseline
     paths:
       - scripts/apply-production-baseline.py
+      - scripts/run-production-baseline.py
 
 permissions:
   contents: write
@@ -20,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       - name: Apply validated baseline rewrites
-        run: python3 scripts/apply-production-baseline.py
+        run: python3 scripts/run-production-baseline.py
 
       - name: Commit rendered baseline
         shell: bash
