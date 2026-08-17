@@ -8,3 +8,7 @@ values.schema.json
 /workflows
 examples/
 values-*.yaml
+
+# added by soomin, ignore backup files
+*.yaml_origin
+*.yaml_backup_*
