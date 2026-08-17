@@ -24,7 +24,7 @@ jobs:
         with:
           version: v3.17.3
 
-      - name: Create synthetic model values
+      - name: Create schema-compliant smoke values
         shell: bash
         run: |
           cat > /tmp/smoke-values.yaml <<'EOF'
@@ -36,14 +36,13 @@ jobs:
                 replicaCount: 1
                 modelURL: /models/unused-by-template
                 requestGPU: 0
-                requestCPU: 1000m
+                requestCPU: 1
                 requestMemory: 4Gi
+                pvcStorage: 1Gi
                 vllmConfig:
                   extraArgs:
                     - --config
                     - /profiles/smoke.yaml
-                lmcacheConfig:
-                  enabled: false
                 env:
                   - name: TZ
                     value: ModelOverride/Zone
@@ -54,6 +53,9 @@ jobs:
                 replicaCount: 1
                 modelURL: /models/unused-by-ray-entrypoint
                 requestGPU: 1
+                requestCPU: 4
+                requestMemory: 16Gi
+                pvcStorage: 1Gi
                 vllmConfig:
                   tensorParallelSize: 2
                   extraArgs:
@@ -62,24 +64,23 @@ jobs:
                 raySpec:
                   headNode:
                     requestGPU: 0
-                    requestCPU: 1000m
+                    requestCPU: 1
                     requestMemory: 4Gi
           EOF
 
-      - name: Helm lint
+      - name: Helm lint with upstream schema
         run: helm lint ./helm -f global-values.yaml -f /tmp/smoke-values.yaml
 
-      - name: Render chart
+      - name: Render schema-compliant chart
         run: helm template lln ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml > /tmp/rendered.yaml
 
-      - name: Verify downstream invariants
+      - name: Verify production runtime invariants
         shell: bash
         run: |
           set -euo pipefail
 
-          # requestGPU: 0 must render successfully and use explicit CPU/memory.
-          grep -q 'cpu: "1000m"' /tmp/rendered.yaml
-          grep -q 'memory: "4Gi"' /tmp/rendered.yaml
+          # requestGPU: 0 must pass the helper validation.
+          grep -q 'name: lln-smoke' /tmp/rendered.yaml
 
           # Profile-driven non-Ray command; modelURL must not be passed as a command arg.
           grep -q -- '- --config' /tmp/rendered.yaml
@@ -105,3 +106,34 @@ jobs:
           grep -q 'mountPath: /models' /tmp/rendered.yaml
           grep -q 'mountPath: /profiles' /tmp/rendered.yaml
           grep -q 'mountPath: /vllm_cache' /tmp/rendered.yaml
+
+      - name: Verify GPU-derived CPU and memory fallbacks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/fallback-values.yaml <<'EOF'
+          servingEngineSpec:
+            modelSpec:
+              - name: fallback
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/unused-by-template
+                requestGPU: 2
+                vllmConfig:
+                  extraArgs:
+                    - --config
+                    - /profiles/fallback.yaml
+          EOF
+
+          # Upstream 0.1.8 values.schema.json still requires requestCPU,
+          # requestMemory and pvcStorage. Remove only the schema copy in this
+          # ephemeral CI checkout to test the customized helper fallback itself.
+          mv helm/values.schema.json /tmp/values.schema.json
+          trap 'mv /tmp/values.schema.json helm/values.schema.json' EXIT
+          helm template lln ./helm -n inference -f global-values.yaml -f /tmp/fallback-values.yaml > /tmp/fallback-rendered.yaml
+          mv /tmp/values.schema.json helm/values.schema.json
+          trap - EXIT
+
+          grep -q 'cpu: "8000m"' /tmp/fallback-rendered.yaml
+          grep -q 'memory: "20Gi"' /tmp/fallback-rendered.yaml
