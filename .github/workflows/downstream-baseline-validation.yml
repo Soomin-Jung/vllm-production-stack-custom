@@ -1,0 +1,107 @@
+name: Validate downstream production baseline
+
+on:
+  push:
+    branches:
+      - agent/production-0.1.8-custom-baseline
+  pull_request:
+    paths:
+      - helm/**
+      - global-values.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  helm-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Create synthetic model values
+        shell: bash
+        run: |
+          cat > /tmp/smoke-values.yaml <<'EOF'
+          servingEngineSpec:
+            modelSpec:
+              - name: smoke
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/unused-by-template
+                requestGPU: 0
+                requestCPU: 1000m
+                requestMemory: 4Gi
+                vllmConfig:
+                  extraArgs:
+                    - --config
+                    - /profiles/smoke.yaml
+                lmcacheConfig:
+                  enabled: false
+                env:
+                  - name: TZ
+                    value: ModelOverride/Zone
+
+              - name: smoke-ray
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/unused-by-ray-entrypoint
+                requestGPU: 1
+                vllmConfig:
+                  tensorParallelSize: 2
+                  extraArgs:
+                    - --config
+                    - /profiles/smoke-ray.yaml
+                raySpec:
+                  headNode:
+                    requestGPU: 0
+                    requestCPU: 1000m
+                    requestMemory: 4Gi
+          EOF
+
+      - name: Helm lint
+        run: helm lint ./helm -f global-values.yaml -f /tmp/smoke-values.yaml
+
+      - name: Render chart
+        run: helm template lln ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml > /tmp/rendered.yaml
+
+      - name: Verify downstream invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # requestGPU: 0 must render successfully and use explicit CPU/memory.
+          grep -q 'cpu: "1000m"' /tmp/rendered.yaml
+          grep -q 'memory: "4Gi"' /tmp/rendered.yaml
+
+          # Profile-driven non-Ray command; modelURL must not be passed as a command arg.
+          grep -q -- '- --config' /tmp/rendered.yaml
+          grep -q -- '- /profiles/smoke.yaml' /tmp/rendered.yaml
+          if grep -q -- '- /models/unused-by-template' /tmp/rendered.yaml; then
+            echo 'non-Ray modelURL unexpectedly rendered as a command argument'
+            exit 1
+          fi
+
+          # Global env and model override must both render; model value wins for duplicate TZ.
+          grep -q 'name: VLLM_CACHE_ROOT' /tmp/rendered.yaml
+          grep -q 'value: /vllm_cache/.cache/vllm' /tmp/rendered.yaml
+          grep -q 'value: ModelOverride/Zone' /tmp/rendered.yaml
+
+          # Non-Ray /dev/shm is always backed by the host path.
+          grep -q 'path: /dev/shm' /tmp/rendered.yaml
+          grep -q 'type: Directory' /tmp/rendered.yaml
+
+          # Ray keeps memory-backed shm but raises the default to 100Gi.
+          grep -q 'sizeLimit: 100Gi' /tmp/rendered.yaml
+
+          # Common global mounts must be present.
+          grep -q 'mountPath: /models' /tmp/rendered.yaml
+          grep -q 'mountPath: /profiles' /tmp/rendered.yaml
+          grep -q 'mountPath: /vllm_cache' /tmp/rendered.yaml
