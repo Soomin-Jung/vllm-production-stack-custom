@@ -26,6 +26,10 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ .Release.Name }}-router-service-account
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
       {{- if .Values.routerSpec.priorityClassName }}
       priorityClassName: {{ .Values.routerSpec.priorityClassName | quote }}
       {{- end }}
