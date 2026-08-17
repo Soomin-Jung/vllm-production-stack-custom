@@ -1,12 +1,11 @@
-name: Apply downstream baseline
+name: Finalize downstream baseline
 
 on:
   push:
     branches:
       - agent/production-0.1.8-custom-baseline
     paths:
-      - scripts/apply-production-baseline.py
-      - scripts/run-production-baseline.py
+      - scripts/finalize-deployment-vllm.py
 
 permissions:
   contents: write
@@ -20,20 +19,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply validated baseline rewrites
-        run: python3 scripts/run-production-baseline.py
+      - name: Finalize non-Ray vLLM template
+        run: python3 scripts/finalize-deployment-vllm.py
 
-      - name: Commit rendered baseline
+      - name: Commit finalized template
         shell: bash
         run: |
           set -euo pipefail
           if git diff --quiet -- helm/; then
-            echo "Baseline already applied."
+            echo "Template already finalized."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add helm/
-          git commit -m "chore: apply production 0.1.8 baseline"
+          git add helm/templates/deployment-vllm-multi.yaml
+          git commit -m "feat: externalize vLLM runtime configuration"
           git push
