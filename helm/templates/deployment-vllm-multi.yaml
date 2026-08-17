@@ -1,4 +1,21 @@
 {{- if .Values.servingEngineSpec.enableEngine -}}
+{{/* Downstream: shared environment, volumes and mounts from global-values.yaml. */}}
+{{- $global := .Values.global | default dict }}
+{{- $globalEnv := $global.env | default (list) }}
+{{- $globalEnvMap := dict }}
+{{- range $e := $globalEnv }}
+{{- $_ := set $globalEnvMap $e.name $e }}
+{{- end }}
+{{- $globalMounts := $global.extraVolumeMounts | default (list) }}
+{{- $globalMountMap := dict }}
+{{- range $e := $globalMounts }}
+{{- $_ := set $globalMountMap $e.name $e }}
+{{- end }}
+{{- $globalVolumes := $global.extraVolumes | default (list) }}
+{{- $globalVolumeMap := dict }}
+{{- range $e := $globalVolumes }}
+{{- $_ := set $globalVolumeMap $e.name $e }}
+{{- end }}
 {{- range $modelSpec := .Values.servingEngineSpec.modelSpec }}
 {{- if not (hasKey $modelSpec "raySpec") }}
 {{- $kv_role := "kv_both" }}
@@ -13,7 +30,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ .Release.Name }}-{{$modelSpec.name}}-deployment-vllm"
+  name: "{{ .Release.Name }}-{{$modelSpec.name}}"
   namespace: {{ .Release.Namespace }}
   {{- if hasKey $modelSpec "annotations" }}
   annotations:
@@ -247,7 +264,19 @@ spec:
                 key: {{ $vllmApiKey.secretKey }}
             {{- end }}
           {{- end }}
-          {{- with $modelSpec.env }}
+          {{/* Downstream: global env is the default; per-model env wins by name. */}}
+          {{- $modelEnvMap := dict }}
+          {{- if hasKey $modelSpec "env" }}
+          {{- range $e := $modelSpec.env }}
+          {{- $_ := set $modelEnvMap $e.name $e }}
+          {{- end }}
+          {{- end }}
+          {{- $mergedEnvMap := mergeOverwrite (deepCopy $globalEnvMap) $modelEnvMap }}
+          {{- $mergedEnvList := list }}
+          {{- range $k, $v := $mergedEnvMap }}
+          {{- $mergedEnvList = append $mergedEnvList $v }}
+          {{- end }}
+          {{- with $mergedEnvList }}
           {{- toYaml . | nindent 10 }}
           {{- end }}
           {{- if $modelSpec.lmcacheConfig }}
@@ -394,8 +423,19 @@ spec:
             mountPath: /templates
           {{- end }}
           {{- end }}
+          {{- $modelMountMap := dict }}
           {{- if hasKey $modelSpec "extraVolumeMounts" }}
-          {{- toYaml $modelSpec.extraVolumeMounts | nindent 10 }}
+          {{- range $e := $modelSpec.extraVolumeMounts }}
+          {{- $_ := set $modelMountMap $e.name $e }}
+          {{- end }}
+          {{- end }}
+          {{- $mergedMountMap := mergeOverwrite (deepCopy $globalMountMap) $modelMountMap }}
+          {{- $mergedMountList := list }}
+          {{- range $k, $v := $mergedMountMap }}
+          {{- $mergedMountList = append $mergedMountList $v }}
+          {{- end }}
+          {{- with $mergedMountList }}
+          {{- toYaml . | nindent 10 }}
           {{- end }}
           {{- if hasKey $.Values "sharedPvcStorage" }}
           - name: {{ .Release.Name }}-shared-pvc-storage
@@ -436,14 +476,10 @@ spec:
           persistentVolumeClaim:
             claimName: "{{ .Release.Name }}-shared-pvc-storage-claim"
         {{- end }}
-        {{- with $modelSpec.vllmConfig }}
-        {{- if hasKey $modelSpec.vllmConfig "tensorParallelSize"}}
         - name: shm
-          emptyDir:
-            medium: Memory
-            sizeLimit: {{ default "20Gi" $modelSpec.shmSize }}
-        {{- end}}
-        {{- end}}
+          hostPath:
+            path: /dev/shm
+            type: Directory
         {{- if $modelSpec.chatTemplate}}
         {{- if hasKey $modelSpec "chatTemplateConfigMap" }}
         - name: {{ .Release.Name }}-{{ $modelSpec.name }}-chat-templates
@@ -455,8 +491,19 @@ spec:
             claimName: vllm-templates-pvc
         {{- end }}
         {{- end}}
+        {{- $modelVolumeMap := dict }}
         {{- if hasKey $modelSpec "extraVolumes" }}
-        {{- toYaml $modelSpec.extraVolumes | nindent 8 }}
+        {{- range $e := $modelSpec.extraVolumes }}
+        {{- $_ := set $modelVolumeMap $e.name $e }}
+        {{- end }}
+        {{- end }}
+        {{- $mergedVolumeMap := mergeOverwrite (deepCopy $globalVolumeMap) $modelVolumeMap }}
+        {{- $mergedVolumeList := list }}
+        {{- range $k, $v := $mergedVolumeMap }}
+        {{- $mergedVolumeList = append $mergedVolumeList $v }}
+        {{- end }}
+        {{- with $mergedVolumeList }}
+        {{- toYaml . | nindent 8 }}
         {{- end}}
       {{- if .Values.servingEngineSpec.tolerations }}
       {{-   with .Values.servingEngineSpec.tolerations }}

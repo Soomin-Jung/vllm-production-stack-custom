@@ -6,8 +6,8 @@ servingEngineSpec:
   enableEngine: true
   # -- Customized labels for the serving engine deployment
   labels:
-    environment: "test"
-    release: "test"
+    environment: "vllm-production-stack"
+    release: "0.1.8"
   # -- Extra service ports for models
   extraPorts: []
   # vllmApiKey: (optional) api key for securing the vLLM models. Can be either:
@@ -215,8 +215,7 @@ servingEngineSpec:
     # -- How often (in seconds) to perform the startup probe
     periodSeconds: 10
     # -- Number of times after which if a probe fails in a row, Kubernetes considers that the overall check has failed: the container is not ready
-    failureThreshold:
-      60
+    failureThreshold: 360
       # -- Configuration of the Kubelet http request on the server
     httpGet:
       # -- Path to access on the HTTP server
@@ -263,13 +262,16 @@ servingEngineSpec:
   #   - key: "node-role.kubernetes.io/control-plane"
   #     operator: "Exists"
   #     effect: "NoSchedule"
-  tolerations: []
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
 
   # -- RuntimeClassName configuration, set to "nvidia" if the model requires GPU
   runtimeClassName: "nvidia"
 
   # -- SchedulerName configuration
-  schedulerName: ""
+  schedulerName: "gpu-binpack-scheduler"
 
   # -- Pod-level security context configuration. https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#podsecuritycontext-v1-core
   securityContext: {}
@@ -310,8 +312,8 @@ servingEngineSpec:
 routerSpec:
   # -- The docker image of the router. The following values are defaults:
   repository: "lmcache/lmstack-router"
-  tag: "latest"
-  imagePullPolicy: "Always"
+  tag: "0.1.9.dev9-g37bafbcf5.d20260107"
+  imagePullPolicy: "IfNotPresent"
 
   # -- Pod-level security context configuration. https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#podsecuritycontext-v1-core
   securityContext: {}
@@ -323,13 +325,13 @@ routerSpec:
   enableRouter: true
 
   # -- Number of replicas
-  replicaCount: 1
+  replicaCount: 2
 
   # -- autoscaling configuration
   autoscaling:
-    enabled: false
-    minReplicas: 1
-    maxReplicas: 3
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
     targetCPUUtilizationPercentage: 80
 
   # -- Priority Class
@@ -339,12 +341,12 @@ routerSpec:
   containerPort: 8000
 
   # -- Service type
-  serviceType: ClusterIP
+  serviceType: LoadBalancer
   # -- Service annotations if you use a LoadBalancer or NodePort service type
   serviceAnnotations: {}
 
   # -- Service port
-  servicePort: 80
+  servicePort: 9400
 
   # -- Service discovery mode, supports "k8s" or "static". Defaults to "k8s" if not set.
   serviceDiscovery: "k8s"
@@ -384,7 +386,8 @@ routerSpec:
       cpu: 400m
       memory: 500Mi
     limits:
-      memory: 500Mi
+      cpu: 1000m
+      memory: 5Gi
 
   # -- Customized labels for the router deployment
   labels:
