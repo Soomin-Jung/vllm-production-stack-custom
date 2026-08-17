@@ -121,12 +121,35 @@ Define resources with a variable model spec
 */}}
 {{- define "chart.resources" -}}
 {{- $modelSpec := . -}}
+{{/*
+25.12.01 Require GPU declaration and validate consistency.
+requestGPU=0 is allowed for special shared-GPU workloads such as embedding/reranker.
+*/}}
+{{- if not (hasKey $modelSpec "requestGPU") -}}
+{{- fail "Value 'modelSpec.requestGPU' must be defined!" -}}
+{{- end -}}
+{{- $gpuRaw := $modelSpec.requestGPU -}}
+{{- $gpuCount := int $gpuRaw -}}
+{{- if lt $gpuCount 0 -}}
+{{- fail (printf "modelSpec.requestGPU must be a non-negative integer, got %d" $gpuCount) -}}
+{{- end -}}
+{{/* Default requests: 4 CPU cores and 10Gi memory per requested GPU. */}}
+{{- $defaultCPU := printf "%dm" (mul $gpuCount 4000) -}}
+{{- $defaultMemory := printf "%dGi" (mul $gpuCount 10) -}}
 requests:
-  memory: {{ required "Value 'modelSpec.requestMemory' must be defined !" ($modelSpec.requestMemory | quote) }}
-  cpu: {{ required "Value 'modelSpec.requestCPU' must be defined !" ($modelSpec.requestCPU | quote) }}
-  {{- if (gt (int $modelSpec.requestGPU) 0) }}
+  {{- if $modelSpec.requestMemory }}
+  memory: {{ $modelSpec.requestMemory | quote }}
+  {{- else }}
+  memory: {{ $defaultMemory | quote }}
+  {{- end }}
+  {{- if $modelSpec.requestCPU }}
+  cpu: {{ $modelSpec.requestCPU | quote }}
+  {{- else }}
+  cpu: {{ $defaultCPU | quote }}
+  {{- end }}
+  {{- if (gt $gpuCount 0) }}
   {{- $gpuType := default "nvidia.com/gpu" $modelSpec.requestGPUType }}
-  {{ $gpuType }}: {{ required "Value 'modelSpec.requestGPU' must be defined !" (index $modelSpec.requestGPU | quote) }}
+  {{ $gpuType }}: {{ $gpuRaw | quote }}
   {{- end }}
   {{- if (hasKey $modelSpec "requestGPUMem") }}
   nvidia.com/gpumem: {{ $modelSpec.requestGPUMem | quote }}
@@ -145,9 +168,9 @@ limits:
   {{- if (hasKey $modelSpec "limitCPU") }}
   cpu: {{ $modelSpec.limitCPU | quote }}
   {{- end }}
-  {{- if (gt (int $modelSpec.requestGPU) 0) }}
+  {{- if (gt $gpuCount 0) }}
   {{- $gpuType := default "nvidia.com/gpu" $modelSpec.requestGPUType }}
-  {{ $gpuType }}: {{ required "Value 'modelSpec.requestGPU' must be defined !" (index $modelSpec.requestGPU | quote) }}
+  {{ $gpuType }}: {{ $gpuRaw | quote }}
   {{- end }}
   {{- if (hasKey $modelSpec "limitGPUMem") }}
   nvidia.com/gpumem: {{ $modelSpec.limitGPUMem | quote }}
