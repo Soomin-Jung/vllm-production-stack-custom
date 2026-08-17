@@ -1,0 +1,50 @@
+name: Apply downstream patches
+
+on:
+  push:
+    branches:
+      - agent/production-0.1.8-custom-baseline
+    paths:
+      - downstream-patches/**
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply unapplied patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed=0
+          for patch in downstream-patches/*.patch; do
+            [ -e "$patch" ] || continue
+
+            if git apply --reverse --check "$patch" >/dev/null 2>&1; then
+              echo "Already applied: $patch"
+              continue
+            fi
+
+            echo "Applying: $patch"
+            git apply --check "$patch"
+            git apply "$patch"
+            changed=1
+          done
+
+          if [ "$changed" -eq 0 ]; then
+            echo "No unapplied patches."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add helm/
+          git commit -m "chore: apply downstream baseline patches"
+          git push
