@@ -133,63 +133,17 @@ spec:
           - "vllm"
           {{- end }}
           - "serve"
-          - {{ $modelSpec.modelURL | quote }}
           - "--host"
           - "0.0.0.0"
           - "--port"
           - {{ include "chart.container-port" . | quote }}
-          {{- if $modelSpec.enableLoRA }}
-          - "--enable-lora"
-          {{- end }}
-          {{- if $modelSpec.enableTool }}
-          - "--enable-auto-tool-choice"
-          {{- end }}
-          {{- if $modelSpec.toolCallParser }}
-          - "--tool-call-parser"
-          - {{ $modelSpec.toolCallParser | quote }}
-          {{- end }}
+          {{/* Downstream: model path and engine options are externalized to profile YAML. */}}
           {{- with $modelSpec.vllmConfig }}
-          {{-   if hasKey . "enableChunkedPrefill" }}
-          {{-     if .enableChunkedPrefill }}
-          - "--enable-chunked-prefill"
-          {{-     else }}
-          - "--no-enable-chunked-prefill"
-          {{-     end }}
-          {{-   end }}
-          {{-   if .enablePrefixCaching }}
-          - "--enable-prefix-caching"
-          {{-   else }}
-          - "--no-enable-prefix-caching"
-          {{-   end }}
-          {{-   if hasKey . "maxModelLen" }}
-          - "--max-model-len"
-          - {{ .maxModelLen | quote }}
-          {{-   end }}
-          {{-   if hasKey . "dtype" }}
-          - "--dtype"
-          - {{ .dtype | quote }}
-          {{-   end }}
-          {{-   if hasKey . "tensorParallelSize" }}
-          - "--tensor-parallel-size"
-          - {{ .tensorParallelSize | quote }}
-          {{-   end }}
-          {{-   if hasKey . "maxNumSeqs" }}
-          - "--max-num-seqs"
-          - {{ .maxNumSeqs | quote }}
-          {{-   end }}
-          {{-   if hasKey . "gpuMemoryUtilization" }}
-          - "--gpu_memory_utilization"
-          - {{ .gpuMemoryUtilization | quote }}
-          {{-   end }}
-          {{-   if hasKey . "maxLoras" }}
-          - "--max_loras"
-          - {{ .maxLoras | quote }}
-          {{-   end }}
-          {{-   if .extraArgs }}
-          {{-     range .extraArgs }}
+          {{- if .extraArgs }}
+          {{- range .extraArgs }}
           - {{ . | quote }}
-          {{-     end }}
-          {{-   end }}
+          {{- end }}
+          {{- end }}
           {{- end }}
           {{- if $modelSpec.lmcacheConfig }}
           {{-   if $modelSpec.lmcacheConfig.enabled }}
@@ -205,20 +159,8 @@ spec:
           {{-     end }}
           {{-   end }}
           {{- end }}
-          {{- if $modelSpec.chatTemplate }}
-          - "--chat-template"
-          - "/templates/{{ $modelSpec.chatTemplate }}"
-          {{- end }}
           imagePullPolicy: "{{ .Values.servingEngineSpec.imagePullPolicy | default "Always" }}"
           env:
-          - name: PYTHONHASHSEED
-            value: "123"
-          - name: HF_HOME
-            {{- if hasKey $modelSpec "pvcStorage" }}
-            value: /data
-            {{- else }}
-            value: /tmp
-            {{- end }}
           - name: POD_IP
             valueFrom:
               fieldRef:
@@ -401,19 +343,13 @@ spec:
               containerPort: 9999
           {{- include "chart.probes" . | indent 10 }}
           resources: {{- include "chart.resources" $modelSpec | nindent 12 }}
-          {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumeMounts") }}
           volumeMounts:
-          {{- end }}
           {{- if hasKey $modelSpec "pvcStorage" }}
           - name: {{ .Release.Name }}-storage
             mountPath: /data
           {{- end }}
-          {{- with $modelSpec.vllmConfig }}
-          {{- if hasKey $modelSpec.vllmConfig "tensorParallelSize"}}
           - name: shm
             mountPath: /dev/shm
-          {{- end}}
-          {{- end}}
           {{- if $modelSpec.chatTemplate }}
           {{- if hasKey $modelSpec "chatTemplateConfigMap" }}
           - name: {{ .Release.Name }}-{{ $modelSpec.name }}-chat-templates
@@ -458,9 +394,7 @@ spec:
       imagePullSecrets:
         - name: {{ $modelSpec.imagePullSecret }}
       {{- end }}
-      {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumes") (hasKey $.Values "sharedPvcStorage") }}
       volumes:
-      {{- end}}
         {{- if hasKey $modelSpec "pvcStorage" }}
         - name: {{ .Release.Name }}-storage
         {{- if and (kindIs "map" $modelSpec.pvcStorage) (hasKey $modelSpec.pvcStorage "emptyDir") }}
