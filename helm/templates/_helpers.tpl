@@ -125,7 +125,10 @@ Define resources with a variable model spec
 25.12.01 Require GPU declaration and validate consistency.
 requestGPU=0 is allowed for special shared-GPU workloads such as embedding/reranker.
 */}}
-{{- $gpuRaw := required "Value 'modelSpec.requestGPU' must be defined!" $modelSpec.requestGPU -}}
+{{- if not (hasKey $modelSpec "requestGPU") -}}
+{{- fail "Value 'modelSpec.requestGPU' must be defined!" -}}
+{{- end -}}
+{{- $gpuRaw := $modelSpec.requestGPU -}}
 {{- $gpuCount := int $gpuRaw -}}
 {{- if lt $gpuCount 0 -}}
 {{- fail (printf "modelSpec.requestGPU must be a non-negative integer, got %d" $gpuCount) -}}
