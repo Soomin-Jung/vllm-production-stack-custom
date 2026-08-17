@@ -79,33 +79,43 @@ jobs:
         run: |
           set -euo pipefail
 
-          # requestGPU: 0 must pass the helper validation.
-          grep -q 'name: lln-smoke' /tmp/rendered.yaml
+          contains() {
+            local label="$1"
+            local needle="$2"
+            echo "Checking: $label"
+            grep -Fq -- "$needle" /tmp/rendered.yaml || {
+              echo "Missing rendered invariant: $label ($needle)"
+              exit 1
+            }
+          }
+
+          # requestGPU: 0 must pass the helper validation and render the model.
+          contains 'requestGPU=0 model rendered' 'lln-smoke'
 
           # Profile-driven non-Ray command; modelURL must not be passed as a command arg.
-          grep -q -- '- --config' /tmp/rendered.yaml
-          grep -q -- '- /profiles/smoke.yaml' /tmp/rendered.yaml
-          if grep -q -- '- /models/unused-by-template' /tmp/rendered.yaml; then
-            echo 'non-Ray modelURL unexpectedly rendered as a command argument'
+          contains 'profile flag rendered' '--config'
+          contains 'non-Ray profile path rendered' '/profiles/smoke.yaml'
+          if grep -Fq -- '/models/unused-by-template' /tmp/rendered.yaml; then
+            echo 'non-Ray modelURL unexpectedly rendered into workload output'
             exit 1
           fi
 
           # Global env and model override must both render; model value wins for duplicate TZ.
-          grep -q 'name: VLLM_CACHE_ROOT' /tmp/rendered.yaml
-          grep -q 'value: /vllm_cache/.cache/vllm' /tmp/rendered.yaml
-          grep -q 'value: ModelOverride/Zone' /tmp/rendered.yaml
+          contains 'global VLLM cache env' 'VLLM_CACHE_ROOT'
+          contains 'global VLLM cache path' '/vllm_cache/.cache/vllm'
+          contains 'per-model env override' 'ModelOverride/Zone'
 
           # Non-Ray /dev/shm is always backed by the host path.
-          grep -q 'path: /dev/shm' /tmp/rendered.yaml
-          grep -q 'type: Directory' /tmp/rendered.yaml
+          contains 'host shm path' 'path: /dev/shm'
+          contains 'hostPath directory type' 'type: Directory'
 
           # Ray keeps memory-backed shm but raises the default to 100Gi.
-          grep -q 'sizeLimit: 100Gi' /tmp/rendered.yaml
+          contains 'Ray shm default' 'sizeLimit: 100Gi'
 
           # Common global mounts must be present.
-          grep -q 'mountPath: /models' /tmp/rendered.yaml
-          grep -q 'mountPath: /profiles' /tmp/rendered.yaml
-          grep -q 'mountPath: /vllm_cache' /tmp/rendered.yaml
+          contains 'model weights mount' 'mountPath: /models'
+          contains 'profiles mount' 'mountPath: /profiles'
+          contains 'cache mount' 'mountPath: /vllm_cache'
 
       - name: Verify GPU-derived CPU and memory fallbacks
         shell: bash
@@ -135,5 +145,5 @@ jobs:
           mv /tmp/values.schema.json helm/values.schema.json
           trap - EXIT
 
-          grep -q 'cpu: "8000m"' /tmp/fallback-rendered.yaml
-          grep -q 'memory: "20Gi"' /tmp/fallback-rendered.yaml
+          grep -Fq '8000m' /tmp/fallback-rendered.yaml
+          grep -Fq '20Gi' /tmp/fallback-rendered.yaml
