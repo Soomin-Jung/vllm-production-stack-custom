@@ -1,0 +1,158 @@
+diff --git a/helm/templates/ray-cluster.yaml b/helm/templates/ray-cluster.yaml
+--- a/helm/templates/ray-cluster.yaml
++++ b/helm/templates/ray-cluster.yaml
+@@ -1,4 +1,25 @@
+ {{- if .Values.servingEngineSpec.enableEngine }}
++{{/* Downstream: shared environment, volumes and mounts from global-values.yaml. */}}
++{{- $global := .Values.global | default dict }}
++{{- $globalEnv := $global.env | default (list) }}
++{{- $globalEnvMap := dict }}
++{{- range $e := $globalEnv }}
++{{- $_ := set $globalEnvMap $e.name $e }}
++{{- end }}
++{{- $globalMounts := $global.extraVolumeMounts | default (list) }}
++{{- $globalMountMap := dict }}
++{{- range $e := $globalMounts }}
++{{- $_ := set $globalMountMap $e.name $e }}
++{{- end }}
++{{- $globalVolumes := $global.extraVolumes | default (list) }}
++{{- $globalVolumeMap := dict }}
++{{- range $e := $globalVolumes }}
++{{- $_ := set $globalVolumeMap $e.name $e }}
++{{- end }}
+ {{- range $modelSpec := .Values.servingEngineSpec.modelSpec }}
+ {{- if (hasKey $modelSpec "raySpec") }}
+@@ -94,9 +115,21 @@ spec:
+-              {{- with $modelSpec.env }}
+-              {{- toYaml . | nindent 14 }}
++              {{/* Downstream: global env is the default; per-model env wins by name. */}}
++              {{- $modelEnvMap := dict }}
++              {{- if hasKey $modelSpec "env" }}
++              {{- range $e := $modelSpec.env }}
++              {{- $_ := set $modelEnvMap $e.name $e }}
++              {{- end }}
++              {{- end }}
++              {{- $mergedEnvMap := mergeOverwrite (deepCopy $globalEnvMap) $modelEnvMap }}
++              {{- $mergedEnvList := list }}
++              {{- range $k, $v := $mergedEnvMap }}
++              {{- $mergedEnvList = append $mergedEnvList $v }}
++              {{- end }}
++              {{- with $mergedEnvList }}
++              {{- toYaml . | nindent 14 }}
+               {{- end }}
+@@ -166,7 +199,7 @@ spec:
+-              {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumeMounts") }}
++              {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumeMounts") (gt (len $globalMounts) 0) }}
+@@ -184,8 +217,20 @@ spec:
+-              {{- if hasKey $modelSpec "extraVolumeMounts" }}
+-              {{- toYaml $modelSpec.extraVolumeMounts | nindent 14 }}
++              {{- $modelMountMap := dict }}
++              {{- if hasKey $modelSpec "extraVolumeMounts" }}
++              {{- range $e := $modelSpec.extraVolumeMounts }}
++              {{- $_ := set $modelMountMap $e.name $e }}
++              {{- end }}
++              {{- end }}
++              {{- $mergedMountMap := mergeOverwrite (deepCopy $globalMountMap) $modelMountMap }}
++              {{- $mergedMountList := list }}
++              {{- range $k, $v := $mergedMountMap }}
++              {{- $mergedMountList = append $mergedMountList $v }}
++              {{- end }}
++              {{- with $mergedMountList }}
++              {{- toYaml . | nindent 14 }}
+               {{- end }}
+@@ -196,7 +241,7 @@ spec:
+-          {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumes") }}
++          {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumes") (gt (len $globalVolumes) 0) }}
+@@ -206,7 +251,7 @@ spec:
+             emptyDir:
+               medium: Memory
+-              sizeLimit: {{ default "20Gi" $modelSpec.shmSize }}
++              sizeLimit: {{ default "100Gi" $modelSpec.shmSize }}
+@@ -220,8 +265,20 @@ spec:
+-          {{- if hasKey $modelSpec "extraVolumes" }}
+-          {{- toYaml $modelSpec.extraVolumes | nindent 10 }}
++          {{- $modelVolumeMap := dict }}
++          {{- if hasKey $modelSpec "extraVolumes" }}
++          {{- range $e := $modelSpec.extraVolumes }}
++          {{- $_ := set $modelVolumeMap $e.name $e }}
++          {{- end }}
++          {{- end }}
++          {{- $mergedVolumeMap := mergeOverwrite (deepCopy $globalVolumeMap) $modelVolumeMap }}
++          {{- $mergedVolumeList := list }}
++          {{- range $k, $v := $mergedVolumeMap }}
++          {{- $mergedVolumeList = append $mergedVolumeList $v }}
++          {{- end }}
++          {{- with $mergedVolumeList }}
++          {{- toYaml . | nindent 10 }}
+           {{- end}}
+@@ -305,9 +362,21 @@ spec:
+-                {{- with $modelSpec.env }}
+-                {{- toYaml . | nindent 16 }}
++                {{/* Downstream: global env is the default; per-model env wins by name. */}}
++                {{- $modelEnvMap := dict }}
++                {{- if hasKey $modelSpec "env" }}
++                {{- range $e := $modelSpec.env }}
++                {{- $_ := set $modelEnvMap $e.name $e }}
++                {{- end }}
++                {{- end }}
++                {{- $mergedEnvMap := mergeOverwrite (deepCopy $globalEnvMap) $modelEnvMap }}
++                {{- $mergedEnvList := list }}
++                {{- range $k, $v := $mergedEnvMap }}
++                {{- $mergedEnvList = append $mergedEnvList $v }}
++                {{- end }}
++                {{- with $mergedEnvList }}
++                {{- toYaml . | nindent 16 }}
+                 {{- end }}
+@@ -365,7 +434,7 @@ spec:
+-              {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumeMounts") }}
++              {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumeMounts") (gt (len $globalMounts) 0) }}
+@@ -383,8 +452,20 @@ spec:
+-              {{- if hasKey $modelSpec "extraVolumeMounts" }}
+-              {{- toYaml $modelSpec.extraVolumeMounts | nindent 14 }}
++              {{- $modelMountMap := dict }}
++              {{- if hasKey $modelSpec "extraVolumeMounts" }}
++              {{- range $e := $modelSpec.extraVolumeMounts }}
++              {{- $_ := set $modelMountMap $e.name $e }}
++              {{- end }}
++              {{- end }}
++              {{- $mergedMountMap := mergeOverwrite (deepCopy $globalMountMap) $modelMountMap }}
++              {{- $mergedMountList := list }}
++              {{- range $k, $v := $mergedMountMap }}
++              {{- $mergedMountList = append $mergedMountList $v }}
++              {{- end }}
++              {{- with $mergedMountList }}
++              {{- toYaml . | nindent 14 }}
+               {{- end }}
+@@ -391,7 +472,7 @@ spec:
+-            {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumes") }}
++            {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumes") (gt (len $globalVolumes) 0) }}
+@@ -401,7 +482,7 @@ spec:
+               emptyDir:
+                 medium: Memory
+-                sizeLimit: {{ default "20Gi" $modelSpec.shmSize }}
++                sizeLimit: {{ default "100Gi" $modelSpec.shmSize }}
+@@ -415,8 +496,20 @@ spec:
+-            {{- if hasKey $modelSpec "extraVolumes" }}
+-            {{- toYaml $modelSpec.extraVolumes | nindent 12 }}
++            {{- $modelVolumeMap := dict }}
++            {{- if hasKey $modelSpec "extraVolumes" }}
++            {{- range $e := $modelSpec.extraVolumes }}
++            {{- $_ := set $modelVolumeMap $e.name $e }}
++            {{- end }}
++            {{- end }}
++            {{- $mergedVolumeMap := mergeOverwrite (deepCopy $globalVolumeMap) $modelVolumeMap }}
++            {{- $mergedVolumeList := list }}
++            {{- range $k, $v := $mergedVolumeMap }}
++            {{- $mergedVolumeList = append $mergedVolumeList $v }}
++            {{- end }}
++            {{- with $mergedVolumeList }}
++            {{- toYaml . | nindent 12 }}
+             {{- end}}
+@@ -520,7 +613,8 @@ data:
+     ARGS=(
+       "vllm"
+       "serve"
+-      "{{ $modelSpec.modelURL | quote }}"
++      # Downstream: model URL and engine options are provided by profile YAML
++      # through vllmConfig.extraArgs.
+       "--host" "0.0.0.0"
