@@ -81,7 +81,6 @@ All non-dynamic vLLM engine arguments are centralized in a single profile YAML r
 
 ### Known operational notes / technical debt
 
-- **Upstream 0.1.8 non-Ray multi-model document separation must be verified against the offline production chart.** A synthetic render with multiple non-Ray `modelSpec` entries can concatenate a document separator and the next `apiVersion` (`---apiVersion`) because of whitespace trimming at the end of `deployment-vllm-multi.yaml`. The baseline leaves this source unchanged until the exact offline production render is compared.
 - **`values.schema.json` does not match the customized resource helper.** Upstream 0.1.8 still requires `requestCPU`, `requestMemory`, and `pvcStorage` for every `modelSpec`. Therefore the GPU-derived CPU/memory fallback cannot be reached through normal schema validation when those keys are omitted, unless the schema is later updated or schema validation is bypassed. CI tests both the upstream-schema path and the helper fallback separately.
 - **`requestGPU: 0` is intentionally supported** for special shared-GPU workloads such as embedding/reranker deployments. If CPU/memory are also omitted, the fallback becomes `0m` / `0Gi`; those workloads should explicitly provide CPU and memory requests.
 - **Non-Ray `/dev/shm` uses hostPath `/dev/shm`.** This removes the prior TP-only mount condition and exposes host shared-memory capacity to every vLLM pod, but also reduces pod-level isolation and allows same-node workloads to contend for host shared memory.
@@ -98,6 +97,7 @@ The downstream workflow runs:
 1. `helm lint` using schema-compliant synthetic non-Ray and Ray models.
 2. `helm template` and rendered invariant checks for global env/volume merging, profile arguments, non-Ray host `/dev/shm`, Ray `100Gi` shm, and `requestGPU: 0`.
 3. A separate render with the upstream schema temporarily excluded to exercise the customized GPU-derived CPU/memory fallback (`2 GPU → 8000m / 20Gi`).
+4. The actual offline production multi-model render was manually verified: each non-Ray Deployment is separated as its own YAML document (`---` followed by `# Source`, `apiVersion`, and `kind: Deployment`), with no separator/string concatenation. The earlier `---apiVersion` observation was limited to a synthetic fixture and is not treated as a production baseline defect.
 
 ---
 
