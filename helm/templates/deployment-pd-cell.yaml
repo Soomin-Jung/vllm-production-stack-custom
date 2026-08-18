@@ -1,19 +1,19 @@
-{{- $pdCellSpec := .Values.pdCellSpec | default dict -}}
+{{- $root := . -}}
+{{- $pdCellSpec := $root.Values.pdCellSpec | default dict -}}
 {{- if ($pdCellSpec.enabled | default false) -}}
-{{- $global := .Values.global | default dict -}}
-{{- $globalEnv := $global.env | default (list) -}}
+
+{{/* Preserve the existing downstream precedence: global defaults, then model/phase overrides. */}}
+{{- $global := $root.Values.global | default dict -}}
 {{- $globalEnvMap := dict -}}
-{{- range $e := $globalEnv }}
+{{- range $e := ($global.env | default (list)) }}
 {{-   $_ := set $globalEnvMap $e.name $e -}}
 {{- end -}}
-{{- $globalMounts := $global.extraVolumeMounts | default (list) -}}
 {{- $globalMountMap := dict -}}
-{{- range $e := $globalMounts }}
+{{- range $e := ($global.extraVolumeMounts | default (list)) }}
 {{-   $_ := set $globalMountMap $e.name $e -}}
 {{- end -}}
-{{- $globalVolumes := $global.extraVolumes | default (list) -}}
 {{- $globalVolumeMap := dict -}}
-{{- range $e := $globalVolumes }}
+{{- range $e := ($global.extraVolumes | default (list)) }}
 {{-   $_ := set $globalVolumeMap $e.name $e -}}
 {{- end -}}
 
@@ -38,19 +38,20 @@
 
 {{- $router := required (printf "pdCellSpec model %s: router is required" $name) $modelSpec.router -}}
 {{- $routerRepository := required (printf "pdCellSpec model %s: router.repository is required" $name) $router.repository -}}
-{{- $routerTag := required (printf "pdCellSpec model %s: router.tag is required; pin a validated LMRouter image supporting disaggregated_prefill_orchestrated" $name) $router.tag -}}
+{{- $routerTag := required (printf "pdCellSpec model %s: router.tag is required; pin a validated orchestrated-P/D LMRouter image" $name) $router.tag -}}
 {{- $routerPort := int (default 8000 $router.port) -}}
 {{- $routerHealthInterval := int (default 30 $router.healthCheckInterval) -}}
 {{- $routerHealthTimeout := int (default 5 $router.healthCheckTimeout) -}}
 {{- $modelType := default "chat" $modelSpec.modelType -}}
 
-{{- $kv := required (printf "pdCellSpec model %s: kvTransfer is required" $name) $modelSpec.kvTransfer -}}
+{{- $kv := $modelSpec.kvTransfer | default dict -}}
 {{- $kvConnector := default "MooncakeConnector" $kv.connector -}}
 {{- $kvProtocol := default "tcp" $kv.protocol -}}
 {{- $kvWorkers := int (default 16 $kv.numWorkers) -}}
 {{- $bootstrapPortBase := int (default 9001 $kv.bootstrapPortBase) -}}
 {{- $abortTimeout := int (default 600 $kv.abortRequestTimeout) -}}
 
+{{/* One static discovery domain per Cell guarantees node-local P/D pairing. */}}
 {{- $prefillLabel := printf "%s-prefill" $name -}}
 {{- $decodeLabel := printf "%s-decode" $name -}}
 {{- $staticBackends := list -}}
@@ -58,15 +59,13 @@
 {{- $staticLabels := list -}}
 {{- $staticTypes := list -}}
 {{- range $i := until $pCount }}
-{{-   $port := add $pPortBase $i -}}
-{{-   $staticBackends = append $staticBackends (printf "http://127.0.0.1:%d" $port) -}}
+{{-   $staticBackends = append $staticBackends (printf "http://127.0.0.1:%d" (add $pPortBase $i)) -}}
 {{-   $staticModels = append $staticModels $servedModelName -}}
 {{-   $staticLabels = append $staticLabels $prefillLabel -}}
 {{-   $staticTypes = append $staticTypes $modelType -}}
 {{- end -}}
 {{- range $i := until $dCount }}
-{{-   $port := add $dPortBase $i -}}
-{{-   $staticBackends = append $staticBackends (printf "http://127.0.0.1:%d" $port) -}}
+{{-   $staticBackends = append $staticBackends (printf "http://127.0.0.1:%d" (add $dPortBase $i)) -}}
 {{-   $staticModels = append $staticModels $servedModelName -}}
 {{-   $staticLabels = append $staticLabels $decodeLabel -}}
 {{-   $staticTypes = append $staticTypes $modelType -}}
@@ -89,14 +88,14 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ $.Release.Name }}-{{ $name }}-pd-cell"
-  namespace: {{ $.Release.Namespace }}
+  name: "{{ $root.Release.Name }}-{{ $name }}-pd-cell"
+  namespace: {{ $root.Release.Namespace }}
   labels:
     model: {{ $name | quote }}
-    helm-release-name: {{ $.Release.Name | quote }}
+    helm-release-name: {{ $root.Release.Name | quote }}
     pd-cell: "true"
     pd-deployment: {{ $name | quote }}
-    {{- include "chart.engineLabels" $ | nindent 4 }}
+    {{- include "chart.engineLabels" $root | nindent 4 }}
 spec:
   replicas: {{ $replicaCount }}
   strategy:
@@ -111,17 +110,17 @@ spec:
   selector:
     matchLabels:
       model: {{ $name | quote }}
-      helm-release-name: {{ $.Release.Name | quote }}
+      helm-release-name: {{ $root.Release.Name | quote }}
       pd-cell: "true"
   progressDeadlineSeconds: {{ default 1800 $modelSpec.progressDeadlineSeconds }}
   template:
     metadata:
       labels:
         model: {{ $name | quote }}
-        helm-release-name: {{ $.Release.Name | quote }}
+        helm-release-name: {{ $root.Release.Name | quote }}
         pd-cell: "true"
         pd-deployment: {{ $name | quote }}
-        {{- include "chart.engineLabels" $ | nindent 8 }}
+        {{- include "chart.engineLabels" $root | nindent 8 }}
       annotations:
         pd-served-model: {{ $servedModelName | quote }}
         {{- with $modelSpec.podAnnotations }}
@@ -134,13 +133,20 @@ spec:
       {{- if $modelSpec.priorityClassName }}
       priorityClassName: {{ $modelSpec.priorityClassName | quote }}
       {{- end }}
-      {{- with (ternary $modelSpec.runtimeClassName $.Values.servingEngineSpec.runtimeClassName (hasKey $modelSpec "runtimeClassName")) }}
+      {{- if hasKey $modelSpec "runtimeClassName" }}
+      {{- with $modelSpec.runtimeClassName }}
       runtimeClassName: {{ . }}
       {{- end }}
-      {{- if $.Values.servingEngineSpec.schedulerName }}
-      schedulerName: {{ $.Values.servingEngineSpec.schedulerName }}
+      {{- else }}
+      {{- with $root.Values.servingEngineSpec.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- end }}
+      {{- with $root.Values.servingEngineSpec.schedulerName }}
+      schedulerName: {{ . }}
       {{- end }}
       terminationGracePeriodSeconds: {{ default 60 $modelSpec.terminationGracePeriodSeconds }}
+
       containers:
         - name: pd-router
           image: "{{ $routerRepository }}:{{ $routerTag }}"
@@ -177,13 +183,13 @@ spec:
           env:
             - name: PYTHONHASHSEED
               value: "123"
-            {{- $vllmApiKey := $.Values.servingEngineSpec.vllmApiKey }}
+            {{- $vllmApiKey := $root.Values.servingEngineSpec.vllmApiKey }}
             {{- if $vllmApiKey }}
             - name: VLLM_API_KEY
               {{- if kindIs "string" $vllmApiKey }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ $.Release.Name }}-secrets
+                  name: {{ $root.Release.Name }}-secrets
                   key: vllmApiKey
               {{- else }}
               valueFrom:
@@ -197,57 +203,49 @@ spec:
               containerPort: {{ $routerPort }}
               protocol: TCP
           startupProbe:
-            httpGet:
-              path: /health
-              port: {{ $routerPort }}
+            httpGet: {path: /health, port: {{ $routerPort }}}
             initialDelaySeconds: {{ default 5 $router.startupProbeInitialDelaySeconds }}
             periodSeconds: {{ default 5 $router.startupProbePeriodSeconds }}
             failureThreshold: {{ default 60 $router.startupProbeFailureThreshold }}
           livenessProbe:
-            httpGet:
-              path: /health
-              port: {{ $routerPort }}
+            httpGet: {path: /health, port: {{ $routerPort }}}
             periodSeconds: {{ default 10 $router.livenessProbePeriodSeconds }}
             failureThreshold: {{ default 3 $router.livenessProbeFailureThreshold }}
           readinessProbe:
-            httpGet:
-              path: /health
-              port: {{ $routerPort }}
+            httpGet: {path: /health, port: {{ $routerPort }}}
             periodSeconds: {{ default 5 $router.readinessProbePeriodSeconds }}
             failureThreshold: {{ default 3 $router.readinessProbeFailureThreshold }}
           resources:
             requests:
               cpu: {{ default "500m" $router.requestCPU | quote }}
               memory: {{ default "1Gi" $router.requestMemory | quote }}
+            {{- if or $router.limitCPU $router.limitMemory }}
             limits:
-              {{- if $router.limitCPU }}
-              cpu: {{ $router.limitCPU | quote }}
+              {{- with $router.limitCPU }}
+              cpu: {{ . | quote }}
               {{- end }}
-              {{- if $router.limitMemory }}
-              memory: {{ $router.limitMemory | quote }}
+              {{- with $router.limitMemory }}
+              memory: {{ . | quote }}
               {{- end }}
+            {{- end }}
 
         {{- range $i := until $pCount }}
         {{- $enginePort := add $pPortBase $i }}
         {{- $bootstrapPort := add $bootstrapPortBase $i }}
         {{- $phaseEnvMap := deepCopy $modelEnvMap }}
         {{- range $e := ($prefill.env | default (list)) }}
-        {{-   $_ := set $phaseEnvMap $e.name $e }}
+        {{-   $_ := set $phaseEnvMap $e.name $e -}}
         {{- end }}
-        {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_BOOTSTRAP_PORT" (dict "name" "VLLM_MOONCAKE_BOOTSTRAP_PORT" "value" (printf "%d" $bootstrapPort)) }}
-        {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) }}
-        {{- $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp/prometheus_multiproc") }}
-        {{- $kvExtra := dict "mooncake_protocol" $kvProtocol "num_workers" $kvWorkers }}
-        {{- $kvConfig := dict "kv_connector" $kvConnector "kv_role" "kv_producer" "kv_connector_extra_config" $kvExtra }}
+        {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_BOOTSTRAP_PORT" (dict "name" "VLLM_MOONCAKE_BOOTSTRAP_PORT" "value" (printf "%d" $bootstrapPort)) -}}
+        {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) -}}
+        {{- $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp/prometheus_multiproc") -}}
+        {{- $kvExtra := dict "mooncake_protocol" $kvProtocol "num_workers" $kvWorkers -}}
+        {{- $kvConfig := dict "kv_connector" $kvConnector "kv_role" "kv_producer" "kv_connector_extra_config" $kvExtra -}}
         - name: {{ printf "prefill-%d" $i }}
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ default "IfNotPresent" $modelSpec.imagePullPolicy | quote }}
           command:
-            {{- if eq $repository "lmcache/vllm-openai" }}
-            - "/opt/venv/bin/vllm"
-            {{- else }}
-            - "vllm"
-            {{- end }}
+            - {{ ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") | quote }}
             - "serve"
           args:
             - "--host"
@@ -266,60 +264,50 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            {{- range $k, $e := $phaseEnvMap }}
-            - {{ toYaml $e | nindent 14 | trim }}
+            {{- with (values $phaseEnvMap) }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- $vllmApiKey := $.Values.servingEngineSpec.vllmApiKey }}
+            {{- $vllmApiKey := $root.Values.servingEngineSpec.vllmApiKey }}
             {{- if $vllmApiKey }}
             - name: VLLM_API_KEY
               {{- if kindIs "string" $vllmApiKey }}
               valueFrom:
-                secretKeyRef:
-                  name: {{ $.Release.Name }}-secrets
-                  key: vllmApiKey
+                secretKeyRef: {name: {{ $root.Release.Name }}-secrets, key: vllmApiKey}
               {{- else }}
               valueFrom:
-                secretKeyRef:
-                  name: {{ $vllmApiKey.secretName }}
-                  key: {{ $vllmApiKey.secretKey }}
+                secretKeyRef: {name: {{ $vllmApiKey.secretName }}, key: {{ $vllmApiKey.secretKey }}}
               {{- end }}
             {{- end }}
-          {{- if $modelSpec.envFromSecret }}
+          {{- with $modelSpec.envFromSecret }}
           envFrom:
             - secretRef:
-                name: {{ $modelSpec.envFromSecret.name }}
+                name: {{ .name }}
           {{- end }}
           ports:
             - name: {{ printf "pf-%d-http" $i }}
               containerPort: {{ $enginePort }}
               protocol: TCP
           startupProbe:
-            httpGet:
-              path: {{ default "/health" $.Values.servingEngineSpec.startupProbe.httpGet.path }}
-              port: {{ $enginePort }}
-            initialDelaySeconds: {{ default 15 $.Values.servingEngineSpec.startupProbe.initialDelaySeconds }}
-            periodSeconds: {{ default 10 $.Values.servingEngineSpec.startupProbe.periodSeconds }}
-            failureThreshold: {{ default 360 $.Values.servingEngineSpec.startupProbe.failureThreshold }}
+            httpGet: {path: {{ default "/health" $root.Values.servingEngineSpec.startupProbe.httpGet.path }}, port: {{ $enginePort }}}
+            initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ default 10 $root.Values.servingEngineSpec.startupProbe.periodSeconds }}
+            failureThreshold: {{ default 360 $root.Values.servingEngineSpec.startupProbe.failureThreshold }}
           livenessProbe:
-            httpGet:
-              path: {{ default "/health" $.Values.servingEngineSpec.livenessProbe.httpGet.path }}
-              port: {{ $enginePort }}
-            initialDelaySeconds: {{ default 15 $.Values.servingEngineSpec.livenessProbe.initialDelaySeconds }}
-            periodSeconds: {{ default 10 $.Values.servingEngineSpec.livenessProbe.periodSeconds }}
-            failureThreshold: {{ default 3 $.Values.servingEngineSpec.livenessProbe.failureThreshold }}
+            httpGet: {path: {{ default "/health" $root.Values.servingEngineSpec.livenessProbe.httpGet.path }}, port: {{ $enginePort }}}
+            initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ default 10 $root.Values.servingEngineSpec.livenessProbe.periodSeconds }}
+            failureThreshold: {{ default 3 $root.Values.servingEngineSpec.livenessProbe.failureThreshold }}
           readinessProbe:
-            httpGet:
-              path: {{ default "/health" $.Values.servingEngineSpec.readinessProbe.httpGet.path }}
-              port: {{ $enginePort }}
-            initialDelaySeconds: {{ default 15 $.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
-            periodSeconds: {{ default 5 $.Values.servingEngineSpec.readinessProbe.periodSeconds }}
-            failureThreshold: {{ default 3 $.Values.servingEngineSpec.readinessProbe.failureThreshold }}
+            httpGet: {path: {{ default "/health" $root.Values.servingEngineSpec.readinessProbe.httpGet.path }}, port: {{ $enginePort }}}
+            initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
+            failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
           resources: {{- include "chart.resources" $prefill | nindent 12 }}
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- range $k, $mount := $modelMountMap }}
-            - {{ toYaml $mount | nindent 14 | trim }}
+            {{- with (values $modelMountMap) }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
         {{- end }}
 
@@ -327,21 +315,17 @@ spec:
         {{- $enginePort := add $dPortBase $i }}
         {{- $phaseEnvMap := deepCopy $modelEnvMap }}
         {{- range $e := ($decode.env | default (list)) }}
-        {{-   $_ := set $phaseEnvMap $e.name $e }}
+        {{-   $_ := set $phaseEnvMap $e.name $e -}}
         {{- end }}
-        {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) }}
-        {{- $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp/prometheus_multiproc") }}
-        {{- $kvExtra := dict "mooncake_protocol" $kvProtocol "num_workers" $kvWorkers }}
-        {{- $kvConfig := dict "kv_connector" $kvConnector "kv_role" "kv_consumer" "kv_connector_extra_config" $kvExtra }}
+        {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) -}}
+        {{- $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp/prometheus_multiproc") -}}
+        {{- $kvExtra := dict "mooncake_protocol" $kvProtocol "num_workers" $kvWorkers -}}
+        {{- $kvConfig := dict "kv_connector" $kvConnector "kv_role" "kv_consumer" "kv_connector_extra_config" $kvExtra -}}
         - name: {{ printf "decode-%d" $i }}
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ default "IfNotPresent" $modelSpec.imagePullPolicy | quote }}
           command:
-            {{- if eq $repository "lmcache/vllm-openai" }}
-            - "/opt/venv/bin/vllm"
-            {{- else }}
-            - "vllm"
-            {{- end }}
+            - {{ ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") | quote }}
             - "serve"
           args:
             - "--host"
@@ -360,87 +344,78 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            {{- range $k, $e := $phaseEnvMap }}
-            - {{ toYaml $e | nindent 14 | trim }}
+            {{- with (values $phaseEnvMap) }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- $vllmApiKey := $.Values.servingEngineSpec.vllmApiKey }}
+            {{- $vllmApiKey := $root.Values.servingEngineSpec.vllmApiKey }}
             {{- if $vllmApiKey }}
             - name: VLLM_API_KEY
               {{- if kindIs "string" $vllmApiKey }}
               valueFrom:
-                secretKeyRef:
-                  name: {{ $.Release.Name }}-secrets
-                  key: vllmApiKey
+                secretKeyRef: {name: {{ $root.Release.Name }}-secrets, key: vllmApiKey}
               {{- else }}
               valueFrom:
-                secretKeyRef:
-                  name: {{ $vllmApiKey.secretName }}
-                  key: {{ $vllmApiKey.secretKey }}
+                secretKeyRef: {name: {{ $vllmApiKey.secretName }}, key: {{ $vllmApiKey.secretKey }}}
               {{- end }}
             {{- end }}
-          {{- if $modelSpec.envFromSecret }}
+          {{- with $modelSpec.envFromSecret }}
           envFrom:
             - secretRef:
-                name: {{ $modelSpec.envFromSecret.name }}
+                name: {{ .name }}
           {{- end }}
           ports:
             - name: {{ printf "dc-%d-http" $i }}
               containerPort: {{ $enginePort }}
               protocol: TCP
           startupProbe:
-            httpGet:
-              path: {{ default "/health" $.Values.servingEngineSpec.startupProbe.httpGet.path }}
-              port: {{ $enginePort }}
-            initialDelaySeconds: {{ default 15 $.Values.servingEngineSpec.startupProbe.initialDelaySeconds }}
-            periodSeconds: {{ default 10 $.Values.servingEngineSpec.startupProbe.periodSeconds }}
-            failureThreshold: {{ default 360 $.Values.servingEngineSpec.startupProbe.failureThreshold }}
+            httpGet: {path: {{ default "/health" $root.Values.servingEngineSpec.startupProbe.httpGet.path }}, port: {{ $enginePort }}}
+            initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ default 10 $root.Values.servingEngineSpec.startupProbe.periodSeconds }}
+            failureThreshold: {{ default 360 $root.Values.servingEngineSpec.startupProbe.failureThreshold }}
           livenessProbe:
-            httpGet:
-              path: {{ default "/health" $.Values.servingEngineSpec.livenessProbe.httpGet.path }}
-              port: {{ $enginePort }}
-            initialDelaySeconds: {{ default 15 $.Values.servingEngineSpec.livenessProbe.initialDelaySeconds }}
-            periodSeconds: {{ default 10 $.Values.servingEngineSpec.livenessProbe.periodSeconds }}
-            failureThreshold: {{ default 3 $.Values.servingEngineSpec.livenessProbe.failureThreshold }}
+            httpGet: {path: {{ default "/health" $root.Values.servingEngineSpec.livenessProbe.httpGet.path }}, port: {{ $enginePort }}}
+            initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ default 10 $root.Values.servingEngineSpec.livenessProbe.periodSeconds }}
+            failureThreshold: {{ default 3 $root.Values.servingEngineSpec.livenessProbe.failureThreshold }}
           readinessProbe:
-            httpGet:
-              path: {{ default "/health" $.Values.servingEngineSpec.readinessProbe.httpGet.path }}
-              port: {{ $enginePort }}
-            initialDelaySeconds: {{ default 15 $.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
-            periodSeconds: {{ default 5 $.Values.servingEngineSpec.readinessProbe.periodSeconds }}
-            failureThreshold: {{ default 3 $.Values.servingEngineSpec.readinessProbe.failureThreshold }}
+            httpGet: {path: {{ default "/health" $root.Values.servingEngineSpec.readinessProbe.httpGet.path }}, port: {{ $enginePort }}}
+            initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
+            failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
           resources: {{- include "chart.resources" $decode | nindent 12 }}
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- range $k, $mount := $modelMountMap }}
-            - {{ toYaml $mount | nindent 14 | trim }}
+            {{- with (values $modelMountMap) }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
         {{- end }}
 
-      {{- if $modelSpec.imagePullSecret }}
+      {{- with $modelSpec.imagePullSecret }}
       imagePullSecrets:
-        - name: {{ $modelSpec.imagePullSecret }}
+        - name: {{ . }}
       {{- end }}
       volumes:
         - name: shm
           hostPath:
             path: /dev/shm
             type: Directory
-        {{- range $k, $volume := $modelVolumeMap }}
-        - {{ toYaml $volume | nindent 10 | trim }}
+        {{- with (values $modelVolumeMap) }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if .Values.servingEngineSpec.tolerations }}
+
+      {{- if or $root.Values.servingEngineSpec.tolerations $modelSpec.tolerations }}
       tolerations:
-        {{- toYaml .Values.servingEngineSpec.tolerations | nindent 8 }}
+        {{- with $root.Values.servingEngineSpec.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- with $modelSpec.tolerations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- else if $modelSpec.tolerations }}
-      tolerations:
-        {{- toYaml $modelSpec.tolerations | nindent 8 }}
       {{- end }}
-      {{- if $modelSpec.nodeName }}
-      nodeName: {{ $modelSpec.nodeName }}
+
+      {{- with $modelSpec.nodeName }}
+      nodeName: {{ . }}
       {{- end }}
       {{- if not (empty $modelSpec.affinity) }}
       affinity:
