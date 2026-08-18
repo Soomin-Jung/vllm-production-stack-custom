@@ -4,17 +4,17 @@
 {{- $globalEnv := $global.env | default (list) }}
 {{- $globalEnvMap := dict }}
 {{- range $e := $globalEnv }}
-{{- $_ := set $globalEnvMap $e.name $e }}
+{{-   $_ := set $globalEnvMap $e.name $e }}
 {{- end }}
 {{- $globalMounts := $global.extraVolumeMounts | default (list) }}
 {{- $globalMountMap := dict }}
 {{- range $e := $globalMounts }}
-{{- $_ := set $globalMountMap $e.name $e }}
+{{-   $_ := set $globalMountMap $e.name $e }}
 {{- end }}
 {{- $globalVolumes := $global.extraVolumes | default (list) }}
 {{- $globalVolumeMap := dict }}
 {{- range $e := $globalVolumes }}
-{{- $_ := set $globalVolumeMap $e.name $e }}
+{{-   $_ := set $globalVolumeMap $e.name $e }}
 {{- end }}
 {{- range $modelSpec := .Values.servingEngineSpec.modelSpec }}
 {{- if (hasKey $modelSpec "raySpec") }}
@@ -112,17 +112,17 @@ spec:
               {{/* Downstream: global env is the default; per-model env wins by name. */}}
               {{- $modelEnvMap := dict }}
               {{- if hasKey $modelSpec "env" }}
-              {{- range $e := $modelSpec.env }}
-              {{- $_ := set $modelEnvMap $e.name $e }}
+              {{-   range $e := $modelSpec.env }}
+              {{-     $_ := set $modelEnvMap $e.name $e }}
               {{- end }}
               {{- end }}
               {{- $mergedEnvMap := mergeOverwrite (deepCopy $globalEnvMap) $modelEnvMap }}
               {{- $mergedEnvList := list }}
               {{- range $k, $v := $mergedEnvMap }}
-              {{- $mergedEnvList = append $mergedEnvList $v }}
+              {{-   $mergedEnvList = append $mergedEnvList $v }}
               {{- end }}
               {{- with $mergedEnvList }}
-              {{- toYaml . | nindent 14 }}
+              {{-   toYaml . | nindent 14 }}
               {{- end }}
               {{- if $modelSpec.lmcacheConfig }}
               {{-   if $modelSpec.lmcacheConfig.enabled }}
@@ -212,17 +212,17 @@ spec:
               {{- end }}
               {{- $modelMountMap := dict }}
               {{- if hasKey $modelSpec "extraVolumeMounts" }}
-              {{- range $e := $modelSpec.extraVolumeMounts }}
-              {{- $_ := set $modelMountMap $e.name $e }}
+              {{-   range $e := $modelSpec.extraVolumeMounts }}
+              {{-     $_ := set $modelMountMap $e.name $e }}
               {{- end }}
               {{- end }}
               {{- $mergedMountMap := mergeOverwrite (deepCopy $globalMountMap) $modelMountMap }}
               {{- $mergedMountList := list }}
               {{- range $k, $v := $mergedMountMap }}
-              {{- $mergedMountList = append $mergedMountList $v }}
+              {{-   $mergedMountList = append $mergedMountList $v }}
               {{- end }}
               {{- with $mergedMountList }}
-              {{- toYaml . | nindent 14 }}
+              {{-   toYaml . | nindent 14 }}
               {{- end }}
               {{- end }}
         volumes:
@@ -259,17 +259,17 @@ spec:
           {{- end}}
           {{- $modelVolumeMap := dict }}
           {{- if hasKey $modelSpec "extraVolumes" }}
-          {{- range $e := $modelSpec.extraVolumes }}
-          {{- $_ := set $modelVolumeMap $e.name $e }}
+          {{-   range $e := $modelSpec.extraVolumes }}
+          {{-     $_ := set $modelVolumeMap $e.name $e }}
           {{- end }}
           {{- end }}
           {{- $mergedVolumeMap := mergeOverwrite (deepCopy $globalVolumeMap) $modelVolumeMap }}
           {{- $mergedVolumeList := list }}
           {{- range $k, $v := $mergedVolumeMap }}
-          {{- $mergedVolumeList = append $mergedVolumeList $v }}
+          {{-   $mergedVolumeList = append $mergedVolumeList $v }}
           {{- end }}
           {{- with $mergedVolumeList }}
-          {{- toYaml . | nindent 10 }}
+          {{-   toYaml . | nindent 10 }}
           {{- end}}
         {{- end}}
         {{- if $modelSpec.imagePullSecret }}
@@ -371,17 +371,17 @@ spec:
                 {{/* Downstream: global env is the default; per-model env wins by name. */}}
                 {{- $modelEnvMap := dict }}
                 {{- if hasKey $modelSpec "env" }}
-                {{- range $e := $modelSpec.env }}
-                {{- $_ := set $modelEnvMap $e.name $e }}
+                {{-   range $e := $modelSpec.env }}
+                {{-     $_ := set $modelEnvMap $e.name $e }}
                 {{- end }}
                 {{- end }}
                 {{- $mergedEnvMap := mergeOverwrite (deepCopy $globalEnvMap) $modelEnvMap }}
                 {{- $mergedEnvList := list }}
                 {{- range $k, $v := $mergedEnvMap }}
-                {{- $mergedEnvList = append $mergedEnvList $v }}
+                {{-   $mergedEnvList = append $mergedEnvList $v }}
                 {{- end }}
                 {{- with $mergedEnvList }}
-                {{- toYaml . | nindent 16 }}
+                {{-   toYaml . | nindent 16 }}
                 {{- end }}
                 {{- if $modelSpec.lmcacheConfig }}
                 {{-   if $modelSpec.lmcacheConfig.enabled }}
@@ -456,17 +456,17 @@ spec:
               {{- end }}
               {{- $modelMountMap := dict }}
               {{- if hasKey $modelSpec "extraVolumeMounts" }}
-              {{- range $e := $modelSpec.extraVolumeMounts }}
-              {{- $_ := set $modelMountMap $e.name $e }}
+              {{-   range $e := $modelSpec.extraVolumeMounts }}
+              {{-     $_ := set $modelMountMap $e.name $e }}
               {{- end }}
               {{- end }}
               {{- $mergedMountMap := mergeOverwrite (deepCopy $globalMountMap) $modelMountMap }}
               {{- $mergedMountList := list }}
               {{- range $k, $v := $mergedMountMap }}
-              {{- $mergedMountList = append $mergedMountList $v }}
+              {{-   $mergedMountList = append $mergedMountList $v }}
               {{- end }}
               {{- with $mergedMountList }}
-              {{- toYaml . | nindent 14 }}
+              {{-   toYaml . | nindent 14 }}
               {{- end }}
           volumes:
             - name: wait-script
@@ -502,17 +502,17 @@ spec:
             {{- end}}
             {{- $modelVolumeMap := dict }}
             {{- if hasKey $modelSpec "extraVolumes" }}
-            {{- range $e := $modelSpec.extraVolumes }}
-            {{- $_ := set $modelVolumeMap $e.name $e }}
+            {{-   range $e := $modelSpec.extraVolumes }}
+            {{-     $_ := set $modelVolumeMap $e.name $e }}
             {{- end }}
             {{- end }}
             {{- $mergedVolumeMap := mergeOverwrite (deepCopy $globalVolumeMap) $modelVolumeMap }}
             {{- $mergedVolumeList := list }}
             {{- range $k, $v := $mergedVolumeMap }}
-            {{- $mergedVolumeList = append $mergedVolumeList $v }}
+            {{-   $mergedVolumeList = append $mergedVolumeList $v }}
             {{- end }}
             {{- with $mergedVolumeList }}
-            {{- toYaml . | nindent 12 }}
+            {{-   toYaml . | nindent 12 }}
             {{- end}}
           {{- end}}
           {{- if $modelSpec.imagePullSecret }}
@@ -599,7 +599,8 @@ data:
     ARGS=(
       "vllm"
       "serve"
-      # Downstream: model URL is supplied by the model profile via extraArgs.
+      # 모델 경로는 profile yaml에서 관리하므로 positional modelURL 전달을 비활성화함.
+      # {{ $modelSpec.modelURL | quote }}
       "--host" "0.0.0.0"
       "--port" "{{ include "chart.container-port" . }}"
       "--distributed-executor-backend" "ray"
