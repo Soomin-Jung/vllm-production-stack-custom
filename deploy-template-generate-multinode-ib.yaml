@@ -30,7 +30,7 @@ servingEngineSpec:
           requestMemory: 500Gi
           requestGPU: 8
           rdma:
-            enabled: true
+            enable: true
             resourceName: rdma/rdma_shared_device_a
             count: 1
 
@@ -39,7 +39,7 @@ servingEngineSpec:
         k8s.v1.cni.cncf.io/networks: inference/ipoib-network
 
       rdma:
-        enabled: true
+        enable: true
         resourceName: rdma/rdma_shared_device_a
         count: 1
 
