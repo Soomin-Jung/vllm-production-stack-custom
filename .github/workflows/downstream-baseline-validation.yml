@@ -125,6 +125,18 @@ jobs:
       - name: Helm lint with upstream schema
         run: helm lint ./helm -f global-values.yaml -f /tmp/smoke-values.yaml
 
+      - name: Debug rendered Helm output on lint failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          helm template lln ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml --debug > /tmp/helm-debug.txt 2>&1
+          status=$?
+          echo "helm template --debug exit code: $status"
+          echo '----- last 350 lines of Helm debug output -----'
+          tail -n 350 /tmp/helm-debug.txt
+          exit 0
+
       - name: Render schema-compliant chart
         run: helm template lln ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml > /tmp/rendered.yaml
 
