@@ -7,11 +7,15 @@ on:
     paths:
       - helm/**
       - global-values.yaml
+      - deploy-models.yaml
+      - deploy-template-generate-multinode-ib.yaml
       - .github/workflows/downstream-baseline-validation.yml
   pull_request:
     paths:
       - helm/**
       - global-values.yaml
+      - deploy-models.yaml
+      - deploy-template-generate-multinode-ib.yaml
       - .github/workflows/downstream-baseline-validation.yml
   workflow_dispatch:
 
@@ -144,6 +148,31 @@ jobs:
           contains /tmp/rendered.yaml 'model weights mount' 'mountPath: /models'
           contains /tmp/rendered.yaml 'profiles mount' 'mountPath: /profiles'
           contains /tmp/rendered.yaml 'cache mount' 'mountPath: /vllm_cache'
+
+      - name: Verify operational values parse as Helm values
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Do not render deployment-vllm-multi.yaml here. Upstream 0.1.8 has a
+          # known multi-non-Ray document-separator whitespace edge case that is
+          # intentionally preserved until the offline production chart is compared.
+          helm template values-check ./helm -n inference \
+            -f global-values.yaml \
+            -f deploy-models.yaml \
+            --skip-schema-validation \
+            --show-only templates/deployment-router.yaml >/tmp/deploy-models-values-check.yaml
+
+          helm template values-check-ib ./helm -n inference \
+            -f global-values.yaml \
+            -f deploy-template-generate-multinode-ib.yaml \
+            --skip-schema-validation \
+            --show-only templates/deployment-router.yaml >/tmp/multinode-ib-values-check.yaml
+
+          grep -Fq -- '--config' deploy-models.yaml
+          grep -Fq -- 'NVIDIA_VISIBLE_DEVICES' deploy-models.yaml
+          grep -Fq -- 'NCCL_IB_HCA' deploy-template-generate-multinode-ib.yaml
+          grep -Fq -- 'mlx5_0,mlx5_1,mlx5_6,mlx5_7' deploy-template-generate-multinode-ib.yaml
 
       - name: Verify GPU-derived CPU and memory fallbacks
         shell: bash
