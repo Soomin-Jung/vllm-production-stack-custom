@@ -26,6 +26,21 @@ jobs:
         with:
           version: v3.17.3
 
+      - name: Render debug output
+        shell: bash
+        run: |
+          set +e
+          helm template pd-test ./helm -n inference \
+            -f global-values.yaml \
+            -f helm/examples/pd-cell-values.yaml \
+            --debug > /tmp/pd-debug.txt 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo '--- Helm debug output ---'
+            cat /tmp/pd-debug.txt
+          fi
+          exit 0
+
       - name: Helm lint P-D Cell example
         run: |
           helm lint ./helm \
@@ -76,7 +91,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Example is one Cell replica with P2:D2 and 2 GPU per engine.
           grep -Fq -- 'replicas: 1' /tmp/pd-cell.yaml
           test "$(grep -c -- 'nvidia.com/gpu: "2"' /tmp/pd-cell.yaml)" -ge 4
 
