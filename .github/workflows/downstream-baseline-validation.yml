@@ -29,12 +29,12 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
 
-      - name: Apply KV transfer block whitespace fix
+      - name: Apply KV transfer rendering fix
         shell: bash
         run: |
           set -euo pipefail
-          if grep -Fq '{{   end }}' helm/templates/deployment-vllm-multi.yaml; then
-            echo 'KV transfer whitespace fix already applied.'
+          if grep -Fq '$kvTransferConfig | toJson' helm/templates/deployment-vllm-multi.yaml; then
+            echo 'KV transfer rendering fix already applied.'
             exit 0
           fi
           python3 scripts/fix-kv-transfer-block-newline.py
@@ -42,7 +42,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add helm/templates/deployment-vllm-multi.yaml
-          git commit -m "fix: preserve KV transfer block newline"
+          git commit -m "fix: render dynamic KV transfer config safely"
           git push origin HEAD:${{ github.head_ref }}
 
   helm-validation:
