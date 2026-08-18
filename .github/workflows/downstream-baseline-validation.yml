@@ -12,52 +12,18 @@ on:
     paths:
       - helm/**
       - global-values.yaml
-      - scripts/apply-reviewed-baseline-feedback-v2.py
       - .github/workflows/downstream-baseline-validation.yml
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-review-feedback:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout PR branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-
-      - name: Apply reviewed baseline feedback
-        shell: bash
-        run: |
-          set -euo pipefail
-          if grep -Fq 'failureThreshold: 360 # default: 60' helm/values.yaml; then
-            echo 'Review feedback already applied.'
-            exit 0
-          fi
-          python3 scripts/apply-reviewed-baseline-feedback-v2.py
-          git diff --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            helm/values.yaml \
-            helm/templates/deployment-router.yaml \
-            helm/templates/deployment-vllm-multi.yaml \
-            helm/templates/ray-cluster.yaml
-          git commit -m "fix: align reviewed production baseline"
-          git push origin HEAD:${{ github.head_ref }}
-
   helm-validation:
-    needs: apply-review-feedback
-    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
@@ -86,6 +52,24 @@ jobs:
                 env:
                   - name: TZ
                     value: ModelOverride/Zone
+
+              - name: smoke-lmcache
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/unused-by-template
+                requestGPU: 1
+                requestCPU: 4
+                requestMemory: 16Gi
+                pvcStorage: 1Gi
+                vllmConfig:
+                  extraArgs:
+                    - --config
+                    - /profiles/smoke-lmcache.yaml
+                lmcacheConfig:
+                  enabled: true
+                  cpuOffloadingBufferSize: "0"
+                  enable_kv_load_failure_policy: true
 
               - name: smoke-ray
                 repository: vllm/vllm-openai
@@ -136,6 +120,11 @@ jobs:
             echo 'non-Ray modelURL unexpectedly rendered into workload output'
             exit 1
           fi
+
+          contains 'LMCache transfer flag' '--kv-transfer-config'
+          contains 'LMCache connector' 'LMCacheConnectorV1'
+          contains 'LMCache load failure policy' 'kv_load_failure_policy'
+          contains 'LMCache recompute policy' 'recompute'
 
           contains 'global VLLM cache env' 'VLLM_CACHE_ROOT'
           contains 'global VLLM cache path' '/vllm_cache/.cache/vllm'
