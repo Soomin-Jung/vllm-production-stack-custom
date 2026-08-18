@@ -5,7 +5,7 @@ on:
     branches:
       - agent/baseline-review-feedback-staging
     paths:
-      - scripts/apply-reviewed-baseline-feedback.py
+      - scripts/apply-reviewed-baseline-feedback-v2.py
       - .github/workflows/apply-reviewed-baseline-feedback.yml
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
           ref: agent/baseline-review-feedback-staging
 
       - name: Apply reviewed feedback
-        run: python3 scripts/apply-reviewed-baseline-feedback.py
+        run: python3 scripts/apply-reviewed-baseline-feedback-v2.py
 
       - name: Commit reviewed source files
         shell: bash
