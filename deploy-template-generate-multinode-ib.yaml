@@ -1,0 +1,75 @@
+# Kimi-K3 Ray + IB/GDRDMA validation template.
+# This is a test-oriented values file, not a stable production model inventory.
+servingEngineSpec:
+  modelSpec:
+    - name: test-model
+      repository: vllm/vllm-openai
+      tag: kimi-k3_ray # Kimi-K3 image with Ray installed
+
+      lmcacheConfig:
+        enabled: false
+
+      replicaCount: 1
+      requestGPU: 8
+
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.product
+              operator: In
+              values:
+                - NVIDIA-H200
+
+      vllmConfig:
+        extraArgs:
+          - --config
+          - /profiles/k8s-kimi-k3-h200-tp16.yaml
+
+      raySpec:
+        headNode:
+          requestCPU: 1
+          requestMemory: 500Gi
+          requestGPU: 8
+          rdma:
+            enabled: true
+            resourceName: rdma/rdma_shared_device_a
+            count: 1
+
+      # Using IB RDMA
+      podAnnotations:
+        k8s.v1.cni.cncf.io/networks: inference/ipoib-network
+
+      rdma:
+        enabled: true
+        resourceName: rdma/rdma_shared_device_a
+        count: 1
+
+      env:
+        # NCCL / CUDA troubleshooting switches are kept commented and enabled only when needed.
+        # - name: NCCL_IB_DISABLE
+        #   value: "0"
+        # - name: NCCL_P2P_DISABLE
+        #   value: "0"
+        # - name: NCCL_SHM_DISABLE
+        #   value: "0"
+        # - name: VLLM_TRACE_FUNCTION
+        #   value: "1"
+        # - name: CUDA_LAUNCH_BLOCKING
+        #   value: "1"
+        # - name: NCCL_SOCKET_IFNAME
+        #   value: "<interface>"
+        # - name: NCCL_IB_GID_INDEX
+        #   value: "<gid-index>"
+        # - name: NCCL_DEBUG
+        #   value: INFO
+        # - name: NCCL_DEBUG_SUBSYS
+        #   value: "<subsystems>"
+        # - name: TORCH_NCCL_ASYNC_ERROR_HANDLING
+        #   value: "1"
+        # - name: NCCL_IB_QPS_PER_CONNECTION
+        #   value: "<qps>"
+        # - name: NCCL_IB_SPLIT_DATA_ON_QPS
+        #   value: "<0-or-1>"
+
+        # Physical IB HCA mapping for the current H200 nodes.
+        - name: NCCL_IB_HCA
+          value: "mlx5_0,mlx5_1,mlx5_6,mlx5_7"
