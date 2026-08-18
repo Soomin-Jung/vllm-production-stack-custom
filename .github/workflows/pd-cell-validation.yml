@@ -1,0 +1,88 @@
+name: Validate P-D Cell Helm extension
+
+on:
+  pull_request:
+    paths:
+      - 'helm/templates/deployment-pd-cell.yaml'
+      - 'helm/templates/service-pd-cell.yaml'
+      - 'helm/examples/pd-cell-values.yaml'
+      - 'helm/tests/pdCell_test.yaml'
+      - 'helm/docs/PD_CELL_0.1.8_KO.md'
+      - '.github/workflows/pd-cell-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pd-cell-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Helm lint P-D Cell example
+        run: |
+          helm lint ./helm \
+            -f global-values.yaml \
+            -f helm/examples/pd-cell-values.yaml
+
+      - name: Render P-D Cell example
+        run: |
+          helm template pd-test ./helm -n inference \
+            -f global-values.yaml \
+            -f helm/examples/pd-cell-values.yaml \
+            > /tmp/pd-cell.yaml
+
+      - name: Verify rendered P-D Cell invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          contains() {
+            local needle="$1"
+            grep -Fq -- "$needle" /tmp/pd-cell.yaml || {
+              echo "Missing rendered P/D invariant: $needle"
+              exit 1
+            }
+          }
+
+          contains 'kind: Deployment'
+          contains 'pd-test-example-pd-p2d2-pd-cell'
+          contains 'name: pd-router'
+          contains 'name: prefill-0'
+          contains 'name: prefill-1'
+          contains 'name: decode-0'
+          contains 'name: decode-1'
+          contains 'containerPort: 8101'
+          contains 'containerPort: 8102'
+          contains 'containerPort: 8201'
+          contains 'containerPort: 8202'
+          contains 'disaggregated_prefill_orchestrated'
+          contains 'MooncakeConnector'
+          contains 'kv_producer'
+          contains 'kv_consumer'
+          contains '/profiles/example/pd-prefill.yaml'
+          contains '/profiles/example/pd-decode.yaml'
+          contains 'pd-cell: "true"'
+          contains 'targetPort: pd-router'
+
+      - name: Verify Cell replica and GPU resource model
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Example is one Cell replica with P2:D2 and 2 GPU per engine.
+          grep -Fq -- 'replicas: 1' /tmp/pd-cell.yaml
+          test "$(grep -c -- 'nvidia.com/gpu: "2"' /tmp/pd-cell.yaml)" -ge 4
+
+      - name: Upload rendered manifest
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pd-cell-rendered-manifest
+          path: /tmp/pd-cell.yaml
