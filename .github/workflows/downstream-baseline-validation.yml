@@ -12,48 +12,18 @@ on:
     paths:
       - helm/**
       - global-values.yaml
-      - scripts/fix-kv-transfer-block-newline.py
       - .github/workflows/downstream-baseline-validation.yml
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-kv-source-form:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout PR branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-
-      - name: Restore reviewed KV transfer source form
-        shell: bash
-        run: |
-          set -euo pipefail
-          if grep -Fq '"kv_role": "{{ $kv_role }}"{{ if $modelSpec.lmcacheConfig.enable_kv_load_failure_policy }}' helm/templates/deployment-vllm-multi.yaml; then
-            echo 'Reviewed KV transfer source form already applied.'
-            exit 0
-          fi
-          python3 scripts/fix-kv-transfer-block-newline.py
-          git diff --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add helm/templates/deployment-vllm-multi.yaml
-          git commit -m "fix: restore reviewed KV transfer source form"
-          git push origin HEAD:${{ github.head_ref }}
-
   helm-validation:
-    needs: apply-kv-source-form
-    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
