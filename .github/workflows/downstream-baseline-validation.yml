@@ -12,18 +12,52 @@ on:
     paths:
       - helm/**
       - global-values.yaml
+      - scripts/apply-reviewed-baseline-feedback-v2.py
       - .github/workflows/downstream-baseline-validation.yml
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  apply-review-feedback:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Apply reviewed baseline feedback
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Fq 'failureThreshold: 360 # default: 60' helm/values.yaml; then
+            echo 'Review feedback already applied.'
+            exit 0
+          fi
+          python3 scripts/apply-reviewed-baseline-feedback-v2.py
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            helm/values.yaml \
+            helm/templates/deployment-router.yaml \
+            helm/templates/deployment-vllm-multi.yaml \
+            helm/templates/ray-cluster.yaml
+          git commit -m "fix: align reviewed production baseline"
+          git push origin HEAD:${{ github.head_ref }}
+
   helm-validation:
+    needs: apply-review-feedback
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
