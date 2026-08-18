@@ -17,7 +17,7 @@ def exact_all(text, old, new, expected, label):
     return text.replace(old, new)
 
 
-# values.yaml
+# values.yaml ---------------------------------------------------------------
 path = ROOT / "helm/values.yaml"
 text = path.read_text()
 serving, router = text.split("routerSpec:\n", 1)
@@ -41,7 +41,7 @@ for old, new, label in [
     router = one(router, old, new, label)
 path.write_text(serving + "routerSpec:\n" + router)
 
-# deployment-router.yaml
+# deployment-router.yaml ----------------------------------------------------
 path = ROOT / "helm/templates/deployment-router.yaml"
 text = path.read_text()
 text = one(
@@ -69,7 +69,22 @@ def format_merge_tokens(text, expected_env, expected_mount, expected_volume):
         text = exact_all(text, old, new, expected, old)
     return text
 
-# deployment-vllm-multi.yaml
+
+def indent_merged_output(text, var_name, indent, nindent, expected, label):
+    old = (
+        f'{{{{- with ${var_name} }}}}\n'
+        + ' ' * indent
+        + f'{{{{- toYaml . | nindent {nindent} }}}}'
+    )
+    new = (
+        f'{{{{- with ${var_name} }}}}\n'
+        + ' ' * indent
+        + f'{{{{-   toYaml . | nindent {nindent} }}}}'
+    )
+    return exact_all(text, old, new, expected, label)
+
+
+# deployment-vllm-multi.yaml ----------------------------------------------
 path = ROOT / "helm/templates/deployment-vllm-multi.yaml"
 text = path.read_text()
 for old, new, label in [
@@ -79,7 +94,10 @@ for old, new, label in [
 ]:
     text = one(text, old, new, label)
 text = format_merge_tokens(text, 1, 1, 1)
-text = exact_all(text, '{{- toYaml . | nindent 10 }}', '{{-   toYaml . | nindent 10 }}', 2, 'vllm merged outputs')
+text = indent_merged_output(text, 'mergedEnvList', 10, 10, 1, 'vllm env output')
+text = indent_merged_output(text, 'mergedMountList', 10, 10, 1, 'vllm mount output')
+text = indent_merged_output(text, 'mergedVolumeList', 8, 8, 1, 'vllm volume output')
+
 start_marker = '          {{/* Downstream: model path and engine options are externalized to profile YAML. */}}\n'
 start = text.index(start_marker) + len(start_marker)
 end = text.index('          imagePullPolicy:', start)
@@ -105,7 +123,7 @@ new_runtime = '''          {{- with $modelSpec.vllmConfig }}
 text = text[:start] + new_runtime + text[end:]
 path.write_text(text)
 
-# ray-cluster.yaml
+# ray-cluster.yaml ----------------------------------------------------------
 path = ROOT / "helm/templates/ray-cluster.yaml"
 text = path.read_text()
 for old, new, label in [
@@ -115,10 +133,11 @@ for old, new, label in [
 ]:
     text = one(text, old, new, label)
 text = format_merge_tokens(text, 2, 2, 2)
-text = exact_all(text, '{{- toYaml . | nindent 14 }}', '{{-   toYaml . | nindent 14 }}', 4, 'ray nindent14 outputs')
-text = one(text, '{{- toYaml . | nindent 16 }}', '{{-   toYaml . | nindent 16 }}', 'ray worker env output')
-text = one(text, '{{- toYaml . | nindent 10 }}', '{{-   toYaml . | nindent 10 }}', 'ray head volume output')
-text = one(text, '{{- toYaml . | nindent 12 }}', '{{-   toYaml . | nindent 12 }}', 'ray worker volume output')
+text = indent_merged_output(text, 'mergedEnvList', 14, 14, 1, 'ray head env output')
+text = indent_merged_output(text, 'mergedEnvList', 16, 16, 1, 'ray worker env output')
+text = indent_merged_output(text, 'mergedMountList', 14, 14, 2, 'ray mount outputs')
+text = indent_merged_output(text, 'mergedVolumeList', 10, 10, 1, 'ray head volume output')
+text = indent_merged_output(text, 'mergedVolumeList', 12, 12, 1, 'ray worker volume output')
 text = one(
     text,
     '      # Downstream: model URL is supplied by the model profile via extraArgs.\n      "--host" "0.0.0.0"\n',
