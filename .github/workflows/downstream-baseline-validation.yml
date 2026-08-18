@@ -12,18 +12,48 @@ on:
     paths:
       - helm/**
       - global-values.yaml
+      - scripts/fix-kv-transfer-block-newline.py
       - .github/workflows/downstream-baseline-validation.yml
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  apply-kv-whitespace-fix:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Apply KV transfer block whitespace fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Fq '{{   end }}' helm/templates/deployment-vllm-multi.yaml; then
+            echo 'KV transfer whitespace fix already applied.'
+            exit 0
+          fi
+          python3 scripts/fix-kv-transfer-block-newline.py
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add helm/templates/deployment-vllm-multi.yaml
+          git commit -m "fix: preserve KV transfer block newline"
+          git push origin HEAD:${{ github.head_ref }}
+
   helm-validation:
+    needs: apply-kv-whitespace-fix
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
@@ -155,9 +185,6 @@ jobs:
                     - /profiles/fallback.yaml
           EOF
 
-          # Upstream 0.1.8 values.schema.json still requires requestCPU,
-          # requestMemory and pvcStorage. Remove only the schema copy in this
-          # ephemeral CI checkout to test the customized helper fallback itself.
           mv helm/values.schema.json /tmp/values.schema.json
           trap 'mv /tmp/values.schema.json helm/values.schema.json' EXIT
           helm template lln ./helm -n inference -f global-values.yaml -f /tmp/fallback-values.yaml > /tmp/fallback-rendered.yaml
