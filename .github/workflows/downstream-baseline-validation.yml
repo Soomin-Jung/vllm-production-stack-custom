@@ -20,7 +20,7 @@ permissions:
   contents: write
 
 jobs:
-  apply-kv-whitespace-fix:
+  apply-kv-source-form:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -29,12 +29,12 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
 
-      - name: Apply KV transfer rendering fix
+      - name: Restore reviewed KV transfer source form
         shell: bash
         run: |
           set -euo pipefail
-          if grep -Fq '$kvTransferConfig | toJson' helm/templates/deployment-vllm-multi.yaml; then
-            echo 'KV transfer rendering fix already applied.'
+          if grep -Fq '"kv_role": "{{ $kv_role }}"{{ if $modelSpec.lmcacheConfig.enable_kv_load_failure_policy }}' helm/templates/deployment-vllm-multi.yaml; then
+            echo 'Reviewed KV transfer source form already applied.'
             exit 0
           fi
           python3 scripts/fix-kv-transfer-block-newline.py
@@ -42,11 +42,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add helm/templates/deployment-vllm-multi.yaml
-          git commit -m "fix: render dynamic KV transfer config safely"
+          git commit -m "fix: restore reviewed KV transfer source form"
           git push origin HEAD:${{ github.head_ref }}
 
   helm-validation:
-    needs: apply-kv-whitespace-fix
+    needs: apply-kv-source-form
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -83,24 +83,6 @@ jobs:
                   - name: TZ
                     value: ModelOverride/Zone
 
-              - name: smoke-lmcache
-                repository: vllm/vllm-openai
-                tag: latest
-                replicaCount: 1
-                modelURL: /models/unused-by-template
-                requestGPU: 1
-                requestCPU: 4
-                requestMemory: 16Gi
-                pvcStorage: 1Gi
-                vllmConfig:
-                  extraArgs:
-                    - --config
-                    - /profiles/smoke-lmcache.yaml
-                lmcacheConfig:
-                  enabled: true
-                  cpuOffloadingBufferSize: "0"
-                  enable_kv_load_failure_policy: true
-
               - name: smoke-ray
                 repository: vllm/vllm-openai
                 tag: latest
@@ -122,23 +104,37 @@ jobs:
                     requestMemory: 4Gi
           EOF
 
+          cat > /tmp/lmcache-values.yaml <<'EOF'
+          servingEngineSpec:
+            modelSpec:
+              - name: smoke-lmcache
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/unused-by-template
+                requestGPU: 1
+                requestCPU: 4
+                requestMemory: 16Gi
+                pvcStorage: 1Gi
+                vllmConfig:
+                  extraArgs:
+                    - --config
+                    - /profiles/smoke-lmcache.yaml
+                lmcacheConfig:
+                  enabled: true
+                  cpuOffloadingBufferSize: "0"
+                  enable_kv_load_failure_policy: true
+          EOF
+
       - name: Helm lint with upstream schema
-        run: helm lint ./helm -f global-values.yaml -f /tmp/smoke-values.yaml
-
-      - name: Debug rendered Helm output on lint failure
-        if: failure()
-        shell: bash
         run: |
-          set +e
-          helm template lln ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml --debug > /tmp/helm-debug.txt 2>&1
-          status=$?
-          echo "helm template --debug exit code: $status"
-          echo '----- last 350 lines of Helm debug output -----'
-          tail -n 350 /tmp/helm-debug.txt
-          exit 0
+          helm lint ./helm -f global-values.yaml -f /tmp/smoke-values.yaml
+          helm lint ./helm -f global-values.yaml -f /tmp/lmcache-values.yaml
 
-      - name: Render schema-compliant chart
-        run: helm template lln ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml > /tmp/rendered.yaml
+      - name: Render schema-compliant charts
+        run: |
+          helm template lln ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml > /tmp/rendered.yaml
+          helm template lln-lmcache ./helm -n inference -f global-values.yaml -f /tmp/lmcache-values.yaml > /tmp/lmcache-rendered.yaml
 
       - name: Verify production runtime invariants
         shell: bash
@@ -146,37 +142,38 @@ jobs:
           set -euo pipefail
 
           contains() {
-            local label="$1"
-            local needle="$2"
+            local file="$1"
+            local label="$2"
+            local needle="$3"
             echo "Checking: $label"
-            grep -Fq -- "$needle" /tmp/rendered.yaml || {
+            grep -Fq -- "$needle" "$file" || {
               echo "Missing rendered invariant: $label ($needle)"
               exit 1
             }
           }
 
-          contains 'requestGPU=0 model rendered' 'lln-smoke'
-          contains 'profile flag rendered' '--config'
-          contains 'non-Ray profile path rendered' '/profiles/smoke.yaml'
+          contains /tmp/rendered.yaml 'requestGPU=0 model rendered' 'lln-smoke'
+          contains /tmp/rendered.yaml 'profile flag rendered' '--config'
+          contains /tmp/rendered.yaml 'non-Ray profile path rendered' '/profiles/smoke.yaml'
           if grep -Fq -- '/models/unused-by-template' /tmp/rendered.yaml; then
             echo 'non-Ray modelURL unexpectedly rendered into workload output'
             exit 1
           fi
 
-          contains 'LMCache transfer flag' '--kv-transfer-config'
-          contains 'LMCache connector' 'LMCacheConnectorV1'
-          contains 'LMCache load failure policy' 'kv_load_failure_policy'
-          contains 'LMCache recompute policy' 'recompute'
+          contains /tmp/lmcache-rendered.yaml 'LMCache transfer flag' '--kv-transfer-config'
+          contains /tmp/lmcache-rendered.yaml 'LMCache connector' 'LMCacheConnectorV1'
+          contains /tmp/lmcache-rendered.yaml 'LMCache load failure policy' 'kv_load_failure_policy'
+          contains /tmp/lmcache-rendered.yaml 'LMCache recompute policy' 'recompute'
 
-          contains 'global VLLM cache env' 'VLLM_CACHE_ROOT'
-          contains 'global VLLM cache path' '/vllm_cache/.cache/vllm'
-          contains 'per-model env override' 'ModelOverride/Zone'
-          contains 'host shm path' 'path: /dev/shm'
-          contains 'hostPath directory type' 'type: Directory'
-          contains 'Ray shm default' 'sizeLimit: 100Gi'
-          contains 'model weights mount' 'mountPath: /models'
-          contains 'profiles mount' 'mountPath: /profiles'
-          contains 'cache mount' 'mountPath: /vllm_cache'
+          contains /tmp/rendered.yaml 'global VLLM cache env' 'VLLM_CACHE_ROOT'
+          contains /tmp/rendered.yaml 'global VLLM cache path' '/vllm_cache/.cache/vllm'
+          contains /tmp/rendered.yaml 'per-model env override' 'ModelOverride/Zone'
+          contains /tmp/rendered.yaml 'host shm path' 'path: /dev/shm'
+          contains /tmp/rendered.yaml 'hostPath directory type' 'type: Directory'
+          contains /tmp/rendered.yaml 'Ray shm default' 'sizeLimit: 100Gi'
+          contains /tmp/rendered.yaml 'model weights mount' 'mountPath: /models'
+          contains /tmp/rendered.yaml 'profiles mount' 'mountPath: /profiles'
+          contains /tmp/rendered.yaml 'cache mount' 'mountPath: /vllm_cache'
 
       - name: Verify GPU-derived CPU and memory fallbacks
         shell: bash
@@ -197,6 +194,8 @@ jobs:
                     - /profiles/fallback.yaml
           EOF
 
+          # Upstream 0.1.8 schema still requires these fields. Remove the schema
+          # only in the ephemeral checkout to validate the customized fallback.
           mv helm/values.schema.json /tmp/values.schema.json
           trap 'mv /tmp/values.schema.json helm/values.schema.json' EXIT
           helm template lln ./helm -n inference -f global-values.yaml -f /tmp/fallback-values.yaml > /tmp/fallback-rendered.yaml
