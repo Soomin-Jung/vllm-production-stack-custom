@@ -1,0 +1,33 @@
+{{- $pdCellSpec := .Values.pdCellSpec | default dict -}}
+{{- if ($pdCellSpec.enabled | default false) -}}
+{{- range $modelSpec := ($pdCellSpec.models | default (list)) }}
+{{- $name := required "pdCellSpec.models[].name is required" $modelSpec.name -}}
+{{- $router := required (printf "pdCellSpec model %s: router is required" $name) $modelSpec.router -}}
+{{- $routerPort := int (default 8000 $router.port) -}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ $.Release.Name }}-{{ $name }}-engine-service"
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    pd-cell: "true"
+    pd-deployment: {{ $name | quote }}
+    {{- include "chart.engineLabels" $ | nindent 4 }}
+  {{- with $modelSpec.serviceAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ default "ClusterIP" $modelSpec.serviceType }}
+  ports:
+    - name: pd-router
+      port: {{ default $.Values.servingEngineSpec.servicePort $modelSpec.servicePort }}
+      targetPort: pd-router
+      protocol: TCP
+  selector:
+    model: {{ $name | quote }}
+    helm-release-name: {{ $.Release.Name | quote }}
+    pd-cell: "true"
+{{- end }}
+{{- end }}
