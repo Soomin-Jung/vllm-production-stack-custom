@@ -1,0 +1,56 @@
+name: Apply production render verification note
+
+on:
+  push:
+    branches:
+      - agent/production-0.1.8-baseline-final
+    paths:
+      - .github/workflows/apply-render-validation-note.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/production-0.1.8-baseline-final
+
+      - name: Record verified multi-model render behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('README.md')
+          text = path.read_text(encoding='utf-8')
+
+          old = ('- **Upstream 0.1.8 non-Ray multi-model document separation must be verified against the offline production chart.** '
+                 'A synthetic render with multiple non-Ray `modelSpec` entries can concatenate a document separator and the next `apiVersion` (`---apiVersion`) because of whitespace trimming at the end of `deployment-vllm-multi.yaml`. '
+                 'The baseline leaves this source unchanged until the exact offline production render is compared.\n')
+          if old not in text:
+              raise RuntimeError('expected technical-debt note not found')
+          text = text.replace(old, '', 1)
+
+          validation_anchor = ('3. A separate render with the upstream schema temporarily excluded to exercise the customized GPU-derived CPU/memory fallback '
+                               '(`2 GPU → 8000m / 20Gi`).\n')
+          addition = ('4. The actual offline production multi-model render was manually verified: each non-Ray Deployment is separated as its own YAML document '
+                      '(`---` followed by `# Source`, `apiVersion`, and `kind: Deployment`), with no separator/string concatenation. '
+                      'The earlier `---apiVersion` observation was limited to a synthetic fixture and is not treated as a production baseline defect.\n')
+          if addition not in text:
+              if validation_anchor not in text:
+                  raise RuntimeError('validation anchor not found')
+              text = text.replace(validation_anchor, validation_anchor + addition, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: record verified multi-model render"
+          git push origin HEAD:agent/production-0.1.8-baseline-final
