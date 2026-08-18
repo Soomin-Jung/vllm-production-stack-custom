@@ -40,7 +40,7 @@ deploy-models.yaml               model-specific final overrides
 /profiles/*.yaml                 vLLM runtime profiles referenced through extraArgs
 ```
 
-`deploy-models.yaml` and the production profile set are separate operational inputs and are not yet captured by this baseline commit series.
+`deploy-models.yaml` is captured as a representative production `modelSpec` pattern rather than a complete model inventory, because the deployed model list changes frequently. Production `/profiles/*.yaml` remain external hostPath runtime configuration and are intentionally not duplicated here until exact offline profile contents are captured.
 
 ### Downstream change map
 
@@ -71,8 +71,17 @@ The production convention is to pass the model profile through `vllmConfig.extra
 
 Ray follows the same profile direction for the model path: the generated `vllm-entrypoint.sh` no longer injects `modelSpec.modelURL` as the positional model argument. The remaining Ray command construction is retained from the 0.1.8 baseline.
 
+#### Operational model values and profile lifecycle
+
+`deploy-models.yaml` keeps only the Kubernetes/model-placement inputs that must vary per deployment: image/tag, replica count, GPU request, node placement, optional LMCache controls, `vllmConfig.extraArgs`, and exceptional per-model environment overrides. The representative shared-GPU pooling pattern intentionally uses `requestGPU: 0`, pins a node with `nodeName`, and sets `NVIDIA_VISIBLE_DEVICES` explicitly.
+
+All non-dynamic vLLM engine arguments are centralized in a single profile YAML referenced by `--config /profiles/<profile>.yaml`. Updating that hostPath profile does not require a Helm upgrade; the change takes effect when pods that reference the profile are restarted. Dynamic values that must be rendered from Helm, such as the current KV transfer role/failure policy path, remain in the template rather than the profile.
+
+`deploy-template-generate-multinode-ib.yaml` is tracked separately as a Kimi-K3 Ray + IB/GDRDMA validation values file. It represents the current H200 multi-node test shape, including the IPoIB network annotation, RDMA resource request shape, profile reference, and the physical `NCCL_IB_HCA=mlx5_0,mlx5_1,mlx5_6,mlx5_7` mapping. Troubleshooting NCCL/CUDA switches stay commented until explicitly needed.
+
 ### Known operational notes / technical debt
 
+- **Upstream 0.1.8 non-Ray multi-model document separation must be verified against the offline production chart.** A synthetic render with multiple non-Ray `modelSpec` entries can concatenate a document separator and the next `apiVersion` (`---apiVersion`) because of whitespace trimming at the end of `deployment-vllm-multi.yaml`. The baseline leaves this source unchanged until the exact offline production render is compared.
 - **`values.schema.json` does not match the customized resource helper.** Upstream 0.1.8 still requires `requestCPU`, `requestMemory`, and `pvcStorage` for every `modelSpec`. Therefore the GPU-derived CPU/memory fallback cannot be reached through normal schema validation when those keys are omitted, unless the schema is later updated or schema validation is bypassed. CI tests both the upstream-schema path and the helper fallback separately.
 - **`requestGPU: 0` is intentionally supported** for special shared-GPU workloads such as embedding/reranker deployments. If CPU/memory are also omitted, the fallback becomes `0m` / `0Gi`; those workloads should explicitly provide CPU and memory requests.
 - **Non-Ray `/dev/shm` uses hostPath `/dev/shm`.** This removes the prior TP-only mount condition and exposes host shared-memory capacity to every vLLM pod, but also reduces pod-level isolation and allows same-node workloads to contend for host shared memory.

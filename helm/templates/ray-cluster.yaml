@@ -599,7 +599,7 @@ data:
     ARGS=(
       "vllm"
       "serve"
-      # 모델 경로는 profile yaml에서 관리하므로 positional modelURL 전달을 비활성화함.
+      # modelURL positional 인자는 profile yaml에서 관리하므로 아래 행은 비활성화.
       # {{ $modelSpec.modelURL | quote }}
       "--host" "0.0.0.0"
       "--port" "{{ include "chart.container-port" . }}"
