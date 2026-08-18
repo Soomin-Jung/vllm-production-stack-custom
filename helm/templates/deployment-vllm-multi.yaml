@@ -154,8 +154,8 @@ spec:
              "kv_role": "{{ $kv_role }}"{{ if $modelSpec.lmcacheConfig.enable_kv_load_failure_policy }},
              "kv_load_failure_policy": "recompute"{{ end }}
             }
-          {{-   end }}
-          {{- end }}
+          {{   end }}
+          {{ end }}
           imagePullPolicy: "{{ .Values.servingEngineSpec.imagePullPolicy | default "Always" }}"
           env:
           - name: POD_IP
