@@ -1,0 +1,54 @@
+# Representative production modelSpec patterns.
+# This file is intentionally minimal: actual model entries change frequently.
+servingEngineSpec:
+  modelSpec:
+    - name: deepseek-v4-pro-h200-tp2-dp4
+      repository: vllm/vllm-openai
+      tag: v0.25.1
+
+      lmcacheConfig:
+        enabled: false
+        # cpuOffloadingBufferSize: 200
+        # enable_kv_load_failure_policy: true
+
+      replicaCount: 5
+      requestGPU: 8
+
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.product
+              operator: In
+              values:
+                - NVIDIA-H200
+                # - NVIDIA-H100-NVL
+                # - NVIDIA-L40S
+
+      vllmConfig:
+        extraArgs:
+          - --config
+          - /profiles/k8s-deepseek-v4-pro-h200-tp2-dp4.yaml
+
+      env: []
+      # 필요시:
+      # env:
+      #   - name: 변수명
+      #     value: 값
+
+    # Shared GPU로 배포되는 pooling 모델 대표 패턴.
+    # nodeName으로 L40S 노드를 직접 지정하고 Kubernetes GPU resource request는 0으로 둔다.
+    - name: shared-baai-bge-m3-tp4
+      repository: vllm/vllm-openai
+      tag: v0.24.0
+
+      nodeName: dtgs0001 # L40S Node 명시하여 스케줄러를 거치지 않고 바로 실행
+      replicaCount: 1
+      requestGPU: 0
+
+      vllmConfig:
+        extraArgs:
+          - --config
+          - /profiles/k8s-baai-bge-m3-l40s-tp4.yaml
+
+      env: # DO NOT FIX IT
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "0,1,2,3"
