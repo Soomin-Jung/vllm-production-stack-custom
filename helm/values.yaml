@@ -383,11 +383,10 @@ routerSpec:
   # -- router resource requests and limits
   resources:
     requests:
-      cpu: 400m
-      memory: 500Mi
+      cpu: 1000m
+      memory: 5Gi
     limits:
-      cpu: 1000m # default: unset
-      memory: 5Gi # default: 500Mi
+      memory: 5Gi
 
   # -- Customized labels for the router deployment
   labels:

@@ -107,8 +107,8 @@ jobs:
 
       - name: Render schema-compliant charts
         run: |
-          helm template lln ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml > /tmp/rendered.yaml
-          helm template lln-lmcache ./helm -n inference -f global-values.yaml -f /tmp/lmcache-values.yaml > /tmp/lmcache-rendered.yaml
+          helm template llm ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml > /tmp/rendered.yaml
+          helm template llm-lmcache ./helm -n inference -f global-values.yaml -f /tmp/lmcache-values.yaml > /tmp/lmcache-rendered.yaml
 
       - name: Verify production runtime invariants
         shell: bash
@@ -126,7 +126,7 @@ jobs:
             }
           }
 
-          contains /tmp/rendered.yaml 'requestGPU=0 model rendered' 'lln-smoke'
+          contains /tmp/rendered.yaml 'requestGPU=0 model rendered' 'llm-smoke'
           contains /tmp/rendered.yaml 'profile flag rendered' '--config'
           contains /tmp/rendered.yaml 'non-Ray profile path rendered' '/profiles/smoke.yaml'
           if grep -Fq -- '/models/unused-by-template' /tmp/rendered.yaml; then
@@ -154,9 +154,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Do not render deployment-vllm-multi.yaml here. Upstream 0.1.8 has a
-          # known multi-non-Ray document-separator whitespace edge case that is
-          # intentionally preserved until the offline production chart is compared.
+          # The repository keeps the upstream source-tree schema, while the
+          # packaged 0.1.8 production chart excludes values.schema.json via
+          # .helmignore. Parse the representative operational values here and
+          # rely on the separately completed offline packaged-chart manifest
+          # comparison for full production fidelity.
           helm template values-check ./helm -n inference \
             -f global-values.yaml \
             -f deploy-models.yaml \
@@ -197,7 +199,7 @@ jobs:
           # only in the ephemeral checkout to validate the customized fallback.
           mv helm/values.schema.json /tmp/values.schema.json
           trap 'mv /tmp/values.schema.json helm/values.schema.json' EXIT
-          helm template lln ./helm -n inference -f global-values.yaml -f /tmp/fallback-values.yaml > /tmp/fallback-rendered.yaml
+          helm template llm ./helm -n inference -f global-values.yaml -f /tmp/fallback-values.yaml > /tmp/fallback-rendered.yaml
           mv /tmp/values.schema.json helm/values.schema.json
           trap - EXIT
 
