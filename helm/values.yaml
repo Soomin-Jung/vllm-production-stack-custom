@@ -64,7 +64,7 @@ servingEngineSpec:
   #     mountPath: /tmp
   # - initContainer: (optional, list of objects) The configuration for the init container to be run before the main container.
   #   - name: (string) The name of the init container, e.g., "init"
-  #   - image: (string) The Docker image for the init container, e.g., "busybox:latest"
+  #   - image: (string) The image for the init container, e.g., "busybox:latest"
   #   - command: (optional, list) The command to run in the init container, e.g., ["sh", "-c"]
   #   - args: (optional, list) Additional arguments to pass to the command, e.g., ["ls"]
   #   - env: (optional, list) List of environment variables to set in the container, each being a map with:
@@ -383,11 +383,10 @@ routerSpec:
   # -- router resource requests and limits
   resources:
     requests:
-      cpu: 400m
-      memory: 500Mi
+      cpu: 1000m
+      memory: 5Gi
     limits:
-      cpu: 1000m # default: unset
-      memory: 5Gi # default: 500Mi
+      memory: 5Gi
 
   # -- Customized labels for the router deployment
   labels:
@@ -411,7 +410,7 @@ routerSpec:
       # kubernetes.io/ingress.class: nginx
       # kubernetes.io/tls-acme: "true"
 
-    # The list of hostnames to be covered with this ingress record.
+    # The list of hostnames to be covered by this ingress record.
     hosts:
       - host: vllm-router.local
         paths:
