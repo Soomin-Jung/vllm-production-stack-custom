@@ -1,6 +1,6 @@
 # vLLM Production Stack: reference stack for production vLLM deployment
 
-> **Internal downstream production baseline**  
+> **Internal downstream production baseline**
 > This repository preserves the upstream `vllm-project/production-stack` Git history and layers the currently operated vLLM Production Stack 0.1.8 customizations on top of the official release.
 
 ## Production 0.1.8 downstream baseline
@@ -18,7 +18,7 @@
 The production environment does not rely on one monolithic values file. Common runtime values and model-specific deployment values are layered in Helm order:
 
 ```bash
-helm install lln \
+helm install llm \
   -n inference \
   ./vllm-stack-0.1.8/ \
   -f ./vllm-stack-0.1.8/values.yaml \
@@ -87,7 +87,7 @@ All non-dynamic vLLM engine arguments are centralized in a single profile YAML r
 - **Ray `/dev/shm` remains memory-backed `emptyDir`**, with the default raised from `20Gi` to `100Gi`; `modelSpec.shmSize` can still override it.
 - **LMCache is legacy-disabled in the current production path.** The template hook remains, but current model deployments use `lmcacheConfig.enabled: false`. `LMCACHE_IP=status.hostIP` remains in global values from the standalone LMCache experiment and is currently unused.
 - **`VLLM_ALLOW_RUNTIME_LORA_UPDATING=1` is still present for the current baseline.** LoRA adapters are not supported in the current production environment, and this setting prevents use of `api_server_count > 1`; removing it requires a coordinated vLLM pod restart.
-- **Router limits vary by environment.** This baseline records `cpu: 1000m` and `memory: 5Gi`; some deployments intentionally override `routerSpec.resources.limits` with `{}`.
+- **Router resources are pinned to the production baseline.** Requests are `cpu: 1000m` and `memory: 5Gi`; limits contain `memory: 5Gi` and intentionally do not set a CPU limit.
 - Host paths in `global-values.yaml` represent the normalized intended production paths. Confirm them against the offline node filesystem before using this repository as a deployment source.
 
 ### Validation
@@ -198,7 +198,7 @@ helm uninstall vllm
 The Grafana dashboard provides the following insights:
 
 1. **Available vLLM Instances**: Displays the number of healthy instances.
-2. **Request Latency Distribution**: Monitors end-to-end response times.
+2. **Request Latency Distribution**: Visualizes end-to-end request latency.
 3. **Time-to-First-Token (TTFT) Distribution**: Monitors response times for token generation.
 4. **Number of Running Requests**: Tracks the number of active requests per instance.
 5. **Number of Pending Requests**: Tracks requests waiting to be processed.
