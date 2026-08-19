@@ -1,4 +1,21 @@
 {{- if .Values.servingEngineSpec.enableEngine -}}
+{{/* Downstream: shared environment, volumes and mounts from global-values.yaml. */}}
+{{- $global := .Values.global | default dict }}
+{{- $globalEnv := $global.env | default (list) }}
+{{- $globalEnvMap := dict }}
+{{- range $e := $globalEnv }}
+{{-   $_ := set $globalEnvMap $e.name $e }}
+{{- end }}
+{{- $globalMounts := $global.extraVolumeMounts | default (list) }}
+{{- $globalMountMap := dict }}
+{{- range $e := $globalMounts }}
+{{-   $_ := set $globalMountMap $e.name $e }}
+{{- end }}
+{{- $globalVolumes := $global.extraVolumes | default (list) }}
+{{- $globalVolumeMap := dict }}
+{{- range $e := $globalVolumes }}
+{{-   $_ := set $globalVolumeMap $e.name $e }}
+{{- end }}
 {{- range $modelSpec := .Values.servingEngineSpec.modelSpec }}
 {{- if not (hasKey $modelSpec "raySpec") }}
 {{- $kv_role := "kv_both" }}
@@ -13,7 +30,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "{{ .Release.Name }}-{{$modelSpec.name}}-deployment-vllm"
+  name: "{{ .Release.Name }}-{{$modelSpec.name}}"
   namespace: {{ .Release.Namespace }}
   {{- if hasKey $modelSpec "annotations" }}
   annotations:
@@ -116,58 +133,12 @@ spec:
           - "vllm"
           {{- end }}
           - "serve"
-          - {{ $modelSpec.modelURL | quote }}
           - "--host"
           - "0.0.0.0"
           - "--port"
           - {{ include "chart.container-port" . | quote }}
-          {{- if $modelSpec.enableLoRA }}
-          - "--enable-lora"
-          {{- end }}
-          {{- if $modelSpec.enableTool }}
-          - "--enable-auto-tool-choice"
-          {{- end }}
-          {{- if $modelSpec.toolCallParser }}
-          - "--tool-call-parser"
-          - {{ $modelSpec.toolCallParser | quote }}
-          {{- end }}
+          {{/* Downstream: model path and engine options are externalized to profile YAML. */}}
           {{- with $modelSpec.vllmConfig }}
-          {{-   if hasKey . "enableChunkedPrefill" }}
-          {{-     if .enableChunkedPrefill }}
-          - "--enable-chunked-prefill"
-          {{-     else }}
-          - "--no-enable-chunked-prefill"
-          {{-     end }}
-          {{-   end }}
-          {{-   if .enablePrefixCaching }}
-          - "--enable-prefix-caching"
-          {{-   else }}
-          - "--no-enable-prefix-caching"
-          {{-   end }}
-          {{-   if hasKey . "maxModelLen" }}
-          - "--max-model-len"
-          - {{ .maxModelLen | quote }}
-          {{-   end }}
-          {{-   if hasKey . "dtype" }}
-          - "--dtype"
-          - {{ .dtype | quote }}
-          {{-   end }}
-          {{-   if hasKey . "tensorParallelSize" }}
-          - "--tensor-parallel-size"
-          - {{ .tensorParallelSize | quote }}
-          {{-   end }}
-          {{-   if hasKey . "maxNumSeqs" }}
-          - "--max-num-seqs"
-          - {{ .maxNumSeqs | quote }}
-          {{-   end }}
-          {{-   if hasKey . "gpuMemoryUtilization" }}
-          - "--gpu_memory_utilization"
-          - {{ .gpuMemoryUtilization | quote }}
-          {{-   end }}
-          {{-   if hasKey . "maxLoras" }}
-          - "--max_loras"
-          - {{ .maxLoras | quote }}
-          {{-   end }}
           {{-   if .extraArgs }}
           {{-     range .extraArgs }}
           - {{ . | quote }}
@@ -176,32 +147,17 @@ spec:
           {{- end }}
           {{- if $modelSpec.lmcacheConfig }}
           {{-   if $modelSpec.lmcacheConfig.enabled }}
-          {{-     if hasKey $modelSpec.lmcacheConfig "enablePD" }}
           - "--kv-transfer-config"
-          - '{"kv_connector":"LMCacheConnectorV1","kv_role":"{{ $kv_role }}","kv_connector_extra_config":{"discard_partial_chunks": false, "lmcache_rpc_port": {{ $modelSpec.lmcacheConfig.nixlRole | quote }}}}'
-          {{-     else if and (hasKey $modelSpec.vllmConfig "v0") (eq (toString $modelSpec.vllmConfig.v0) "1") }}
-          - "--kv-transfer-config"
-          - '{"kv_connector":"LMCacheConnector","kv_role":"{{ $kv_role }}"}'
-          {{-     else }}
-          - "--kv-transfer-config"
-          - '{"kv_connector":"LMCacheConnectorV1","kv_role":"{{ $kv_role }}"}'
-          {{-     end }}
+          {{/* kv_role 및 실패 정책은 Helm 렌더 시 동적으로 결정되므로 KV transfer config는 profile이 아닌 template에서 관리 */}}
+          - |
+            {"kv_connector": "LMCacheConnectorV1",
+             "kv_role": "{{ $kv_role }}"{{ if $modelSpec.lmcacheConfig.enable_kv_load_failure_policy }},
+             "kv_load_failure_policy": "recompute"{{ end }}
+            }
           {{-   end }}
-          {{- end }}
-          {{- if $modelSpec.chatTemplate }}
-          - "--chat-template"
-          - "/templates/{{ $modelSpec.chatTemplate }}"
           {{- end }}
           imagePullPolicy: "{{ .Values.servingEngineSpec.imagePullPolicy | default "Always" }}"
           env:
-          - name: PYTHONHASHSEED
-            value: "123"
-          - name: HF_HOME
-            {{- if hasKey $modelSpec "pvcStorage" }}
-            value: /data
-            {{- else }}
-            value: /tmp
-            {{- end }}
           - name: POD_IP
             valueFrom:
               fieldRef:
@@ -247,8 +203,20 @@ spec:
                 key: {{ $vllmApiKey.secretKey }}
             {{- end }}
           {{- end }}
-          {{- with $modelSpec.env }}
-          {{- toYaml . | nindent 10 }}
+          {{/* Downstream: global env is the default; per-model env wins by name. */}}
+          {{- $modelEnvMap := dict }}
+          {{- if hasKey $modelSpec "env" }}
+          {{-   range $e := $modelSpec.env }}
+          {{-     $_ := set $modelEnvMap $e.name $e }}
+          {{- end }}
+          {{- end }}
+          {{- $mergedEnvMap := mergeOverwrite (deepCopy $globalEnvMap) $modelEnvMap }}
+          {{- $mergedEnvList := list }}
+          {{- range $k, $v := $mergedEnvMap }}
+          {{-   $mergedEnvList = append $mergedEnvList $v }}
+          {{- end }}
+          {{- with $mergedEnvList }}
+          {{-   toYaml . | nindent 10 }}
           {{- end }}
           {{- if $modelSpec.lmcacheConfig }}
           {{-   if $modelSpec.lmcacheConfig.enabled }}
@@ -372,19 +340,13 @@ spec:
               containerPort: 9999
           {{- include "chart.probes" . | indent 10 }}
           resources: {{- include "chart.resources" $modelSpec | nindent 12 }}
-          {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumeMounts") }}
           volumeMounts:
-          {{- end }}
           {{- if hasKey $modelSpec "pvcStorage" }}
           - name: {{ .Release.Name }}-storage
             mountPath: /data
           {{- end }}
-          {{- with $modelSpec.vllmConfig }}
-          {{- if hasKey $modelSpec.vllmConfig "tensorParallelSize"}}
           - name: shm
             mountPath: /dev/shm
-          {{- end}}
-          {{- end}}
           {{- if $modelSpec.chatTemplate }}
           {{- if hasKey $modelSpec "chatTemplateConfigMap" }}
           - name: {{ .Release.Name }}-{{ $modelSpec.name }}-chat-templates
@@ -394,8 +356,19 @@ spec:
             mountPath: /templates
           {{- end }}
           {{- end }}
+          {{- $modelMountMap := dict }}
           {{- if hasKey $modelSpec "extraVolumeMounts" }}
-          {{- toYaml $modelSpec.extraVolumeMounts | nindent 10 }}
+          {{-   range $e := $modelSpec.extraVolumeMounts }}
+          {{-     $_ := set $modelMountMap $e.name $e }}
+          {{- end }}
+          {{- end }}
+          {{- $mergedMountMap := mergeOverwrite (deepCopy $globalMountMap) $modelMountMap }}
+          {{- $mergedMountList := list }}
+          {{- range $k, $v := $mergedMountMap }}
+          {{-   $mergedMountList = append $mergedMountList $v }}
+          {{- end }}
+          {{- with $mergedMountList }}
+          {{-   toYaml . | nindent 10 }}
           {{- end }}
           {{- if hasKey $.Values "sharedPvcStorage" }}
           - name: {{ .Release.Name }}-shared-pvc-storage
@@ -418,9 +391,7 @@ spec:
       imagePullSecrets:
         - name: {{ $modelSpec.imagePullSecret }}
       {{- end }}
-      {{- if or (hasKey $modelSpec "pvcStorage") (and $modelSpec.vllmConfig (hasKey $modelSpec.vllmConfig "tensorParallelSize")) (hasKey $modelSpec "chatTemplate") (hasKey $modelSpec "extraVolumes") (hasKey $.Values "sharedPvcStorage") }}
       volumes:
-      {{- end}}
         {{- if hasKey $modelSpec "pvcStorage" }}
         - name: {{ .Release.Name }}-storage
         {{- if and (kindIs "map" $modelSpec.pvcStorage) (hasKey $modelSpec.pvcStorage "emptyDir") }}
@@ -436,14 +407,10 @@ spec:
           persistentVolumeClaim:
             claimName: "{{ .Release.Name }}-shared-pvc-storage-claim"
         {{- end }}
-        {{- with $modelSpec.vllmConfig }}
-        {{- if hasKey $modelSpec.vllmConfig "tensorParallelSize"}}
         - name: shm
-          emptyDir:
-            medium: Memory
-            sizeLimit: {{ default "20Gi" $modelSpec.shmSize }}
-        {{- end}}
-        {{- end}}
+          hostPath:
+            path: /dev/shm
+            type: Directory
         {{- if $modelSpec.chatTemplate}}
         {{- if hasKey $modelSpec "chatTemplateConfigMap" }}
         - name: {{ .Release.Name }}-{{ $modelSpec.name }}-chat-templates
@@ -455,8 +422,19 @@ spec:
             claimName: vllm-templates-pvc
         {{- end }}
         {{- end}}
+        {{- $modelVolumeMap := dict }}
         {{- if hasKey $modelSpec "extraVolumes" }}
-        {{- toYaml $modelSpec.extraVolumes | nindent 8 }}
+        {{-   range $e := $modelSpec.extraVolumes }}
+        {{-     $_ := set $modelVolumeMap $e.name $e }}
+        {{- end }}
+        {{- end }}
+        {{- $mergedVolumeMap := mergeOverwrite (deepCopy $globalVolumeMap) $modelVolumeMap }}
+        {{- $mergedVolumeList := list }}
+        {{- range $k, $v := $mergedVolumeMap }}
+        {{-   $mergedVolumeList = append $mergedVolumeList $v }}
+        {{- end }}
+        {{- with $mergedVolumeList }}
+        {{-   toYaml . | nindent 8 }}
         {{- end}}
       {{- if .Values.servingEngineSpec.tolerations }}
       {{-   with .Values.servingEngineSpec.tolerations }}

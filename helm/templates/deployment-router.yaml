@@ -26,6 +26,11 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ .Release.Name }}-router-service-account
+      {{/* CPU 노드 리소스 부족으로 GPU 서버 활용 */}}
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
       {{- if .Values.routerSpec.priorityClassName }}
       priorityClassName: {{ .Values.routerSpec.priorityClassName | quote }}
       {{- end }}

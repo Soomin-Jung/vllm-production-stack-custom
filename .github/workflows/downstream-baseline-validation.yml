@@ -1,0 +1,207 @@
+name: Validate downstream production baseline
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - helm/**
+      - global-values.yaml
+      - deploy-models.yaml
+      - deploy-template-generate-multinode-ib.yaml
+      - .github/workflows/downstream-baseline-validation.yml
+  pull_request:
+    paths:
+      - helm/**
+      - global-values.yaml
+      - deploy-models.yaml
+      - deploy-template-generate-multinode-ib.yaml
+      - .github/workflows/downstream-baseline-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  helm-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Create schema-compliant smoke values
+        shell: bash
+        run: |
+          cat > /tmp/smoke-values.yaml <<'EOF'
+          servingEngineSpec:
+            modelSpec:
+              - name: smoke
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/unused-by-template
+                requestGPU: 0
+                requestCPU: 1
+                requestMemory: 4Gi
+                pvcStorage: 1Gi
+                vllmConfig:
+                  extraArgs:
+                    - --config
+                    - /profiles/smoke.yaml
+                env:
+                  - name: TZ
+                    value: ModelOverride/Zone
+
+              - name: smoke-ray
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/unused-by-ray-entrypoint
+                requestGPU: 1
+                requestCPU: 4
+                requestMemory: 16Gi
+                pvcStorage: 1Gi
+                vllmConfig:
+                  tensorParallelSize: 2
+                  extraArgs:
+                    - --config
+                    - /profiles/smoke-ray.yaml
+                raySpec:
+                  headNode:
+                    requestGPU: 0
+                    requestCPU: 1
+                    requestMemory: 4Gi
+          EOF
+
+          cat > /tmp/lmcache-values.yaml <<'EOF'
+          servingEngineSpec:
+            modelSpec:
+              - name: smoke-lmcache
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/unused-by-template
+                requestGPU: 1
+                requestCPU: 4
+                requestMemory: 16Gi
+                pvcStorage: 1Gi
+                vllmConfig:
+                  extraArgs:
+                    - --config
+                    - /profiles/smoke-lmcache.yaml
+                lmcacheConfig:
+                  enabled: true
+                  cpuOffloadingBufferSize: "0"
+                  enable_kv_load_failure_policy: true
+          EOF
+
+      - name: Helm lint with upstream schema
+        run: |
+          helm lint ./helm -f global-values.yaml -f /tmp/smoke-values.yaml
+          helm lint ./helm -f global-values.yaml -f /tmp/lmcache-values.yaml
+
+      - name: Render schema-compliant charts
+        run: |
+          helm template llm ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml > /tmp/rendered.yaml
+          helm template llm-lmcache ./helm -n inference -f global-values.yaml -f /tmp/lmcache-values.yaml > /tmp/lmcache-rendered.yaml
+
+      - name: Verify production runtime invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          contains() {
+            local file="$1"
+            local label="$2"
+            local needle="$3"
+            echo "Checking: $label"
+            grep -Fq -- "$needle" "$file" || {
+              echo "Missing rendered invariant: $label ($needle)"
+              exit 1
+            }
+          }
+
+          contains /tmp/rendered.yaml 'requestGPU=0 model rendered' 'llm-smoke'
+          contains /tmp/rendered.yaml 'profile flag rendered' '--config'
+          contains /tmp/rendered.yaml 'non-Ray profile path rendered' '/profiles/smoke.yaml'
+          if grep -Fq -- '/models/unused-by-template' /tmp/rendered.yaml; then
+            echo 'non-Ray modelURL unexpectedly rendered into workload output'
+            exit 1
+          fi
+
+          contains /tmp/lmcache-rendered.yaml 'LMCache transfer flag' '--kv-transfer-config'
+          contains /tmp/lmcache-rendered.yaml 'LMCache connector' 'LMCacheConnectorV1'
+          contains /tmp/lmcache-rendered.yaml 'LMCache load failure policy' 'kv_load_failure_policy'
+          contains /tmp/lmcache-rendered.yaml 'LMCache recompute policy' 'recompute'
+
+          contains /tmp/rendered.yaml 'global VLLM cache env' 'VLLM_CACHE_ROOT'
+          contains /tmp/rendered.yaml 'global VLLM cache path' '/vllm_cache/.cache/vllm'
+          contains /tmp/rendered.yaml 'per-model env override' 'ModelOverride/Zone'
+          contains /tmp/rendered.yaml 'host shm path' 'path: /dev/shm'
+          contains /tmp/rendered.yaml 'hostPath directory type' 'type: Directory'
+          contains /tmp/rendered.yaml 'Ray shm default' 'sizeLimit: 100Gi'
+          contains /tmp/rendered.yaml 'model weights mount' 'mountPath: /models'
+          contains /tmp/rendered.yaml 'profiles mount' 'mountPath: /profiles'
+          contains /tmp/rendered.yaml 'cache mount' 'mountPath: /vllm_cache'
+
+      - name: Verify operational values parse as Helm values
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The repository keeps the upstream source-tree schema, while the
+          # packaged 0.1.8 production chart excludes values.schema.json via
+          # .helmignore. Parse the representative operational values here and
+          # rely on the separately completed offline packaged-chart manifest
+          # comparison for full production fidelity.
+          helm template values-check ./helm -n inference \
+            -f global-values.yaml \
+            -f deploy-models.yaml \
+            --skip-schema-validation \
+            --show-only templates/deployment-router.yaml >/tmp/deploy-models-values-check.yaml
+
+          helm template values-check-ib ./helm -n inference \
+            -f global-values.yaml \
+            -f deploy-template-generate-multinode-ib.yaml \
+            --skip-schema-validation \
+            --show-only templates/deployment-router.yaml >/tmp/multinode-ib-values-check.yaml
+
+          grep -Fq -- '--config' deploy-models.yaml
+          grep -Fq -- 'NVIDIA_VISIBLE_DEVICES' deploy-models.yaml
+          grep -Fq -- 'NCCL_IB_HCA' deploy-template-generate-multinode-ib.yaml
+          grep -Fq -- 'mlx5_0,mlx5_1,mlx5_6,mlx5_7' deploy-template-generate-multinode-ib.yaml
+
+      - name: Verify GPU-derived CPU and memory fallbacks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/fallback-values.yaml <<'EOF'
+          servingEngineSpec:
+            modelSpec:
+              - name: fallback
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/unused-by-template
+                requestGPU: 2
+                vllmConfig:
+                  extraArgs:
+                    - --config
+                    - /profiles/fallback.yaml
+          EOF
+
+          # Upstream 0.1.8 schema still requires these fields. Remove the schema
+          # only in the ephemeral checkout to validate the customized fallback.
+          mv helm/values.schema.json /tmp/values.schema.json
+          trap 'mv /tmp/values.schema.json helm/values.schema.json' EXIT
+          helm template llm ./helm -n inference -f global-values.yaml -f /tmp/fallback-values.yaml > /tmp/fallback-rendered.yaml
+          mv /tmp/values.schema.json helm/values.schema.json
+          trap - EXIT
+
+          grep -Fq '8000m' /tmp/fallback-rendered.yaml
+          grep -Fq '20Gi' /tmp/fallback-rendered.yaml
