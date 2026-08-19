@@ -154,9 +154,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Do not render deployment-vllm-multi.yaml here. Upstream 0.1.8 has a
-          # known multi-non-Ray document-separator whitespace edge case that is
-          # intentionally preserved until the offline production chart is compared.
+          # The repository keeps the upstream source-tree schema, while the
+          # packaged 0.1.8 production chart excludes values.schema.json via
+          # .helmignore. Parse the representative operational values here and
+          # rely on the separately completed offline packaged-chart manifest
+          # comparison for full production fidelity.
           helm template values-check ./helm -n inference \
             -f global-values.yaml \
             -f deploy-models.yaml \
