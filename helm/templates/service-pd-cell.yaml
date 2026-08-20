@@ -1,9 +1,9 @@
 {{- $pdCellSpec := .Values.pdCellSpec | default dict -}}
 {{- if ($pdCellSpec.enabled | default false) -}}
-{{- range $modelSpec := ($pdCellSpec.models | default (list)) }}
-{{- $name := required "pdCellSpec.models[].name is required" $modelSpec.name -}}
-{{- $router := required (printf "pdCellSpec model %s: router is required" $name) $modelSpec.router -}}
-{{- $routerPort := int (default 8000 $router.port) -}}
+  {{- range $modelSpec := ($pdCellSpec.models | default (list)) }}
+    {{- $name := required "pdCellSpec.models[].name is required" $modelSpec.name -}}
+    {{- $router := required (printf "pdCellSpec model %s: router is required" $name) $modelSpec.router -}}
+    {{- $routerPort := int (default 8000 $router.port) -}}
 ---
 apiVersion: v1
 kind: Service
@@ -29,5 +29,5 @@ spec:
     model: {{ $name | quote }}
     helm-release-name: {{ $.Release.Name | quote }}
     pd-cell: "true"
-{{- end }}
+  {{- end }}
 {{- end }}
