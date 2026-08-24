@@ -138,8 +138,8 @@
     {{ end }}
     {{ $routerPolicy := default "consistent_hash" $router.policy }}
 
-    {{ $kv := mergeOverwrite (deepCopy ($pdCellSpec.kvTransfer | default dict)) ($modelSpec.kvTransfer | default dict) }}
-    {{ $kvConnector := required (printf "pdCellSpec model %s: kvTransfer.connector is required" $name) $kv.connector }}
+    {{ $kv := deepCopy ($modelSpec.kvTransfer | default dict) }}
+    {{ $kvConnector := required (printf "pdCellSpec model %s: models[].kvTransfer.connector is required" $name) $kv.connector }}
     {{ $kvBaseConfig := deepCopy ($kv.config | default dict) }}
     {{ $bootstrapPortBase := int (default 9001 $kv.bootstrapPortBase) }}
     {{ $abortTimeout := int (default 600 $kv.abortRequestTimeout) }}

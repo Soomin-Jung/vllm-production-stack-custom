@@ -57,9 +57,6 @@ servingEngineSpec:
 pdCellSpec:
   enabled: true
 
-  kvTransfer:
-    connector: NixlConnector
-
   models:
     - name: example-pd-p2d2
       servedModelNames:
@@ -68,6 +65,9 @@ pdCellSpec:
       repository: vllm/vllm-openai
       tag: v0.27.1-cu129
       replicaCount: 1
+
+      kvTransfer:
+        connector: NixlConnector
 
       prefill:
         count: 2
@@ -132,7 +132,6 @@ Kubernetes는 Pod를 여러 Node에 나누어 배치하지 않으므로, GPU 8�
 pdCellSpec:
   enabled: true
   router: {...}
-  kvTransfer: {...}
   models: [...]
 ```
 
@@ -165,7 +164,9 @@ global / servingEngineSpec 기본값
 | Scheduling | `nodeName`, `nodeSelectorTerms`, `affinity`, `tolerations` |
 | Service | `serviceType`, `servicePort`, `serviceAnnotations` |
 | Pod metadata | `podAnnotations` |
-| P/D common | `router`, `kvTransfer` |
+| Router common | `router` |
+
+`kvTransfer`는 connector와 세부 config가 모델·profile·GPU topology 호환성에 종속되므로 공통값으로 상속하지 않고 `models[].kvTransfer`에 모델별로 선언한다.
 
 생략 시 기존 baseline을 재사용한다.
 
@@ -477,11 +478,13 @@ volume은 Kubernetes Pod 단위이므로 `router/prefill/decode.extraVolumes`도
 
 ```yaml
 pdCellSpec:
-  kvTransfer:
-    connector: NixlConnector
-    config: {}
-    prefillConfig: {}
-    decodeConfig: {}
+  models:
+    - name: example-pd
+      kvTransfer:
+        connector: NixlConnector
+        config: {}
+        prefillConfig: {}
+        decodeConfig: {}
 ```
 
 | field | 동작 |
@@ -527,23 +530,29 @@ Decode  → kv_connector=<connector>, kv_role=kv_consumer
 최소값:
 
 ```yaml
-kvTransfer:
-  connector: NixlConnector
+pdCellSpec:
+  models:
+    - name: example-pd
+      kvTransfer:
+        connector: NixlConnector
 ```
 
 명시적 운영 예:
 
 ```yaml
-kvTransfer:
-  connector: NixlConnector
-  config:
-    kv_buffer_device: cuda
-    kv_load_failure_policy: recompute
-    kv_connector_extra_config:
-      backends:
-        - UCX
-      enforce_handshake_compat: true
-      # enable_cross_layers_blocks: "True"
+pdCellSpec:
+  models:
+    - name: example-pd
+      kvTransfer:
+        connector: NixlConnector
+        config:
+          kv_buffer_device: cuda
+          kv_load_failure_policy: recompute
+          kv_connector_extra_config:
+            backends:
+              - UCX
+            enforce_handshake_compat: true
+            # enable_cross_layers_blocks: "True"
 ```
 
 주요 NIXL extra option:
@@ -564,15 +573,18 @@ NIXL의 UCX 전송은 NCCL 설정을 재사용하지 않는다. `UCX_TLS`, `UCX_
 Network B처럼 RDMA를 쓰지 않는 검증 예:
 
 ```yaml
-kvTransfer:
-  connector: MooncakeConnector
-  config:
-    kv_load_failure_policy: recompute
-    kv_connector_extra_config:
-      mooncake_protocol: tcp
-      num_workers: 16
-  bootstrapPortBase: 9001
-  abortRequestTimeout: 600
+pdCellSpec:
+  models:
+    - name: example-pd
+      kvTransfer:
+        connector: MooncakeConnector
+        config:
+          kv_load_failure_policy: recompute
+          kv_connector_extra_config:
+            mooncake_protocol: tcp
+            num_workers: 16
+        bootstrapPortBase: 9001
+        abortRequestTimeout: 600
 ```
 
 vLLM 0.27.1 자체 기본은 `mooncake_protocol=rdma`, `num_workers=10`이다. 그러므로 TCP를 의도하면 반드시 `config.kv_connector_extra_config.mooncake_protocol: tcp`를 적는다.
@@ -608,7 +620,7 @@ P2D2처럼 여러 vLLM server가 한 Pod network namespace를 공유하면 HTTP 
 | vLLM internal | `20000 + 100×index` | `30000 + 100×index` | `internalPortMode: vllm`, `internalPortBase`, `internalPortStride` |
 | DP master | `24000+index` | `34000+index` | `internalPortMode: dp`, `dpMasterPortBase` |
 | NIXL side channel | `5600+index` | `5700+index` | `sideChannelPortBase` |
-| Mooncake bootstrap | `9001+index` | 해당 없음 | `kvTransfer.bootstrapPortBase` |
+| Mooncake bootstrap | `9001+index` | 해당 없음 | `models[].kvTransfer.bootstrapPortBase` |
 
 `internalPortMode`는 phase profile의 parallelism에 맞춘다.
 
@@ -620,7 +632,7 @@ P2D2처럼 여러 vLLM server가 한 Pod network namespace를 공유하면 HTTP 
 
 vLLM 공식 NIXL integration도 non-DP에는 `VLLM_PORT`, DP에는 `VLLM_DP_MASTER_PORT`를 구분한다. 두 값을 동시에 강제하지 않는다. 자동 생성 env는 phase의 사용자 env보다 우선하므로 포트를 변경할 때는 env를 직접 덮기보다 위 field를 사용한다.
 
-NIXL side-channel env는 `NixlConnector`, `NixlPullConnector`, `NixlPushConnector`일 때만 자동 생성한다. `MultiConnector`의 child로 NIXL을 넣는 경우에는 `kvTransfer.nixlSideChannelEnabled: true`를 명시한다.
+NIXL side-channel env는 `NixlConnector`, `NixlPullConnector`, `NixlPushConnector`일 때만 자동 생성한다. `MultiConnector`의 child로 NIXL을 넣는 경우에는 `models[].kvTransfer.nixlSideChannelEnabled: true`를 명시한다.
 
 ### 7.6 지원 범위의 경계
 
@@ -993,6 +1005,6 @@ Cell Router가 localhost P/D를 orchestration
 Global Router는 Cell 자체만 discover
 ```
 
-운영 values는 `name / servedModelNames / image / topology / GPU / profile` 중심으로 유지하고, 공통 Router·KV·스케줄링 정책은 `pdCellSpec` 최상위에 한 번만 둔다. 전체 속성은 `PD_CELL_VALUES_REFERENCE_KO.md`, 복사용 전체 예제는 `pd-cell-values-full.yaml`을 기준으로 한다.
+운영 values는 `name / servedModelNames / image / topology / GPU / profile / kvTransfer` 중심으로 유지하고, 공통 Router·스케줄링 정책은 `pdCellSpec` 최상위에 한 번만 둔다. KV connector와 config는 각 `models[]`가 소유한다. 전체 속성은 `PD_CELL_VALUES_REFERENCE_KO.md`, 복사용 전체 예제는 `pd-cell-values-full.yaml`을 기준으로 한다.
 
 단기 목표는 이 구조를 **기존 0.1.8 운영 경로에 영향 없이 실제로 검증하는 것**이다.

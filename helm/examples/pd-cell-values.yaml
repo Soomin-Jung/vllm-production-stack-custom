@@ -6,10 +6,6 @@
 pdCellSpec:
   enabled: true
 
-  # The chart injects kv_producer/kv_consumer automatically.
-  kvTransfer:
-    connector: NixlConnector
-
   models:
     - name: example-pd-p2d2
       servedModelNames:
@@ -18,6 +14,10 @@ pdCellSpec:
       repository: vllm/vllm-openai
       tag: v0.27.1-cu129
       replicaCount: 1
+
+      # The chart injects kv_producer/kv_consumer automatically.
+      kvTransfer:
+        connector: NixlConnector
 
       prefill:
         count: 2

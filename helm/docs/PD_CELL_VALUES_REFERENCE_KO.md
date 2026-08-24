@@ -78,7 +78,6 @@
 | `pdCellSpec.servicePort` | 아니오 | `servingEngineSpec.servicePort`, `integer` | Cell Service 노출 port 공통값. target은 항상 router named port다. |
 | `pdCellSpec.serviceAnnotations` | 아니오 | `{}`, `map[string]string` | Cell Service annotation 공통값. |
 | `pdCellSpec.router` | 조건부 | `{}`, `object` | 모든 model의 Cell router 기본값. image는 routerSpec에서 상속 가능하다. |
-| `pdCellSpec.kvTransfer` | 조건부 | `{}`, `object` | 모든 model의 KV transfer 기본값. 최소 `connector`가 필요하다. |
 
 ## `pdCellSpec.models[]`
 
@@ -94,7 +93,7 @@
 | `pdCellSpec.models[].prefill` | 예 | 없음, `object` | Prefill container topology와 runtime. |
 | `pdCellSpec.models[].decode` | 예 | 없음, `object` | Decode container topology와 runtime. |
 | `pdCellSpec.models[].router` | 아니오 | `pdCellSpec.router`, `object` | 이 model만 Cell router 값을 deep-merge override. |
-| `pdCellSpec.models[].kvTransfer` | 아니오 | `pdCellSpec.kvTransfer`, `object` | 이 model만 KV transfer 값을 deep-merge override. |
+| `pdCellSpec.models[].kvTransfer` | 예 | 없음, `object` | 이 model의 KV connector와 config. 모델·profile·topology별 runtime 호환성에 종속되므로 model이 직접 소유한다. |
 | `pdCellSpec.models[].imagePullPolicy` | 아니오 | 상속, `string` | 이 model의 P/D engine image policy override. |
 | `pdCellSpec.models[].runtimeClassName` | 아니오 | 상속, `string` | 이 Cell Pod RuntimeClass override. |
 | `pdCellSpec.models[].schedulerName` | 아니오 | 상속, `string` | 이 Cell Pod scheduler override. |
@@ -209,19 +208,19 @@ Helm이 최종 강제하는 값은 다음과 같다.
 
 `type=vllm`은 `--vllm-pd-disaggregation`, 반복형 `--prefill`/`--decode`, connector와 policy args를 생성한다. 모델 이름은 router가 Prefill의 `/v1/models`를 proxy하고 요청의 `model`을 backend에 그대로 전달하므로 별도 alias CLI를 만들지 않는다.
 
-## `pdCellSpec.kvTransfer` / `models[].kvTransfer`
+## `pdCellSpec.models[].kvTransfer`
 
-두 경로는 같은 field를 지원한다. model 값이 공통값을 deep-merge override한다.
+KV transfer는 `pdCellSpec` 공통 상속 대상이 아니다. 각 model마다 connector와 config를 명시하며 Prefill/Decode phase override만 그 model의 기본 config 위에 deep-merge한다.
 
 | 속성 경로 | 필수 | 기본값, 타입 | 용도·설명 |
 |---|---|---|---|
-| `kvTransfer.connector` | 예 | 없음, `string` | vLLM `kv_connector`. NixlConnector, MooncakeConnector, MultiConnector 또는 image에 등록된 connector. |
-| `kvTransfer.config` | 아니오 | `{}`, `KVTransferConfig map` | Prefill/Decode 공통 raw vLLM KVTransferConfig. snake_case를 그대로 쓴다. |
-| `kvTransfer.prefillConfig` | 아니오 | `{}`, `KVTransferConfig map` | Prefill에만 config 위로 deep-merge. |
-| `kvTransfer.decodeConfig` | 아니오 | `{}`, `KVTransferConfig map` | Decode에만 config 위로 deep-merge. |
-| `kvTransfer.bootstrapPortBase` | 아니오 | `9001`, `integer` | Mooncake Prefill bootstrap port base. vLLM Router Mooncake endpoint arg에도 사용한다. |
-| `kvTransfer.abortRequestTimeout` | 아니오 | `600`, `integer` | Mooncake abort timeout env 값. |
-| `kvTransfer.nixlSideChannelEnabled` | 아니오 | Nixl connector면 `true`, `boolean` | MultiConnector/custom connector에서 NIXL side-channel env를 강제로 켜거나 끈다. |
+| `pdCellSpec.models[].kvTransfer.connector` | 예 | 없음, `string` | vLLM `kv_connector`. NixlConnector, MooncakeConnector, MultiConnector 또는 image에 등록된 connector. |
+| `pdCellSpec.models[].kvTransfer.config` | 아니오 | `{}`, `KVTransferConfig map` | 이 model의 Prefill/Decode 공통 raw vLLM KVTransferConfig. snake_case를 그대로 쓴다. |
+| `pdCellSpec.models[].kvTransfer.prefillConfig` | 아니오 | `{}`, `KVTransferConfig map` | 이 model의 Prefill에만 config 위로 deep-merge. |
+| `pdCellSpec.models[].kvTransfer.decodeConfig` | 아니오 | `{}`, `KVTransferConfig map` | 이 model의 Decode에만 config 위로 deep-merge. |
+| `pdCellSpec.models[].kvTransfer.bootstrapPortBase` | 아니오 | `9001`, `integer` | Mooncake Prefill bootstrap port base. vLLM Router Mooncake endpoint arg에도 사용한다. |
+| `pdCellSpec.models[].kvTransfer.abortRequestTimeout` | 아니오 | `600`, `integer` | Mooncake abort timeout env 값. |
+| `pdCellSpec.models[].kvTransfer.nixlSideChannelEnabled` | 아니오 | Nixl connector면 `true`, `boolean` | MultiConnector/custom connector에서 NIXL side-channel env를 강제로 켜거나 끈다. |
 
 `config`, `prefillConfig`, `decodeConfig`, phase `kvTransferConfig`에는 vLLM 0.27.1 `KVTransferConfig`의 모든 field를 넣을 수 있다.
 

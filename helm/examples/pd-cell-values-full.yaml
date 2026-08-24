@@ -185,32 +185,6 @@ pdCellSpec:
     prometheusPort: 29000
     # kvConnector: nixl # 자동 매핑 불가능한 custom connector일 때 지정
 
-  # vLLM KVTransferConfig 공통값. connector만 필수이다.
-  kvTransfer:
-    connector: NixlConnector
-    bootstrapPortBase: 9001
-    abortRequestTimeout: 600
-    nixlSideChannelEnabled: true
-    config:
-      # engine_id: fixed-id # 일반적으로 생략: replica/engine ID 충돌 위험
-      kv_buffer_device: cuda
-      # kv_buffer_size: 1000000000
-      # kv_rank: 0
-      # kv_parallel_size: 1
-      # kv_ip: 127.0.0.1
-      # kv_port: 14579
-      # kv_connector_module_path: package.module
-      # enable_permute_local_kv: false
-      kv_load_failure_policy: recompute
-      kv_connector_extra_config:
-        backends:
-          - UCX
-        enforce_handshake_compat: true
-    prefillConfig:
-      kv_buffer_size: 2000000000
-    decodeConfig:
-      enable_permute_local_kv: false
-
   models:
     - name: qwen-p1d2 # 필수, 한 Helm release 안에서 고유한 Kubernetes identity
       servedModelNames: # 선택, 생략하면 name 사용. 첫 항목이 primary이다.
@@ -267,10 +241,32 @@ pdCellSpec:
           - name: MODEL_ROUTER_ENV
             value: model-router
 
-      # 특정 모델만 connector/config를 바꿀 때 사용한다. 공통 kvTransfer와 deep-merge된다.
+      # 필수. KV connector/config는 모델과 topology 호환성에 종속되므로 모델 단위로 선언한다.
       kvTransfer:
+        connector: NixlConnector
+        bootstrapPortBase: 9001
+        abortRequestTimeout: 600
+        nixlSideChannelEnabled: true
+        config:
+          # engine_id: fixed-id # 일반적으로 생략: replica/engine ID 충돌 위험
+          kv_buffer_device: cuda
+          # kv_buffer_size: 1000000000
+          # kv_rank: 0
+          # kv_parallel_size: 1
+          # kv_ip: 127.0.0.1
+          # kv_port: 14579
+          # kv_connector_module_path: package.module
+          # enable_permute_local_kv: false
+          kv_load_failure_policy: recompute
+          kv_connector_extra_config:
+            backends:
+              - UCX
+            enforce_handshake_compat: true
+        prefillConfig:
+          kv_buffer_size: 2000000000
         decodeConfig:
           kv_load_failure_policy: fail
+          enable_permute_local_kv: false
 
       prefill:
         count: 1 # 필수: Cell Pod 안 Prefill container 수
