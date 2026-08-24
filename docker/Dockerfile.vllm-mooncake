@@ -1,0 +1,172 @@
+ARG VLLM_BASE_IMAGE
+
+FROM ${VLLM_BASE_IMAGE} AS mooncake-builder
+
+USER root
+
+ARG PYTHON_VERSION=3.12
+ARG MOONCAKE_BUILD_JOBS=8
+ARG MOONCAKE_CU13_BUILD=0
+ARG CUDA_DEVEL_PACKAGES="cuda-nvcc-12-9 cuda-cudart-dev-12-9 cuda-driver-dev-12-9"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_INDEX=1 \
+    PIP_FIND_LINKS=/opt/mooncake/vendor/wheelhouse \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:${PATH} \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+
+WORKDIR /opt/mooncake
+
+COPY docker/mooncake/SOURCE_LOCK.env /opt/mooncake/SOURCE_LOCK.env
+COPY docker/mooncake/requirements-build.txt /opt/mooncake/requirements-build.txt
+COPY docker/mooncake/scripts/verify-source-lock.sh /opt/mooncake/verify-source-lock.sh
+COPY docker/mooncake/scripts/verify-install.py /opt/mooncake/verify-install.py
+COPY docker/mooncake/vendor/ /opt/mooncake/vendor/
+
+# The base image and APT repositories are expected to be supplied through the
+# internal registry/Artifactory. No GitHub, PyPI, or Go proxy is used here.
+# hadolint ignore=DL3008
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        libc6-bin \
+        libc6-dev \
+        libasio-dev \
+        libboost-all-dev \
+        libcurl4-openssl-dev \
+        libgoogle-glog-dev \
+        libgflags-dev \
+        libibverbs-dev \
+        libjsoncpp-dev \
+        libnuma-dev \
+        libssl-dev \
+        libunwind-dev \
+        libyaml-cpp-dev \
+        ninja-build \
+        patchelf \
+        pkg-config \
+        tar; \
+    if ! command -v nvcc >/dev/null 2>&1 || \
+       [ ! -f /usr/local/cuda/include/cuda_runtime.h ]; then \
+        test -n "${CUDA_DEVEL_PACKAGES}"; \
+        apt-get install -y --no-install-recommends ${CUDA_DEVEL_PACKAGES}; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    . /opt/mooncake/SOURCE_LOCK.env; \
+    test -f "/opt/mooncake/vendor/${MOONCAKE_SOURCE_ARCHIVE}"; \
+    test -d /opt/mooncake/vendor/wheelhouse; \
+    test -n "$(find /opt/mooncake/vendor/wheelhouse -maxdepth 1 -type f -name '*.whl' -print -quit)"; \
+    tar -xzf "/opt/mooncake/vendor/${MOONCAKE_SOURCE_ARCHIVE}" -C /opt/mooncake; \
+    /opt/mooncake/verify-source-lock.sh /opt/mooncake/Mooncake; \
+    command -v "python${PYTHON_VERSION}"; \
+    command -v nvcc; \
+    "python${PYTHON_VERSION}" -c \
+      'import os, sysconfig; header=os.path.join(sysconfig.get_paths()["include"], "Python.h"); assert os.path.isfile(header), header'; \
+    "python${PYTHON_VERSION}" -m pip install \
+      --no-index \
+      --find-links=/opt/mooncake/vendor/wheelhouse \
+      --requirement /opt/mooncake/requirements-build.txt
+
+# yalantinglibs is a pinned Mooncake submodule, but Mooncake resolves it as an
+# installed CMake package. Build it locally before configuring Mooncake.
+RUN set -eux; \
+    cmake \
+      -S /opt/mooncake/Mooncake/extern/yalantinglibs \
+      -B /opt/mooncake/yalantinglibs-build \
+      -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_EXAMPLES=OFF \
+      -DBUILD_BENCHMARK=OFF \
+      -DBUILD_UNIT_TESTS=OFF \
+      -DCMAKE_INSTALL_PREFIX=/usr/local; \
+    cmake --build /opt/mooncake/yalantinglibs-build \
+      --parallel "${MOONCAKE_BUILD_JOBS}"; \
+    cmake --install /opt/mooncake/yalantinglibs-build
+
+# Build only the Python Transfer Engine. Store/etcd/Go are deliberately off.
+# USE_MNNVL compiles protocol "nvlink"; USE_INTRA_NVLINK compiles
+# protocol "nvlink_intra".
+RUN set -eux; \
+    cmake \
+      -S /opt/mooncake/Mooncake \
+      -B /opt/mooncake/Mooncake/build \
+      -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_EXAMPLES=ON \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DBUILD_UNIT_TESTS=OFF \
+      -DWITH_TE=ON \
+      -DWITH_STORE=OFF \
+      -DWITH_STORE_RUST=OFF \
+      -DWITH_STORE_GO=OFF \
+      -DWITH_P2P_STORE=OFF \
+      -DWITH_RUST_EXAMPLE=OFF \
+      -DWITH_EP=OFF \
+      -DUSE_CUDA=ON \
+      -DUSE_MNNVL=ON \
+      -DUSE_INTRA_NVLINK=ON \
+      -DUSE_TCP=ON \
+      -DUSE_HTTP=ON \
+      -DUSE_ETCD=OFF \
+      -DUSE_REDIS=OFF \
+      -DUSE_TENT=OFF \
+      -DWITH_METRICS=ON \
+      -DPython3_EXECUTABLE="$(command -v python${PYTHON_VERSION})"; \
+    cmake --build /opt/mooncake/Mooncake/build \
+      --parallel "${MOONCAKE_BUILD_JOBS}"; \
+    grep -Fx 'USE_CUDA:BOOL=ON' /opt/mooncake/Mooncake/build/CMakeCache.txt; \
+    grep -Fx 'USE_MNNVL:BOOL=ON' /opt/mooncake/Mooncake/build/CMakeCache.txt; \
+    grep -Fx 'USE_INTRA_NVLINK:BOOL=ON' /opt/mooncake/Mooncake/build/CMakeCache.txt; \
+    grep -Fx 'WITH_STORE:BOOL=OFF' /opt/mooncake/Mooncake/build/CMakeCache.txt; \
+    mkdir -p /opt/mooncake/build-info; \
+    cp /opt/mooncake/SOURCE_LOCK.env /opt/mooncake/build-info/SOURCE_LOCK.env; \
+    grep -E '^(USE_CUDA|USE_MNNVL|USE_INTRA_NVLINK|WITH_STORE|WITH_STORE_RUST|USE_ETCD):' \
+      /opt/mooncake/Mooncake/build/CMakeCache.txt \
+      > /opt/mooncake/build-info/CMAKE_FEATURES.txt
+
+RUN set -eux; \
+    cd /opt/mooncake/Mooncake; \
+    PYTHON_VERSION="${PYTHON_VERSION}" \
+    OUTPUT_DIR=/opt/mooncake/dist \
+    BUILD_DIR=build \
+    CU13_BUILD="${MOONCAKE_CU13_BUILD}" \
+    CI=false \
+    FREE_BUILD_DIR=0 \
+      ./scripts/build_wheel.sh; \
+    test "$(find /opt/mooncake/dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+
+FROM ${VLLM_BASE_IMAGE} AS runtime
+
+USER root
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+COPY --from=mooncake-builder /opt/mooncake/dist/ /tmp/mooncake-dist/
+COPY --from=mooncake-builder /opt/mooncake/build-info/ /opt/mooncake-build-info/
+COPY docker/mooncake/scripts/verify-install.py /usr/local/bin/verify-mooncake-install
+
+RUN set -eux; \
+    python3 -m pip uninstall -y \
+      mooncake-transfer-engine \
+      mooncake-transfer-engine-cuda13 || true; \
+    python3 -m pip install \
+      --no-index \
+      --no-deps \
+      --force-reinstall \
+      /tmp/mooncake-dist/*.whl; \
+    python3 -c 'import aiohttp, requests'; \
+    chmod 0755 /usr/local/bin/verify-mooncake-install; \
+    python3 /usr/local/bin/verify-mooncake-install; \
+    rm -rf /tmp/mooncake-dist
+
+LABEL ai.mooncake.version="0.3.10.post2" \
+      ai.mooncake.source.commit="e1d6d6f6f49fbbd77b7ee6e5d0c77349f341b3e3" \
+      ai.mooncake.transport.nvlink="true" \
+      ai.mooncake.transport.nvlink_intra="true"
