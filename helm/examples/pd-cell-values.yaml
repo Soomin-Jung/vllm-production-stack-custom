@@ -1,15 +1,10 @@
 # Minimal P/D Cell values for custom vLLM Production Stack 0.1.8.
 #
-# Inherited defaults are intentionally omitted. See PD_CELL_0.1.8_KO.md for
-# shared scheduling overrides and the complete KVTransferConfig guide.
+# Inherited defaults are intentionally omitted. Router image/resources come
+# from routerSpec. See pd-cell-values-full.yaml for every optional field.
 
 pdCellSpec:
   enabled: true
-
-  # Shared by every models[] item unless overridden at model level.
-  router:
-    repository: registry.example/lmstack-router
-    tag: validated-0.1.12
 
   # The chart injects kv_producer/kv_consumer automatically.
   kvTransfer:
@@ -17,7 +12,9 @@ pdCellSpec:
 
   models:
     - name: example-pd-p2d2
-      servedModelName: example-model
+      servedModelNames:
+        - example-model
+        - example-alias
       repository: vllm/vllm-openai
       tag: v0.27.1-cu129
       replicaCount: 1

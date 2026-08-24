@@ -6,8 +6,10 @@ on:
       - 'helm/templates/deployment-pd-cell.yaml'
       - 'helm/templates/service-pd-cell.yaml'
       - 'helm/examples/pd-cell-values.yaml'
+      - 'helm/examples/pd-cell-values-full.yaml'
       - 'helm/tests/pdCell_test.yaml'
       - 'helm/docs/PD_CELL_0.1.8_KO.md'
+      - 'helm/docs/PD_CELL_VALUES_REFERENCE_KO.md'
       - '.github/workflows/pd-cell-validation.yml'
   workflow_dispatch:
 
@@ -46,6 +48,8 @@ jobs:
           helm lint ./helm \
             -f global-values.yaml \
             -f helm/examples/pd-cell-values.yaml
+          helm lint ./helm \
+            -f helm/examples/pd-cell-values-full.yaml
 
       - name: Render P-D Cell example
         run: |
@@ -84,6 +88,12 @@ jobs:
           contains 'kv_consumer'
           contains 'name: VLLM_NIXL_SIDE_CHANNEL_PORT'
           contains 'name: VLLM_PORT'
+          contains 'name: PROMETHEUS_MULTIPROC_DIR'
+          contains 'value: /tmp'
+          contains '--static-aliases'
+          contains 'example-alias:example-model'
+          contains '--served-model-name'
+          contains '"example-alias"'
           contains '/profiles/example/pd-prefill.yaml'
           contains '/profiles/example/pd-decode.yaml'
           contains 'pd-cell: "true"'
@@ -140,6 +150,24 @@ jobs:
           grep -Fq -- 'mooncake_protocol' /tmp/pd-mooncake.yaml
           grep -Fq -- 'name: VLLM_MOONCAKE_BOOTSTRAP_PORT' /tmp/pd-mooncake.yaml
           grep -Fq -- 'name: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT' /tmp/pd-mooncake.yaml
+
+      - name: Verify vLLM Router CLI and asymmetric GPU example
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          helm template pd-test ./helm -n inference \
+            -f helm/examples/pd-cell-values-full.yaml \
+            --set-string pdCellSpec.router.type=vllm \
+            --set-string pdCellSpec.router.repository=registry.example/vllm-router \
+            > /tmp/pd-vllm-router.yaml
+
+          grep -Fq -- '--vllm-pd-disaggregation' /tmp/pd-vllm-router.yaml
+          grep -Fq -- '--prefill' /tmp/pd-vllm-router.yaml
+          grep -Fq -- '--decode' /tmp/pd-vllm-router.yaml
+          grep -Fq -- '--kv-connector' /tmp/pd-vllm-router.yaml
+          grep -Fq -- 'nvidia.com/gpu: "4"' /tmp/pd-vllm-router.yaml
+          grep -Fq -- 'nvidia.com/gpu: "2"' /tmp/pd-vllm-router.yaml
 
       - name: Upload rendered manifest
         uses: actions/upload-artifact@v4

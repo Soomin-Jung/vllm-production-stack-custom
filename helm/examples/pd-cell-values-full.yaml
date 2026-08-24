@@ -1,0 +1,358 @@
+# P/D Cell 전체 옵션 교보재 (custom vLLM Production Stack 0.1.8)
+#
+# 실제 운영 values는 helm/examples/pd-cell-values.yaml처럼 필수값만 유지하고,
+# 이 파일에서 필요한 옵션만 복사한다. 모든 Kubernetes map/list는 예시값이다.
+
+# P/D template이 상속하는 기존 chart 기본값. 모두 선택 옵션이다.
+servingEngineSpec:
+  labels:
+    environment: example
+    release: pd-cell
+  imagePullPolicy: Always
+  runtimeClassName: nvidia
+  schedulerName: gpu-binpack-scheduler
+  servicePort: 80
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  securityContext: {}
+  containerSecurityContext:
+    runAsNonRoot: false
+  startupProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    failureThreshold: 360
+    httpGet:
+      path: /health
+  livenessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    failureThreshold: 3
+    httpGet:
+      path: /health
+  readinessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    failureThreshold: 3
+    httpGet:
+      path: /health
+  # vllmApiKey: vllm-example
+  # vllmApiKey:
+  #   secretName: existing-vllm-secret
+  #   secretKey: api-key
+
+# pdCellSpec.router에서 생략한 image/resource 기본값. 모두 선택 옵션이다.
+routerSpec:
+  repository: lmcache/lmstack-router
+  tag: 0.1.9.dev9-g37bafbcf5.d20260107
+  imagePullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 5Gi
+    limits:
+      memory: 5Gi
+  containerSecurityContext: {}
+
+# 모든 P/D Cell container가 처음 상속하는 공통값. 모두 선택 옵션이다.
+global:
+  env:
+    - name: TZ
+      value: Asia/Seoul
+  envFrom:
+    - configMapRef:
+        name: shared-runtime-env
+        optional: true
+  extraVolumes:
+    - name: model-config
+      hostPath:
+        path: /user/dtgpt/vllm-production-stack/profiles
+        type: Directory
+  extraVolumeMounts:
+    - name: model-config
+      mountPath: /profiles
+
+pdCellSpec:
+  enabled: true # 필수: false면 P/D Deployment/Service를 생성하지 않는다.
+
+  # models[] 공통 선택 옵션. 모델 항목에 같은 키가 있으면 모델 값이 우선한다.
+  imagePullPolicy: Always
+  runtimeClassName: nvidia
+  schedulerName: gpu-binpack-scheduler
+  imagePullSecret: private-registry
+  serviceAccountName: pd-cell
+  priorityClassName: high-priority
+  progressDeadlineSeconds: 1800
+  terminationGracePeriodSeconds: 60
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+  securityContext: {}
+  containerSecurityContext: {}
+
+  env:
+    - name: COMMON_PD_ENV
+      value: common
+  envFrom:
+    - secretRef:
+        name: common-pd-secret
+        optional: true
+  extraVolumes:
+    - name: common-cache
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: common-cache
+      mountPath: /common-cache
+
+  # Pod scheduling 선택 옵션. affinity가 있으면 nodeSelectorTerms보다 우선한다.
+  # nodeName: gpu-node-01
+  nodeSelectorTerms:
+    - matchExpressions:
+        - key: nvidia.com/gpu.product
+          operator: In
+          values:
+            - NVIDIA-H200
+  affinity: {}
+  tolerations:
+    - key: example.com/pd-cell
+      operator: Exists
+      effect: NoSchedule
+
+  # Service 공통 선택 옵션.
+  serviceType: ClusterIP
+  servicePort: 80
+  serviceAnnotations: {}
+
+  # Cell-local router 공통값. models[].router에서 덮어쓸 수 있다.
+  router:
+    # lmstack: lmcache/lmstack-router CLI를 생성한다.
+    # vllm: vllm-project/router CLI를 생성한다.
+    # custom: args를 반드시 직접 지정한다.
+    type: lmstack
+    repository: lmcache/lmstack-router
+    tag: 0.1.9.dev9-g37bafbcf5.d20260107
+    imagePullPolicy: IfNotPresent
+    port: 8000
+    healthPath: /health
+    healthCheckInterval: 30
+    healthCheckTimeout: 5
+    startupProbeInitialDelaySeconds: 5
+    startupProbePeriodSeconds: 5
+    startupProbeFailureThreshold: 60
+    livenessProbePeriodSeconds: 10
+    livenessProbeFailureThreshold: 3
+    readinessProbePeriodSeconds: 5
+    readinessProbeFailureThreshold: 3
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 5Gi
+      limits:
+        memory: 5Gi
+    containerSecurityContext: {}
+    env:
+      - name: ROUTER_ONLY_ENV
+        value: router
+    envFrom:
+      - secretRef:
+          name: router-secret
+          optional: true
+    extraVolumes:
+      - name: router-config
+        configMap:
+          name: router-config
+          optional: true
+    extraVolumeMounts:
+      - name: router-config
+        mountPath: /etc/pd-router
+        readOnly: true
+    # 생성된 args 뒤에 추가한다.
+    extraArgs:
+      - --log-level
+      - info
+    # image ENTRYPOINT/CMD가 다를 때 선택적으로 전체 override한다.
+    # command: [vllm-router]
+    # args: [--host, 0.0.0.0, --port, "8000"]
+
+    # type=vllm에서만 사용하는 선택 옵션.
+    policy: consistent_hash
+    prometheusPort: 29000
+    # kvConnector: nixl # 자동 매핑 불가능한 custom connector일 때 지정
+
+  # vLLM KVTransferConfig 공통값. connector만 필수이다.
+  kvTransfer:
+    connector: NixlConnector
+    bootstrapPortBase: 9001
+    abortRequestTimeout: 600
+    nixlSideChannelEnabled: true
+    config:
+      # engine_id: fixed-id # 일반적으로 생략: replica/engine ID 충돌 위험
+      kv_buffer_device: cuda
+      # kv_buffer_size: 1000000000
+      # kv_rank: 0
+      # kv_parallel_size: 1
+      # kv_ip: 127.0.0.1
+      # kv_port: 14579
+      # kv_connector_module_path: package.module
+      # enable_permute_local_kv: false
+      kv_load_failure_policy: recompute
+      kv_connector_extra_config:
+        backends:
+          - UCX
+        enforce_handshake_compat: true
+    prefillConfig:
+      kv_buffer_size: 2000000000
+    decodeConfig:
+      enable_permute_local_kv: false
+
+  models:
+    - name: qwen-p1d2 # 필수, 한 Helm release 안에서 고유한 Kubernetes identity
+      servedModelNames: # 선택, 생략하면 name 사용. 첫 항목이 primary이다.
+        - Qwen3.8-27B
+        - standard
+      repository: vllm/vllm-openai # 필수
+      tag: v0.27.1-cu129 # 필수
+      replicaCount: 0 # 선택, 기본 1. 0이면 리소스는 유지하고 Pod만 띄우지 않는다.
+      modelType: chat
+
+      # 아래 공통 옵션은 이 모델에서만 최상위 pdCellSpec 값을 override한다.
+      # imagePullPolicy: IfNotPresent
+      # runtimeClassName: nvidia
+      # schedulerName: gpu-binpack-scheduler
+      # imagePullSecret: private-registry
+      # serviceAccountName: pd-cell
+      # priorityClassName: high-priority
+      # nodeName: gpu-node-01
+      # nodeSelectorTerms: []
+      # affinity: {}
+      # tolerations: []
+      # serviceType: ClusterIP
+      # servicePort: 80
+      # serviceAnnotations: {}
+      # podAnnotations: {}
+      # securityContext: {}
+      # containerSecurityContext: {}
+      # progressDeadlineSeconds: 1800
+      # terminationGracePeriodSeconds: 60
+      # strategy: {}
+
+      env:
+        - name: MODEL_COMMON_ENV
+          value: model
+      envFrom:
+        - configMapRef:
+            name: model-common-env
+            optional: true
+      envFromSecret: # 기존 단일 Secret 단축 문법
+        name: model-common-secret
+      extraVolumes:
+        - name: model-data
+          hostPath:
+            path: /models/Qwen3.8-27B
+            type: Directory
+      extraVolumeMounts:
+        - name: model-data
+          mountPath: /models/Qwen3.8-27B
+          readOnly: true
+
+      # 특정 모델만 router를 바꿀 때 사용한다. 공통 router와 deep-merge된다.
+      router:
+        env:
+          - name: MODEL_ROUTER_ENV
+            value: model-router
+
+      # 특정 모델만 connector/config를 바꿀 때 사용한다. 공통 kvTransfer와 deep-merge된다.
+      kvTransfer:
+        decodeConfig:
+          kv_load_failure_policy: fail
+
+      prefill:
+        count: 1 # 필수: Cell Pod 안 Prefill container 수
+        requestGPU: 4 # 필수: container당 GPU request/limit
+        profile: /profiles/qwen/prefill-tp4.yaml # 필수
+        # CPU/Memory 생략 시 GPU당 4000m/10Gi를 요청한다.
+        requestCPU: "16000m"
+        requestMemory: 40Gi
+        requestGPUType: nvidia.com/gpu
+        # HAMi를 쓸 때만 아래 request/limit을 선택한다.
+        # requestGPUMem: "40960"
+        # requestGPUMemPercentage: "80"
+        # requestGPUCores: "100"
+        limitCPU: "20"
+        limitMemory: 48Gi
+        # limitGPUMem: "40960"
+        # limitGPUMemPercentage: "80"
+        # limitGPUCores: "100"
+        portBase: 8101
+        internalPortMode: vllm # vllm, dp, auto
+        internalPortBase: 20000
+        internalPortStride: 100
+        dpMasterPortBase: 24000
+        sideChannelPortBase: 5600
+        command: [vllm, serve]
+        extraArgs:
+          - --disable-log-requests
+        env:
+          - name: PREFILL_ONLY_ENV
+            value: prefill
+        envFrom:
+          - secretRef:
+              name: prefill-secret
+              optional: true
+        extraVolumes:
+          - name: prefill-cache
+            emptyDir: {}
+        extraVolumeMounts:
+          - name: prefill-cache
+            mountPath: /prefill-cache
+        containerSecurityContext: {}
+        kvTransferConfig:
+          kv_connector_extra_config:
+            backends: [UCX, GDS]
+
+      decode:
+        count: 2 # 필수: Cell Pod 안 Decode container 수
+        requestGPU: 2 # Prefill과 달라도 된다. profile의 TP/PP/DP와 일치시킨다.
+        profile: /profiles/qwen/decode-tp2.yaml # 필수
+        requestCPU: "8000m"
+        requestMemory: 20Gi
+        requestGPUType: nvidia.com/gpu
+        # requestGPUMem: "20480"
+        # requestGPUMemPercentage: "80"
+        # requestGPUCores: "100"
+        limitCPU: "10"
+        limitMemory: 24Gi
+        # limitGPUMem: "20480"
+        # limitGPUMemPercentage: "80"
+        # limitGPUCores: "100"
+        portBase: 8201
+        internalPortMode: vllm
+        internalPortBase: 30000
+        internalPortStride: 100
+        dpMasterPortBase: 34000
+        sideChannelPortBase: 5700
+        command: [vllm, serve]
+        extraArgs:
+          - --disable-log-requests
+        env:
+          - name: DECODE_ONLY_ENV
+            value: decode
+        envFrom:
+          - secretRef:
+              name: decode-secret
+              optional: true
+        extraVolumes:
+          - name: decode-cache
+            emptyDir: {}
+        extraVolumeMounts:
+          - name: decode-cache
+            mountPath: /decode-cache
+        containerSecurityContext: {}
+        kvTransferConfig:
+          kv_load_failure_policy: recompute

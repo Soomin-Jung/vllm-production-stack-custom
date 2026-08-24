@@ -45,7 +45,9 @@ tests:
                 - UCX
         models:
           - name: pd-test
-            servedModelName: pd-test-model
+            servedModelNames:
+              - pd-test-model
+              - pd-test-alias
             replicaCount: 2
             repository: vllm/vllm-openai
             tag: test
@@ -116,6 +118,28 @@ tests:
           content:
             name: VLLM_NIXL_SIDE_CHANNEL_PORT
             value: "5600"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: PROMETHEUS_MULTIPROC_DIR
+            value: /tmp
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[0].args
+          content: --static-aliases
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[0].args
+          content: pd-test-alias:pd-test-model
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].args
+          content: --served-model-name
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].args
+          content: pd-test-alias
       - template: service-pd-cell.yaml
         equal:
           path: spec.ports[0].targetPort
@@ -260,6 +284,171 @@ tests:
         equal:
           path: metadata.name
           value: RELEASE-NAME-pd-p2d1-pd-cell
+
+  - it: should render vllm router, asymmetric GPUs, and container-specific env and mounts
+    set:
+      servingEngineSpec:
+        labels:
+          environment: test
+          release: test
+        startupProbe:
+          httpGet:
+            path: /health
+        livenessProbe:
+          httpGet:
+            path: /health
+        readinessProbe:
+          httpGet:
+            path: /health
+      global:
+        env:
+          - name: GLOBAL_ENV
+            value: global
+        extraVolumes:
+          - name: global-volume
+            emptyDir: {}
+        extraVolumeMounts:
+          - name: global-volume
+            mountPath: /global
+      pdCellSpec:
+        enabled: true
+        env:
+          - name: PD_ENV
+            value: pd
+        router:
+          type: vllm
+          repository: registry.example/vllm-router
+          tag: test
+          prometheusPort: 0
+          env:
+            - name: ROUTER_ENV
+              value: router
+          extraVolumes:
+            - name: router-volume
+              emptyDir: {}
+          extraVolumeMounts:
+            - name: router-volume
+              mountPath: /router
+        kvTransfer:
+          connector: NixlConnector
+        models:
+          - name: asymmetric
+            servedModelNames:
+              - Qwen3.8-27B
+              - standard
+            repository: vllm/vllm-openai
+            tag: test
+            env:
+              - name: MODEL_ENV
+                value: model
+            prefill:
+              count: 1
+              requestGPU: 4
+              profile: /profiles/prefill-tp4.yaml
+              env:
+                - name: PREFILL_ENV
+                  value: prefill
+              extraVolumes:
+                - name: prefill-volume
+                  emptyDir: {}
+              extraVolumeMounts:
+                - name: prefill-volume
+                  mountPath: /prefill
+            decode:
+              count: 2
+              requestGPU: 2
+              profile: /profiles/decode-tp2.yaml
+              env:
+                - name: DECODE_ENV
+                  value: decode
+              extraVolumes:
+                - name: decode-volume
+                  emptyDir: {}
+              extraVolumeMounts:
+                - name: decode-volume
+                  mountPath: /decode
+    asserts:
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.metadata.annotations.pd-served-model
+          value: Qwen3.8-27B
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.metadata.annotations.pd-served-models
+          value: '["Qwen3.8-27B","standard"]'
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[0].args
+          content: --vllm-pd-disaggregation
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[0].args
+          content: http://127.0.0.1:8101
+      - template: deployment-pd-cell.yaml
+        notExists:
+          path: spec.template.spec.containers[0].ports[1]
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ROUTER_ENV
+            value: router
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: router-volume
+            mountPath: /router
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[1].resources.requests["nvidia.com/gpu"]
+          value: "4"
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[2].resources.requests["nvidia.com/gpu"]
+          value: "2"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: PREFILL_ENV
+            value: prefill
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
+          content:
+            name: DECODE_ENV
+            value: decode
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].volumeMounts
+          content:
+            name: prefill-volume
+            mountPath: /prefill
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].volumeMounts
+          content:
+            name: decode-volume
+            mountPath: /decode
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.volumes
+          content:
+            name: router-volume
+            emptyDir: {}
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.volumes
+          content:
+            name: prefill-volume
+            emptyDir: {}
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.volumes
+          content:
+            name: decode-volume
+            emptyDir: {}
 
   - it: should not render P/D Cell resources when feature is disabled
     set:

@@ -42,7 +42,33 @@
       {{ fail (printf "pdCellSpec.models[].name must be unique within one Helm release; duplicate: %s" $name) }}
     {{ end }}
     {{ $_ := set $seenNames $name true }}
-    {{ $servedModelName := default $name $modelSpec.servedModelName }}
+    {{ $servedModelNames := list }}
+    {{ $servedModelNamesRaw := $name }}
+    {{ if hasKey $modelSpec "servedModelName" }}
+      {{ $servedModelNamesRaw = $modelSpec.servedModelName }}
+    {{ end }}
+    {{ if hasKey $modelSpec "servedModelNames" }}
+      {{ $servedModelNamesRaw = $modelSpec.servedModelNames }}
+    {{ end }}
+    {{ if kindIs "slice" $servedModelNamesRaw }}
+      {{ range $servedName := $servedModelNamesRaw }}
+        {{ if empty $servedName }}
+          {{ fail (printf "pdCellSpec model %s: servedModelNames must not contain an empty name" $name) }}
+        {{ end }}
+        {{ $servedModelNames = append $servedModelNames (printf "%v" $servedName) }}
+      {{ end }}
+    {{ else }}
+      {{ if empty $servedModelNamesRaw }}
+        {{ fail (printf "pdCellSpec model %s: servedModelName must not be empty" $name) }}
+      {{ end }}
+      {{ $servedModelNames = append $servedModelNames (printf "%v" $servedModelNamesRaw) }}
+    {{ end }}
+    {{ if empty $servedModelNames }}
+      {{ fail (printf "pdCellSpec model %s: at least one served model name is required" $name) }}
+    {{ end }}
+    {{ $servedModelNames = uniq $servedModelNames }}
+    {{ $servedModelName := first $servedModelNames }}
+    {{ $servedModelAliases := rest $servedModelNames }}
     {{ $repository := required (printf "pdCellSpec model %s: repository is required" $name) $modelSpec.repository }}
     {{ $tag := required (printf "pdCellSpec model %s: tag is required" $name) $modelSpec.tag }}
     {{ $replicaCount := 1 }}
@@ -84,9 +110,17 @@
       {{ fail (printf "pdCellSpec model %s: decode.internalPortMode must be vllm, dp, or auto" $name) }}
     {{ end }}
 
-    {{ $router := mergeOverwrite (deepCopy ($pdCellSpec.router | default dict)) ($modelSpec.router | default dict) }}
-    {{ $routerRepository := required (printf "pdCellSpec model %s: router.repository is required" $name) $router.repository }}
-    {{ $routerTag := required (printf "pdCellSpec model %s: router.tag is required; pin a validated orchestrated-P/D LMRouter image" $name) $router.tag }}
+    {{ $commonRouter := $pdCellSpec.router | default dict }}
+    {{ $modelRouter := $modelSpec.router | default dict }}
+    {{ $router := mergeOverwrite (deepCopy $commonRouter) $modelRouter }}
+    {{ $routerType := default "lmstack" $router.type }}
+    {{ if not (has $routerType (list "lmstack" "vllm" "custom")) }}
+      {{ fail (printf "pdCellSpec model %s: router.type must be lmstack, vllm, or custom" $name) }}
+    {{ end }}
+    {{ $routerRepository := default $root.Values.routerSpec.repository $router.repository }}
+    {{ $routerRepository = required (printf "pdCellSpec model %s: router.repository is required" $name) $routerRepository }}
+    {{ $routerTag := default $root.Values.routerSpec.tag $router.tag }}
+    {{ $routerTag = required (printf "pdCellSpec model %s: router.tag is required; pin a validated router image" $name) $routerTag }}
     {{ $routerPort := int (default 8000 $router.port) }}
     {{ $routerHealthInterval := int (default 30 $router.healthCheckInterval) }}
     {{ $routerHealthTimeout := int (default 5 $router.healthCheckTimeout) }}
@@ -97,6 +131,12 @@
       {{ $routerResources = dict "requests" (dict "cpu" "1000m" "memory" "5Gi") }}
     {{ end }}
     {{ $modelType := default "chat" $modelSpec.modelType }}
+    {{ $routerHealthPath := default "/health" $router.healthPath }}
+    {{ $routerPrometheusPort := 29000 }}
+    {{ if hasKey $router "prometheusPort" }}
+      {{ $routerPrometheusPort = int $router.prometheusPort }}
+    {{ end }}
+    {{ $routerPolicy := default "consistent_hash" $router.policy }}
 
     {{ $kv := mergeOverwrite (deepCopy ($pdCellSpec.kvTransfer | default dict)) ($modelSpec.kvTransfer | default dict) }}
     {{ $kvConnector := required (printf "pdCellSpec model %s: kvTransfer.connector is required" $name) $kv.connector }}
@@ -106,6 +146,17 @@
     {{ $nixlSideChannelEnabled := has $kvConnector (list "NixlConnector" "NixlPullConnector" "NixlPushConnector") }}
     {{ if hasKey $kv "nixlSideChannelEnabled" }}
       {{ $nixlSideChannelEnabled = $kv.nixlSideChannelEnabled }}
+    {{ end }}
+    {{ $routerKvConnector := default "" $router.kvConnector }}
+    {{ if empty $routerKvConnector }}
+      {{ if contains "Mooncake" $kvConnector }}
+        {{ $routerKvConnector = "mooncake" }}
+      {{ else if contains "Nixl" $kvConnector }}
+        {{ $routerKvConnector = "nixl" }}
+      {{ end }}
+    {{ end }}
+    {{ if and (eq $routerType "vllm") (empty $routerKvConnector) }}
+      {{ fail (printf "pdCellSpec model %s: router.kvConnector is required for vllm router with connector %s" $name $kvConnector) }}
     {{ end }}
 
     {{ $engineImagePullPolicy := default "Always" $root.Values.servingEngineSpec.imagePullPolicy }}
@@ -149,6 +200,26 @@
     {{ if hasKey $modelSpec "imagePullSecret" }}
       {{ $imagePullSecret = $modelSpec.imagePullSecret }}
     {{ end }}
+    {{ $serviceAccountName := default "" $pdCellSpec.serviceAccountName }}
+    {{ if hasKey $modelSpec "serviceAccountName" }}
+      {{ $serviceAccountName = $modelSpec.serviceAccountName }}
+    {{ end }}
+    {{ $priorityClassName := default "" $pdCellSpec.priorityClassName }}
+    {{ if hasKey $modelSpec "priorityClassName" }}
+      {{ $priorityClassName = $modelSpec.priorityClassName }}
+    {{ end }}
+    {{ $strategy := $pdCellSpec.strategy | default dict }}
+    {{ if hasKey $modelSpec "strategy" }}
+      {{ $strategy = $modelSpec.strategy }}
+    {{ end }}
+    {{ $progressDeadlineSeconds := int (default 1800 $pdCellSpec.progressDeadlineSeconds) }}
+    {{ if hasKey $modelSpec "progressDeadlineSeconds" }}
+      {{ $progressDeadlineSeconds = int $modelSpec.progressDeadlineSeconds }}
+    {{ end }}
+    {{ $terminationGracePeriodSeconds := int (default 60 $pdCellSpec.terminationGracePeriodSeconds) }}
+    {{ if hasKey $modelSpec "terminationGracePeriodSeconds" }}
+      {{ $terminationGracePeriodSeconds = int $modelSpec.terminationGracePeriodSeconds }}
+    {{ end }}
 
     {{ $prefillLabel := printf "%s-prefill" $name }}
     {{ $decodeLabel := printf "%s-decode" $name }}
@@ -156,6 +227,11 @@
     {{ $staticModels := list }}
     {{ $staticLabels := list }}
     {{ $staticTypes := list }}
+    {{ $staticAliases := list }}
+
+    {{ range $alias := $servedModelAliases }}
+      {{ $staticAliases = append $staticAliases (printf "%s:%s" $alias $servedModelName) }}
+    {{ end }}
 
     {{ range $i := until $pCount }}
       {{ $staticBackends = append $staticBackends (printf "http://127.0.0.1:%d" (add $pPortBase $i)) }}
@@ -186,6 +262,94 @@
       {{ $_ := set $modelVolumeMap $e.name $e }}
     {{ end }}
 
+    {{ $routerEnvMap := deepCopy $modelEnvMap }}
+    {{ range $e := ($commonRouter.env | default (list)) }}
+      {{ $_ := set $routerEnvMap $e.name $e }}
+    {{ end }}
+    {{ range $e := ($modelRouter.env | default (list)) }}
+      {{ $_ := set $routerEnvMap $e.name $e }}
+    {{ end }}
+    {{ if not (hasKey $routerEnvMap "PYTHONHASHSEED") }}
+      {{ $_ := set $routerEnvMap "PYTHONHASHSEED" (dict "name" "PYTHONHASHSEED" "value" "123") }}
+    {{ end }}
+
+    {{ $routerMountMap := deepCopy $modelMountMap }}
+    {{ range $e := ($commonRouter.extraVolumeMounts | default (list)) }}
+      {{ $_ := set $routerMountMap $e.name $e }}
+    {{ end }}
+    {{ range $e := ($modelRouter.extraVolumeMounts | default (list)) }}
+      {{ $_ := set $routerMountMap $e.name $e }}
+    {{ end }}
+
+    {{ $prefillMountMap := deepCopy $modelMountMap }}
+    {{ range $e := ($prefill.extraVolumeMounts | default (list)) }}
+      {{ $_ := set $prefillMountMap $e.name $e }}
+    {{ end }}
+
+    {{ $decodeMountMap := deepCopy $modelMountMap }}
+    {{ range $e := ($decode.extraVolumeMounts | default (list)) }}
+      {{ $_ := set $decodeMountMap $e.name $e }}
+    {{ end }}
+
+    {{ $podVolumeMap := deepCopy $modelVolumeMap }}
+    {{ range $e := ($commonRouter.extraVolumes | default (list)) }}
+      {{ $_ := set $podVolumeMap $e.name $e }}
+    {{ end }}
+    {{ range $e := ($modelRouter.extraVolumes | default (list)) }}
+      {{ $_ := set $podVolumeMap $e.name $e }}
+    {{ end }}
+    {{ range $e := ($prefill.extraVolumes | default (list)) }}
+      {{ $_ := set $podVolumeMap $e.name $e }}
+    {{ end }}
+    {{ range $e := ($decode.extraVolumes | default (list)) }}
+      {{ $_ := set $podVolumeMap $e.name $e }}
+    {{ end }}
+
+    {{ $podSecurityContext := mergeOverwrite (deepCopy ($root.Values.servingEngineSpec.securityContext | default dict)) ($pdCellSpec.securityContext | default dict) }}
+    {{ $podSecurityContext = mergeOverwrite $podSecurityContext ($modelSpec.securityContext | default dict) }}
+    {{ $engineSecurityContext := mergeOverwrite (deepCopy ($root.Values.servingEngineSpec.containerSecurityContext | default dict)) ($pdCellSpec.containerSecurityContext | default dict) }}
+    {{ $engineSecurityContext = mergeOverwrite $engineSecurityContext ($modelSpec.containerSecurityContext | default dict) }}
+    {{ $routerSecurityContext := mergeOverwrite (deepCopy ($root.Values.routerSpec.containerSecurityContext | default dict)) ($router.containerSecurityContext | default dict) }}
+    {{ $prefillSecurityContext := mergeOverwrite (deepCopy $engineSecurityContext) ($prefill.containerSecurityContext | default dict) }}
+    {{ $decodeSecurityContext := mergeOverwrite (deepCopy $engineSecurityContext) ($decode.containerSecurityContext | default dict) }}
+
+    {{ $commonEnvFrom := list }}
+    {{ range $e := ($global.envFrom | default (list)) }}
+      {{ $commonEnvFrom = append $commonEnvFrom $e }}
+    {{ end }}
+    {{ range $e := ($pdCellSpec.envFrom | default (list)) }}
+      {{ $commonEnvFrom = append $commonEnvFrom $e }}
+    {{ end }}
+    {{ $modelEnvFrom := deepCopy $commonEnvFrom }}
+    {{ range $e := ($modelSpec.envFrom | default (list)) }}
+      {{ $modelEnvFrom = append $modelEnvFrom $e }}
+    {{ end }}
+    {{ if $modelSpec.envFromSecret }}
+      {{ $modelEnvFrom = append $modelEnvFrom (dict "secretRef" (dict "name" $modelSpec.envFromSecret.name)) }}
+    {{ end }}
+    {{ $routerEnvFrom := deepCopy $modelEnvFrom }}
+    {{ range $e := ($commonRouter.envFrom | default (list)) }}
+      {{ $routerEnvFrom = append $routerEnvFrom $e }}
+    {{ end }}
+    {{ range $e := ($modelRouter.envFrom | default (list)) }}
+      {{ $routerEnvFrom = append $routerEnvFrom $e }}
+    {{ end }}
+    {{ $routerExtraArgs := list }}
+    {{ range $arg := ($commonRouter.extraArgs | default (list)) }}
+      {{ $routerExtraArgs = append $routerExtraArgs $arg }}
+    {{ end }}
+    {{ range $arg := ($modelRouter.extraArgs | default (list)) }}
+      {{ $routerExtraArgs = append $routerExtraArgs $arg }}
+    {{ end }}
+    {{ $prefillEnvFrom := deepCopy $modelEnvFrom }}
+    {{ range $e := ($prefill.envFrom | default (list)) }}
+      {{ $prefillEnvFrom = append $prefillEnvFrom $e }}
+    {{ end }}
+    {{ $decodeEnvFrom := deepCopy $modelEnvFrom }}
+    {{ range $e := ($decode.envFrom | default (list)) }}
+      {{ $decodeEnvFrom = append $decodeEnvFrom $e }}
+    {{ end }}
+
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -201,8 +365,8 @@ metadata:
 spec:
   replicas: {{ $replicaCount }}
   strategy:
-    {{- if $modelSpec.strategy }}
-      {{- toYaml $modelSpec.strategy | nindent 4 }}
+    {{- if $strategy }}
+      {{- toYaml $strategy | nindent 4 }}
     {{- else }}
     type: RollingUpdate
     rollingUpdate:
@@ -214,7 +378,7 @@ spec:
       model: {{ $name | quote }}
       helm-release-name: {{ $root.Release.Name | quote }}
       pd-cell: "true"
-  progressDeadlineSeconds: {{ default 1800 $modelSpec.progressDeadlineSeconds }}
+  progressDeadlineSeconds: {{ $progressDeadlineSeconds }}
   template:
     metadata:
       labels:
@@ -225,16 +389,22 @@ spec:
         {{- include "chart.engineLabels" $root | nindent 8 }}
       annotations:
         pd-served-model: {{ $servedModelName | quote }}
+        pd-served-models: {{ toJson $servedModelNames | quote }}
         {{- with $podAnnotations }}
           {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- if $modelSpec.serviceAccountName }}
-      serviceAccountName: {{ $modelSpec.serviceAccountName }}
+      {{- with $podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
 
-      {{- if $modelSpec.priorityClassName }}
-      priorityClassName: {{ $modelSpec.priorityClassName | quote }}
+      {{- if $serviceAccountName }}
+      serviceAccountName: {{ $serviceAccountName }}
+      {{- end }}
+
+      {{- if $priorityClassName }}
+      priorityClassName: {{ $priorityClassName | quote }}
       {{- end }}
 
       {{- with $runtimeClassName }}
@@ -245,13 +415,20 @@ spec:
       schedulerName: {{ . }}
       {{- end }}
 
-      terminationGracePeriodSeconds: {{ default 60 $modelSpec.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
 
       containers:
         - name: pd-router
           image: "{{ $routerRepository }}:{{ $routerTag }}"
           imagePullPolicy: {{ $routerImagePullPolicy | quote }}
+          {{- with $router.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           args:
+            {{- if hasKey $router "args" }}
+              {{- toYaml $router.args | nindent 12 }}
+            {{- else if eq $routerType "lmstack" }}
             - "--host"
             - "0.0.0.0"
             - "--port"
@@ -262,6 +439,10 @@ spec:
             - {{ join "," $staticBackends | quote }}
             - "--static-models"
             - {{ join "," $staticModels | quote }}
+            {{- if $staticAliases }}
+            - "--static-aliases"
+            - {{ join "," $staticAliases | quote }}
+            {{- end }}
             - "--static-model-labels"
             - {{ join "," $staticLabels | quote }}
             - "--static-model-types"
@@ -277,12 +458,43 @@ spec:
             - {{ $prefillLabel | quote }}
             - "--decode-model-labels"
             - {{ $decodeLabel | quote }}
-            {{- range ($router.extraArgs | default (list)) }}
+            {{- else if eq $routerType "vllm" }}
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - {{ $routerPort | quote }}
+            - "--policy"
+            - {{ $routerPolicy | quote }}
+            - "--vllm-pd-disaggregation"
+            - "--kv-connector"
+            - {{ $routerKvConnector | quote }}
+            {{- range $i := until $pCount }}
+            - "--prefill"
+            - {{ printf "http://127.0.0.1:%d" (add $pPortBase $i) | quote }}
+              {{- if eq $routerKvConnector "mooncake" }}
+            - {{ printf "%d" (add $bootstrapPortBase $i) | quote }}
+              {{- end }}
+            {{- end }}
+            {{- range $i := until $dCount }}
+            - "--decode"
+            - {{ printf "http://127.0.0.1:%d" (add $dPortBase $i) | quote }}
+            {{- end }}
+            {{- if gt $routerPrometheusPort 0 }}
+            - "--prometheus-host"
+            - "0.0.0.0"
+            - "--prometheus-port"
+            - {{ $routerPrometheusPort | quote }}
+            {{- end }}
+            {{- else }}
+              {{- fail (printf "pdCellSpec model %s: router.args is required when router.type=custom" $name) }}
+            {{- end }}
+            {{- range $routerExtraArgs }}
             - {{ . | quote }}
             {{- end }}
           env:
-            - name: PYTHONHASHSEED
-              value: "123"
+            {{- with (values $routerEnvMap) }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
             {{- $vllmApiKey := $root.Values.servingEngineSpec.vllmApiKey }}
             {{- if $vllmApiKey }}
             - name: VLLM_API_KEY
@@ -298,31 +510,48 @@ spec:
                   key: {{ $vllmApiKey.secretKey }}
               {{- end }}
             {{- end }}
+          {{- with $routerEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: pd-router
               containerPort: {{ $routerPort }}
               protocol: TCP
+            {{- if and (eq $routerType "vllm") (gt $routerPrometheusPort 0) }}
+            - name: router-metrics
+              containerPort: {{ $routerPrometheusPort }}
+              protocol: TCP
+            {{- end }}
           startupProbe:
             httpGet:
-              path: /health
+              path: {{ $routerHealthPath }}
               port: {{ $routerPort }}
             initialDelaySeconds: {{ default 5 $router.startupProbeInitialDelaySeconds }}
             periodSeconds: {{ default 5 $router.startupProbePeriodSeconds }}
             failureThreshold: {{ default 60 $router.startupProbeFailureThreshold }}
           livenessProbe:
             httpGet:
-              path: /health
+              path: {{ $routerHealthPath }}
               port: {{ $routerPort }}
             periodSeconds: {{ default 10 $router.livenessProbePeriodSeconds }}
             failureThreshold: {{ default 3 $router.livenessProbeFailureThreshold }}
           readinessProbe:
             httpGet:
-              path: /health
+              path: {{ $routerHealthPath }}
               port: {{ $routerPort }}
             periodSeconds: {{ default 5 $router.readinessProbePeriodSeconds }}
             failureThreshold: {{ default 3 $router.readinessProbeFailureThreshold }}
           resources:
             {{- toYaml $routerResources | nindent 12 }}
+          {{- with $routerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with (values $routerMountMap) }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 
         {{ range $i := until $pCount }}
           {{ $enginePort := add $pPortBase $i }}
@@ -348,7 +577,7 @@ spec:
             {{ $_ := set $phaseEnvMap "VLLM_MOONCAKE_BOOTSTRAP_PORT" (dict "name" "VLLM_MOONCAKE_BOOTSTRAP_PORT" "value" (printf "%d" $bootstrapPort)) }}
             {{ $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) }}
           {{ end }}
-          {{ $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp/prometheus_multiproc") }}
+          {{ $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp") }}
           {{ $kvConfig := mergeOverwrite (deepCopy $kvBaseConfig) ($kv.prefillConfig | default dict) }}
           {{ $kvConfig = mergeOverwrite $kvConfig ($prefill.kvTransferConfig | default dict) }}
           {{ $_ := set $kvConfig "kv_connector" $kvConnector }}
@@ -357,8 +586,12 @@ spec:
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ $engineImagePullPolicy | quote }}
           command:
+            {{- if $prefill.command }}
+              {{- toYaml $prefill.command | nindent 12 }}
+            {{- else }}
             - {{ ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") | quote }}
             - "serve"
+            {{- end }}
           args:
             - "--host"
             - "0.0.0.0"
@@ -366,6 +599,10 @@ spec:
             - {{ $enginePort | quote }}
             - "--config"
             - {{ $pProfile | quote }}
+            - "--served-model-name"
+            {{- range $servedName := $servedModelNames }}
+            - {{ $servedName | quote }}
+            {{- end }}
             - "--kv-transfer-config"
             - {{ toJson $kvConfig | quote }}
             {{- range ($prefill.extraArgs | default (list)) }}
@@ -394,10 +631,9 @@ spec:
                   key: {{ $vllmApiKey.secretKey }}
               {{- end }}
             {{- end }}
-          {{- with $modelSpec.envFromSecret }}
+          {{- with $prefillEnvFrom }}
           envFrom:
-            - secretRef:
-                name: {{ .name }}
+            {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
             - name: {{ printf "pf-%d-http" $i }}
@@ -425,10 +661,14 @@ spec:
             periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
             failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
           resources: {{- include "chart.resources" $prefill | nindent 12 }}
+          {{- with $prefillSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- with (values $modelMountMap) }}
+            {{- with (values $prefillMountMap) }}
               {{- toYaml . | nindent 12 }}
             {{- end }}
         {{ end }}
@@ -455,7 +695,7 @@ spec:
           {{ if eq $kvConnector "MooncakeConnector" }}
             {{ $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) }}
           {{ end }}
-          {{ $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp/prometheus_multiproc") }}
+          {{ $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp") }}
           {{ $kvConfig := mergeOverwrite (deepCopy $kvBaseConfig) ($kv.decodeConfig | default dict) }}
           {{ $kvConfig = mergeOverwrite $kvConfig ($decode.kvTransferConfig | default dict) }}
           {{ $_ := set $kvConfig "kv_connector" $kvConnector }}
@@ -464,8 +704,12 @@ spec:
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ $engineImagePullPolicy | quote }}
           command:
+            {{- if $decode.command }}
+              {{- toYaml $decode.command | nindent 12 }}
+            {{- else }}
             - {{ ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") | quote }}
             - "serve"
+            {{- end }}
           args:
             - "--host"
             - "0.0.0.0"
@@ -473,6 +717,10 @@ spec:
             - {{ $enginePort | quote }}
             - "--config"
             - {{ $dProfile | quote }}
+            - "--served-model-name"
+            {{- range $servedName := $servedModelNames }}
+            - {{ $servedName | quote }}
+            {{- end }}
             - "--kv-transfer-config"
             - {{ toJson $kvConfig | quote }}
             {{- range ($decode.extraArgs | default (list)) }}
@@ -501,10 +749,9 @@ spec:
                   key: {{ $vllmApiKey.secretKey }}
               {{- end }}
             {{- end }}
-          {{- with $modelSpec.envFromSecret }}
+          {{- with $decodeEnvFrom }}
           envFrom:
-            - secretRef:
-                name: {{ .name }}
+            {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
             - name: {{ printf "dc-%d-http" $i }}
@@ -532,10 +779,14 @@ spec:
             periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
             failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
           resources: {{- include "chart.resources" $decode | nindent 12 }}
+          {{- with $decodeSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- with (values $modelMountMap) }}
+            {{- with (values $decodeMountMap) }}
               {{- toYaml . | nindent 12 }}
             {{- end }}
         {{ end }}
@@ -550,7 +801,7 @@ spec:
           hostPath:
             path: /dev/shm
             type: Directory
-        {{- with (values $modelVolumeMap) }}
+        {{- with (values $podVolumeMap) }}
           {{- toYaml . | nindent 8 }}
         {{- end }}
 

@@ -57,16 +57,14 @@ servingEngineSpec:
 pdCellSpec:
   enabled: true
 
-  router:
-    repository: registry.example/lmstack-router
-    tag: validated-0.1.12
-
   kvTransfer:
     connector: NixlConnector
 
   models:
     - name: example-pd-p2d2
-      servedModelName: example-model
+      servedModelNames:
+        - example-model
+        - example-alias
       repository: vllm/vllm-openai
       tag: v0.27.1-cu129
       replicaCount: 1
@@ -200,25 +198,26 @@ global / servingEngineSpec 기본값
 | field | 의미 |
 |---|---|
 | `name` | Kubernetes 리소스 identity / Cell deployment name. 한 Helm release의 `models[]` 안에서 반드시 고유 |
-| `servedModelName` | P/D Router 및 vLLM API에서 사용하는 model ID |
+| `servedModelNames` | P/D Router와 vLLM API에서 사용하는 model ID 목록. 첫 항목은 primary, 나머지는 alias |
+| `servedModelName` | 이전 values 호환 field. string 또는 list를 받지만 새 values는 `servedModelNames` 권장 |
 | `replicaCount` | P/D Cell 개수. `0` 이상 |
 
-같은 모델을 다른 topology로 동시에 시험할 때는 `name`만 다르게 하고 `servedModelName`과 profile을 공유해도 된다.
+같은 모델을 다른 topology로 동시에 시험할 때는 `name`만 다르게 하고 `servedModelNames`와 profile을 공유해도 된다.
 
 ```yaml
 models:
   - name: qwen-p1d1
-    servedModelName: qwen-test
+    servedModelNames: [qwen-test, standard]
     prefill: {count: 1, requestGPU: 4, profile: /profiles/qwen-p.yaml}
     decode: {count: 1, requestGPU: 4, profile: /profiles/qwen-d.yaml}
 
   - name: qwen-p2d1
-    servedModelName: qwen-test
+    servedModelNames: [qwen-test, standard]
     prefill: {count: 2, requestGPU: 4, profile: /profiles/qwen-p.yaml}
     decode: {count: 1, requestGPU: 4, profile: /profiles/qwen-d.yaml}
 
   - name: qwen-p2d2
-    servedModelName: qwen-test
+    servedModelNames: [qwen-test, standard]
     prefill: {count: 2, requestGPU: 2, profile: /profiles/qwen-p-tp2.yaml}
     decode: {count: 2, requestGPU: 2, profile: /profiles/qwen-d-tp2.yaml}
 ```
@@ -228,9 +227,9 @@ models:
 주의할 routing 의미:
 
 - 각 topology에는 `<release>-<name>-engine-service`가 따로 생기므로 Service로 직접 호출하면 topology별 테스트가 분리된다.
-- Global Router가 같은 `servedModelName`의 Cell을 모두 발견하면 하나의 backend pool처럼 섞어 분산할 수 있다.
-- 따라서 topology별 성능 비교는 각각의 생성 Service를 직접 사용하거나, 비교 기간에만 서로 다른 `servedModelName` alias를 사용한다.
-- 같은 `servedModelName`을 사용하더라도 각 block의 Prefill/Decode profile 안 `served-model-name`은 모두 그 값과 같아야 한다.
+- Global Router가 같은 primary 또는 alias를 노출하는 Cell을 모두 발견하면 하나의 backend pool처럼 섞어 분산할 수 있다.
+- 따라서 topology별 성능 비교는 각각의 생성 Service를 직접 사용하거나, 비교 기간에만 topology별 alias를 사용한다.
+- 각 block의 Prefill/Decode profile 안 `served-model-name` list는 `servedModelNames`와 같은 순서로 맞춘다. vLLM 응답과 Prometheus `model_name`에는 첫 이름이 사용된다.
 
 Helm은 외부 `/profiles` 파일 내용까지 읽을 수 없으므로 이 일치 여부는 배포 전 검증 항목이다.
 
@@ -254,11 +253,12 @@ Prefill/Decode 모든 engine container가 같은 image를 사용한다.
 ```yaml
 pdCellSpec:
   router:
-    repository: registry.example/lmstack-router
-    tag: validated-0.1.12
+    type: lmstack
+    repository: lmcache/lmstack-router
+    tag: validated-version
 ```
 
-Router는 보통 모든 topology가 같은 image를 사용하므로 최상위에 한 번만 선언한다. 특정 모델만 다르게 검증할 때 `models[].router`로 일부 field를 override한다. `port`, health check, image policy, resources는 기본값이 있으므로 필요한 경우에만 적는다.
+Router는 보통 모든 topology가 같은 image를 사용하므로 최상위에 한 번만 선언한다. 전부 생략하면 `routerSpec.repository/tag/resources`를 상속한다. 특정 모델만 다르게 검증할 때 `models[].router`로 일부 field를 override한다.
 
 Router resource를 바꿀 때는 Kubernetes 표준 map을 사용한다.
 
@@ -281,7 +281,21 @@ Global LMRouter 0.1.8
        └─ Decode pool
 ```
 
-Cell Router image는 반드시 다음 기능이 검증된 image를 pin한다.
+### Router 구현별 실행 계약
+
+`lmcache/lmstack-router`와 `vllm-project/router`는 같은 프로그램이 아니며 CLI도 호환되지 않는다. image repository만 바꾸고 기존 args를 그대로 쓰면 안 된다.
+
+기준 자료는 [Production Stack LMStack Router CLI](https://github.com/vllm-project/production-stack/blob/main/src/vllm_router/README.md)와 [vLLM Router PD CLI](https://github.com/vllm-project/router#prefill-decode-disaggregation)다.
+
+| `router.type` | image 계열 | Helm이 생성하는 핵심 args |
+|---|---|---|
+| `lmstack` | `lmcache/lmstack-router`, production-stack `src/vllm_router` | `--service-discovery static`, `--static-backends/models/aliases`, `--routing-logic disaggregated_prefill_orchestrated` |
+| `vllm` | `vllm-project/router` | `--vllm-pd-disaggregation`, 반복형 `--prefill/--decode`, `--kv-connector`, `--policy` |
+| `custom` | 사내/기타 image | `router.command` 선택, `router.args` 필수 |
+
+어떤 type이든 `router.args`를 명시하면 Helm generated args 전체를 대체하고 `router.extraArgs`는 마지막에 append한다.
+
+LMStack Router image는 반드시 다음 기능이 검증된 image를 pin한다.
 
 ```text
 disaggregated_prefill_orchestrated
@@ -291,6 +305,18 @@ static backend health check
 ```
 
 `latest` 사용은 권장하지 않는다.
+
+vLLM Router의 NIXL 최소 예:
+
+```yaml
+router:
+  type: vllm
+  repository: registry.example/vllm-router
+  tag: validated-version
+  policy: consistent_hash
+```
+
+`vllm-project/router` 공식 README는 현재 `Dockerfile.router` 빌드와 실행 방법을 설명하지만 고정된 공식 public image 경로를 계약으로 제시하지 않는다. 따라서 해당 소스 revision으로 image를 빌드해 사내 registry에 push하고 digest 또는 검증 tag를 pin한다.
 
 ---
 
@@ -325,7 +351,8 @@ Cell Router에는 다음 의미의 인자가 자동 생성된다.
 ```text
 --service-discovery static
 --static-backends <P/D localhost endpoints>
---static-models <servedModelName repeated>
+--static-models <primary model name repeated>
+--static-aliases <alias:primary mappings, alias가 있을 때>
 --static-model-labels <prefill/decode role labels>
 --routing-logic disaggregated_prefill_orchestrated
 --prefill-model-labels <prefill label>
@@ -357,6 +384,7 @@ vllm serve
   --host 0.0.0.0
   --port 8101
   --config /profiles/example/pd-prefill.yaml
+  --served-model-name example-model example-alias
   --kv-transfer-config <selected connector + kv_producer>
 ```
 
@@ -367,6 +395,7 @@ vllm serve
   --host 0.0.0.0
   --port 8201
   --config /profiles/example/pd-decode.yaml
+  --served-model-name example-model example-alias
   --kv-transfer-config <selected connector + kv_consumer>
 ```
 
@@ -394,13 +423,29 @@ Helm:
 - Router membership
 - Kubernetes scheduling
 
-`servedModelName`과 profile의 `served-model-name`은 반드시 같은 값이 되도록 운영한다.
+Helm은 `servedModelNames`를 하나의 `--served-model-name name alias...` CLI로 Prefill/Decode 모두에 명시한다. 따라서 profile YAML parser가 list를 문자열로 잘못 읽는 구버전 문제를 피하고 실제 runtime 이름을 topology values와 일치시킨다. profile의 `served-model-name`도 운영 가독성과 단독 실행 일관성을 위해 같은 값과 순서로 유지한다.
+
+배포 acceptance에서 각 Cell Service의 `/v1/models`가 primary와 모든 alias를 각각 노출하고, 각 이름으로 실제 completion 요청이 성공하는지 확인한다.
+
+### Prefill/Decode GPU 수가 다른 경우
+
+`prefill.requestGPU: 4`, `decode.requestGPU: 2`처럼 container당 GPU 수가 달라도 Kubernetes resource 표현에는 문제가 없다. 단, `requestGPU`는 GPU를 예약할 뿐 vLLM tensor parallelism을 자동 설정하지 않으므로 Prefill profile은 TP4, Decode profile은 TP2처럼 실제 local parallelism과 맞춰야 한다.
+
+vLLM 0.27.1의 [NixlConnector compatibility matrix](https://github.com/vllm-project/vllm/blob/v0.27.1/docs/features/nixl_connector_compatibility.md)에 따르면 Dense Transformer와 일반 MoE에서 heterogeneous TP를 지원한다. P/D 양쪽의 vLLM/NIXL version, model 구조, dtype, attention backend, KV cache dtype은 같아야 한다. 다음 제한도 적용한다.
+
+- Hybrid SSM/Mamba는 heterogeneous TP를 아직 지원하지 않으므로 P TP와 D TP를 같게 한다.
+- MLA는 heterogeneous TP를 지원하지만 KV가 TP worker에 복제되므로 일반 head splitting과 동작이 다르다.
+- NHD layout은 heterogeneous TP head splitting을 지원하지 않는다.
+- Pipeline Parallelism을 NixlConnector P/D에 섞는 구성은 별도 지원 상태를 확인한다.
+- Mooncake 또는 custom connector는 해당 version의 compatibility를 별도로 검증한다.
+
+즉 Qwen 계열이 Dense/MoE attention 모델이고 profile/runtime 조건을 맞췄다면 `Prefill 4 GPU × 1 + Decode 2 GPU × 2`가 가능한 topology다. Cell Pod의 총 GPU request는 `4 + 2×2 = 8`이다.
 
 ---
 
 ## 6. Global env / volume inheritance
 
-현재 custom 0.1.8 baseline과 동일하게 `global.env`, `global.extraVolumes`, `global.extraVolumeMounts`를 P/D engine에 상속한다. PD Cell 전체 공통값은 `pdCellSpec`에 한 번만 둘 수 있다.
+현재 custom 0.1.8 baseline과 동일하게 `global.env`, `global.extraVolumes`, `global.extraVolumeMounts`를 모든 Cell container에 상속한다. PD Cell 전체 공통값은 `pdCellSpec`에 한 번만 둘 수 있다.
 
 따라서 기존 `/profiles` mount나 공통 cache mount를 그대로 재사용할 수 있다.
 
@@ -413,12 +458,16 @@ pdCellSpec env
    ↓
 model env
    ↓
-phase(prefill/decode) env
+router 또는 phase(prefill/decode) env
    ↓
 runtime-required env
 ```
 
-volume/mount도 `global → pdCellSpec → model` 순서이며 같은 volume 이름은 뒤 단계가 덮어쓴다.
+mount는 `global → pdCellSpec → model → router/prefill/decode` 순서다. 따라서 router 전용 config는 `router.extraVolumeMounts`, Prefill/Decode 전용 cache는 각 phase의 `extraVolumeMounts`에 둔다.
+
+volume은 Kubernetes Pod 단위이므로 `router/prefill/decode.extraVolumes`도 최종적으로 하나의 Pod volume 집합에 합쳐진다. 서로 다른 container 전용 volume은 고유한 `name`을 사용한다.
+
+`envFrom`도 같은 계층을 지원하며 기존 `models[].envFromSecret.name` 단축 문법은 모든 Cell container에 적용된다.
 
 ---
 
@@ -632,6 +681,8 @@ Global Router는 Cell 내부 P/D topology를 알 필요가 없다.
 
 ## 9. Prometheus Metrics
 
+Prefill/Decode에는 `PROMETHEUS_MULTIPROC_DIR=/tmp`를 Helm이 마지막에 강제한다. 사용자 env에 다른 값이 있어도 `/tmp`가 우선한다.
+
 vLLM engine metrics endpoint는 `/metrics`다.
 
 Cell 예:
@@ -821,7 +872,7 @@ helm template <release> ./helm \
 
 `count` 값만 변경해 topology가 자동 생성되는지 확인한다.
 
-같은 `servedModelName`으로 P1D1/P2D1/P2D2/P1D3를 동시에 선언할 수 있다. topology별 결과를 분리할 때는 각 `<release>-<name>-engine-service`를 직접 호출한다.
+같은 `servedModelNames`로 P1D1/P2D1/P2D2/P1D3를 동시에 선언할 수 있다. topology별 결과를 분리할 때는 각 `<release>-<name>-engine-service`를 직접 호출한다.
 
 ### 12.4 Replica scale
 
@@ -874,7 +925,7 @@ Cell이 제거되고 복구 후 자동 재가입하는지 확인한다.
 단기 `pdCellSpec.models[]`에서 장기적으로 가져갈 field:
 
 ```text
-name / servedModelName
+name / servedModelNames
 prefill/decode topology
 profile
 resource contract
@@ -914,7 +965,7 @@ helm/examples/pd-cell-values.yaml
   → values 예제
 
 helm/tests/pdCell_test.yaml
-  → P2:D2, P3:D1, replica 0, 동일 servedModelName, disabled renderer 테스트
+  → P2:D2, P3:D1, replica 0, 동일 servedModelNames, disabled renderer 테스트
 
 helm/docs/PD_CELL_0.1.8_KO.md
   → 본 문서
@@ -942,6 +993,6 @@ Cell Router가 localhost P/D를 orchestration
 Global Router는 Cell 자체만 discover
 ```
 
-운영 values는 `name / servedModelName / image / topology / GPU / profile` 중심으로 유지하고, 공통 Router·KV·스케줄링 정책은 `pdCellSpec` 최상위에 한 번만 둔다.
+운영 values는 `name / servedModelNames / image / topology / GPU / profile` 중심으로 유지하고, 공통 Router·KV·스케줄링 정책은 `pdCellSpec` 최상위에 한 번만 둔다. 전체 속성은 `PD_CELL_VALUES_REFERENCE_KO.md`, 복사용 전체 예제는 `pd-cell-values-full.yaml`을 기준으로 한다.
 
 단기 목표는 이 구조를 **기존 0.1.8 운영 경로에 영향 없이 실제로 검증하는 것**이다.
