@@ -9,7 +9,6 @@ import pathlib
 import subprocess
 import sys
 
-
 EXPECTED_VERSION = "0.3.10.post2"
 PACKAGE_NAMES = (
     "mooncake-transfer-engine",
@@ -23,9 +22,7 @@ def installed_distribution() -> tuple[str, str]:
     matches: list[tuple[str, str]] = []
     for package_name in PACKAGE_NAMES:
         try:
-            matches.append(
-                (package_name, importlib.metadata.version(package_name))
-            )
+            matches.append((package_name, importlib.metadata.version(package_name)))
         except importlib.metadata.PackageNotFoundError:
             continue
     if len(matches) != 1:
@@ -40,7 +37,9 @@ def engine_path() -> pathlib.Path:
     package_dir = pathlib.Path(next(iter(spec.submodule_search_locations)))
     candidates = sorted(package_dir.glob("engine*.so"))
     if len(candidates) != 1:
-        raise RuntimeError(f"expected one Mooncake engine shared object, got {candidates}")
+        raise RuntimeError(
+            f"expected one Mooncake engine shared object, got {candidates}"
+        )
     return candidates[0]
 
 
@@ -76,7 +75,9 @@ def main() -> int:
 
     path = engine_path()
     payload = path.read_bytes()
-    missing_tokens = [token.decode() for token in EXPECTED_TOKENS if token not in payload]
+    missing_tokens = [
+        token.decode() for token in EXPECTED_TOKENS if token not in payload
+    ]
     if missing_tokens:
         raise RuntimeError(f"transport markers missing from {path}: {missing_tokens}")
 
@@ -100,4 +101,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"Mooncake verification failed: {exc}", file=sys.stderr)
         raise
-

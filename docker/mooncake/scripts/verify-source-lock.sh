@@ -42,4 +42,3 @@ grep -Fq "version = \"${MOONCAKE_VERSION}\"" \
   "${SOURCE_DIR}/mooncake-wheel/pyproject.toml"
 
 echo "Verified Mooncake ${MOONCAKE_VERSION} source lock"
-

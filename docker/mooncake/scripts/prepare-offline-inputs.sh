@@ -74,4 +74,3 @@ python3 -m pip download \
 
 echo "Prepared offline inputs in ${OUTPUT_DIR}"
 echo "Transfer ${MOONCAKE_SOURCE_ARCHIVE}, wheelhouse/, and SHA256SUMS together"
-

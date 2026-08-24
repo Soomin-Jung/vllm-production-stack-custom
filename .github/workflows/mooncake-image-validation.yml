@@ -20,4 +20,3 @@ jobs:
 
       - name: Validate scripts and pinned build flags
         run: bash docker/mooncake/scripts/validate-static.sh
-

@@ -407,4 +407,3 @@ fallback 부재를 함께 확인해야 한다.
 
 실제 폐쇄망 Kaniko build와 H200 P/D runtime 결과가 확인되기 전까지 PR은 Draft로
 유지한다.
-

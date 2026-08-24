@@ -2,6 +2,8 @@ ARG VLLM_BASE_IMAGE
 
 FROM ${VLLM_BASE_IMAGE} AS mooncake-builder
 
+# The upstream vLLM image runs as root; package installation requires it.
+# hadolint ignore=DL3002,DL3066
 USER root
 
 ARG PYTHON_VERSION=3.12
@@ -71,6 +73,7 @@ RUN set -eux; \
       'import os, sysconfig; header=os.path.join(sysconfig.get_paths()["include"], "Python.h"); assert os.path.isfile(header), header'; \
     "python${PYTHON_VERSION}" -m pip install \
       --no-index \
+      --no-cache-dir \
       --find-links=/opt/mooncake/vendor/wheelhouse \
       --requirement /opt/mooncake/requirements-build.txt
 
@@ -131,8 +134,9 @@ RUN set -eux; \
       /opt/mooncake/Mooncake/build/CMakeCache.txt \
       > /opt/mooncake/build-info/CMAKE_FEATURES.txt
 
+WORKDIR /opt/mooncake/Mooncake
+
 RUN set -eux; \
-    cd /opt/mooncake/Mooncake; \
     PYTHON_VERSION="${PYTHON_VERSION}" \
     OUTPUT_DIR=/opt/mooncake/dist \
     BUILD_DIR=build \
@@ -140,10 +144,14 @@ RUN set -eux; \
     CI=false \
     FREE_BUILD_DIR=0 \
       ./scripts/build_wheel.sh; \
-    test "$(find /opt/mooncake/dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+    set -- /opt/mooncake/dist/*.whl; \
+    test "$#" -eq 1; \
+    test -f "$1"
 
 FROM ${VLLM_BASE_IMAGE} AS runtime
 
+# Preserve the upstream vLLM image execution user and entrypoint contract.
+# hadolint ignore=DL3002,DL3066
 USER root
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -159,6 +167,7 @@ RUN set -eux; \
     python3 -m pip install \
       --no-index \
       --no-deps \
+      --no-cache-dir \
       --force-reinstall \
       /tmp/mooncake-dist/*.whl; \
     python3 -c 'import aiohttp, requests'; \
