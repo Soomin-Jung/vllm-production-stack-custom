@@ -1,81 +1,40 @@
-# P/D Cell example for custom vLLM Production Stack 0.1.8.
+# Minimal P/D Cell values for custom vLLM Production Stack 0.1.8.
 #
-# This file is intentionally additive: it can be layered on top of the
-# existing values.yaml / global-values.yaml / deploy-models.yaml stack.
-# Replace image names, tags and profiles with validated internal artifacts.
+# Inherited defaults are intentionally omitted. See PD_CELL_0.1.8_KO.md for
+# shared scheduling overrides and the complete KVTransferConfig guide.
 
 pdCellSpec:
   enabled: true
 
+  # Shared by every models[] item unless overridden at model level.
+  router:
+    repository: registry.example/lmstack-router
+    tag: validated-0.1.12
+
+  # The chart injects kv_producer/kv_consumer automatically.
+  kvTransfer:
+    connector: NixlConnector
+
   models:
     - name: example-pd-p2d2
-      servedModelName: example-model-pd-p2d2
+      servedModelName: example-model
+      repository: vllm/vllm-openai
+      tag: v0.27.1-cu129
       replicaCount: 1
 
-      # Same vLLM image is used for every Prefill/Decode engine in the Cell.
-      repository: registry.example/vllm
-      tag: v0.26.0-mooncake
-      imagePullPolicy: IfNotPresent
-      runtimeClassName: nvidia
-
-      # The Cell-local router must be a validated LMRouter image supporting
-      # `disaggregated_prefill_orchestrated` and static model labels.
-      router:
-        repository: registry.example/lmstack-router
-        tag: validated-0.1.12
-        imagePullPolicy: IfNotPresent
-        port: 8000
-        requestCPU: "2"
-        requestMemory: "4Gi"
-        limitCPU: "4"
-        limitMemory: "8Gi"
-        healthCheckInterval: 30
-        healthCheckTimeout: 5
-
-      kvTransfer:
-        connector: MooncakeConnector
-        protocol: tcp
-        numWorkers: 16
-        bootstrapPortBase: 9001
-        abortRequestTimeout: 600
-
-      # count × requestGPU is the Prefill GPU budget per Cell.
       prefill:
         count: 2
         requestGPU: 2
-        requestCPU: 8
-        requestMemory: "40Gi"
-        portBase: 8101
         profile: /profiles/example/pd-prefill.yaml
-        extraArgs: []
-        env: []
 
-      # count × requestGPU is the Decode GPU budget per Cell.
       decode:
         count: 2
         requestGPU: 2
-        requestCPU: 8
-        requestMemory: "40Gi"
-        portBase: 8201
         profile: /profiles/example/pd-decode.yaml
-        extraArgs: []
-        env: []
 
-      # Cell-level environment is merged on top of global.env.
-      env: []
-
-      # Global volumes/mounts are inherited. Use these only for model-specific
-      # additions. The existing /profiles global mount can therefore be reused.
-      extraVolumes: []
-      extraVolumeMounts: []
-
-      # By default, do not pin nodeName. Let the scheduler place the whole Cell
-      # Pod based on the aggregate GPU request.
-      nodeSelectorTerms: []
-      affinity: {}
-      tolerations: []
-
-      # Optional model Service settings. LiteLLM can keep pointing to the
-      # generated <release>-<name>-engine-service endpoint.
-      serviceType: ClusterIP
-      serviceAnnotations: {}
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.product
+              operator: In
+              values:
+                - NVIDIA-H200

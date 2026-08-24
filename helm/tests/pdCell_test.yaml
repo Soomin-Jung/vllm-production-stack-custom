@@ -32,18 +32,23 @@ tests:
             path: /health
       pdCellSpec:
         enabled: true
+        router:
+          repository: lmcache/lmstack-router
+          tag: test
+        kvTransfer:
+          connector: NixlConnector
+          config:
+            kv_buffer_device: cuda
+            kv_load_failure_policy: recompute
+            kv_connector_extra_config:
+              backends:
+                - UCX
         models:
           - name: pd-test
             servedModelName: pd-test-model
             replicaCount: 2
             repository: vllm/vllm-openai
             tag: test
-            router:
-              repository: lmcache/lmstack-router
-              tag: test
-            kvTransfer:
-              connector: MooncakeConnector
-              protocol: tcp
             prefill:
               count: 2
               requestGPU: 2
@@ -91,6 +96,26 @@ tests:
         equal:
           path: spec.template.spec.containers[3].ports[0].containerPort
           value: 8201
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[1].resources.requests.cpu
+          value: 8000m
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[1].resources.requests.memory
+          value: 20Gi
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: VLLM_PORT
+            value: "20000"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_PORT
+            value: "5600"
       - template: service-pd-cell.yaml
         equal:
           path: spec.ports[0].targetPort
@@ -115,14 +140,20 @@ tests:
             path: /health
       pdCellSpec:
         enabled: true
+        router:
+          repository: lmcache/lmstack-router
+          tag: test
+        kvTransfer:
+          connector: MooncakeConnector
+          config:
+            kv_connector_extra_config:
+              mooncake_protocol: tcp
+              num_workers: 16
         models:
           - name: pd-p3d1
+            replicaCount: 0
             repository: vllm/vllm-openai
             tag: test
-            router:
-              repository: lmcache/lmstack-router
-              tag: test
-            kvTransfer: {}
             prefill:
               count: 3
               requestGPU: 2
@@ -130,8 +161,13 @@ tests:
             decode:
               count: 1
               requestGPU: 2
+              internalPortMode: dp
               profile: /profiles/decode.yaml
     asserts:
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.replicas
+          value: 0
       - template: deployment-pd-cell.yaml
         equal:
           path: spec.template.spec.containers[1].name
@@ -147,6 +183,83 @@ tests:
       - template: deployment-pd-cell.yaml
         notExists:
           path: spec.template.spec.nodeName
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: VLLM_MOONCAKE_BOOTSTRAP_PORT
+            value: "9001"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[4].env
+          content:
+            name: VLLM_DP_MASTER_PORT
+            value: "34000"
+
+  - it: should allow multiple topology resources to share one served model name
+    set:
+      servingEngineSpec:
+        labels:
+          environment: test
+          release: test
+        startupProbe:
+          httpGet:
+            path: /health
+        livenessProbe:
+          httpGet:
+            path: /health
+        readinessProbe:
+          httpGet:
+            path: /health
+      pdCellSpec:
+        enabled: true
+        router:
+          repository: lmcache/lmstack-router
+          tag: test
+        kvTransfer:
+          connector: NixlConnector
+        models:
+          - name: pd-p1d1
+            servedModelName: shared-model
+            repository: vllm/vllm-openai
+            tag: test
+            prefill:
+              count: 1
+              requestGPU: 1
+              profile: /profiles/prefill.yaml
+            decode:
+              count: 1
+              requestGPU: 1
+              profile: /profiles/decode.yaml
+          - name: pd-p2d1
+            servedModelName: shared-model
+            repository: vllm/vllm-openai
+            tag: test
+            prefill:
+              count: 2
+              requestGPU: 1
+              profile: /profiles/prefill.yaml
+            decode:
+              count: 1
+              requestGPU: 1
+              profile: /profiles/decode.yaml
+    asserts:
+      - template: deployment-pd-cell.yaml
+        hasDocuments:
+          count: 2
+      - template: service-pd-cell.yaml
+        hasDocuments:
+          count: 2
+      - template: deployment-pd-cell.yaml
+        documentIndex: 0
+        equal:
+          path: metadata.name
+          value: RELEASE-NAME-pd-p1d1-pd-cell
+      - template: deployment-pd-cell.yaml
+        documentIndex: 1
+        equal:
+          path: metadata.name
+          value: RELEASE-NAME-pd-p2d1-pd-cell
 
   - it: should not render P/D Cell resources when feature is disabled
     set:

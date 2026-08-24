@@ -79,9 +79,11 @@ jobs:
           contains 'containerPort: 8201'
           contains 'containerPort: 8202'
           contains 'disaggregated_prefill_orchestrated'
-          contains 'MooncakeConnector'
+          contains 'NixlConnector'
           contains 'kv_producer'
           contains 'kv_consumer'
+          contains 'name: VLLM_NIXL_SIDE_CHANNEL_PORT'
+          contains 'name: VLLM_PORT'
           contains '/profiles/example/pd-prefill.yaml'
           contains '/profiles/example/pd-decode.yaml'
           contains 'pd-cell: "true"'
@@ -93,6 +95,51 @@ jobs:
           set -euo pipefail
           grep -Fq -- 'replicas: 1' /tmp/pd-cell.yaml
           test "$(grep -c -- 'nvidia.com/gpu: "2"' /tmp/pd-cell.yaml)" -ge 4
+          test "$(grep -c -- 'cpu: "8000m"' /tmp/pd-cell.yaml)" -ge 4
+          test "$(grep -c -- 'memory: "20Gi"' /tmp/pd-cell.yaml)" -ge 4
+
+      - name: Verify generic KVTransferConfig and Mooncake rendering
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          helm template pd-test ./helm -n inference \
+            -f global-values.yaml \
+            -f helm/examples/pd-cell-values.yaml \
+            --set-string pdCellSpec.kvTransfer.config.kv_load_failure_policy=recompute \
+            --set-string 'pdCellSpec.kvTransfer.config.kv_connector_extra_config.backends[0]=UCX' \
+            > /tmp/pd-nixl-config.yaml
+
+          grep -Fq -- 'kv_load_failure_policy' /tmp/pd-nixl-config.yaml
+          grep -Fq -- 'recompute' /tmp/pd-nixl-config.yaml
+          grep -Fq -- 'backends' /tmp/pd-nixl-config.yaml
+          grep -Fq -- 'UCX' /tmp/pd-nixl-config.yaml
+
+          helm template pd-test ./helm -n inference \
+            -f global-values.yaml \
+            -f helm/examples/pd-cell-values.yaml \
+            --set-string 'pdCellSpec.models[0].prefill.internalPortMode=dp' \
+            --set-string 'pdCellSpec.models[0].decode.internalPortMode=dp' \
+            > /tmp/pd-dp-ports.yaml
+
+          grep -Fq -- 'name: VLLM_DP_MASTER_PORT' /tmp/pd-dp-ports.yaml
+          if grep -Fq -- 'name: VLLM_PORT' /tmp/pd-dp-ports.yaml; then
+            echo 'VLLM_PORT must not be forced when internalPortMode=dp'
+            exit 1
+          fi
+
+          helm template pd-test ./helm -n inference \
+            -f global-values.yaml \
+            -f helm/examples/pd-cell-values.yaml \
+            --set-string pdCellSpec.kvTransfer.connector=MooncakeConnector \
+            --set-string pdCellSpec.kvTransfer.config.kv_connector_extra_config.mooncake_protocol=tcp \
+            --set pdCellSpec.kvTransfer.config.kv_connector_extra_config.num_workers=16 \
+            > /tmp/pd-mooncake.yaml
+
+          grep -Fq -- 'MooncakeConnector' /tmp/pd-mooncake.yaml
+          grep -Fq -- 'mooncake_protocol' /tmp/pd-mooncake.yaml
+          grep -Fq -- 'name: VLLM_MOONCAKE_BOOTSTRAP_PORT' /tmp/pd-mooncake.yaml
+          grep -Fq -- 'name: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT' /tmp/pd-mooncake.yaml
 
       - name: Upload rendered manifest
         uses: actions/upload-artifact@v4
