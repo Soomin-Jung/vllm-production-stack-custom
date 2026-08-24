@@ -547,7 +547,7 @@ pdCellSpec:
         connector: NixlConnector
         config:
           kv_buffer_device: cuda
-          kv_load_failure_policy: recompute
+          kv_load_failure_policy: fail
           kv_connector_extra_config:
             backends:
               - UCX
@@ -579,7 +579,7 @@ pdCellSpec:
       kvTransfer:
         connector: MooncakeConnector
         config:
-          kv_load_failure_policy: recompute
+          kv_load_failure_policy: fail
           kv_connector_extra_config:
             mooncake_protocol: tcp
             num_workers: 16
@@ -595,7 +595,7 @@ Prefill/Decode에 렌더되는 핵심 JSON:
 {
   "kv_connector": "MooncakeConnector",
   "kv_role": "kv_producer | kv_consumer",
-  "kv_load_failure_policy": "recompute",
+  "kv_load_failure_policy": "fail",
   "kv_connector_extra_config": {
     "mooncake_protocol": "tcp",
     "num_workers": 16
@@ -610,7 +610,78 @@ Prefill bootstrap: VLLM_MOONCAKE_BOOTSTRAP_PORT=9001+index
 P/D timeout:       VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT=600
 ```
 
-### 7.5 같은 Pod 안의 port 충돌 방지
+### 7.5 `kv_load_failure_policy` 운영 권장
+
+이 설정은 standard P→D flow에서 **Decode가 Prefill의 KV block을 load하지 못했을 때**의 처리 정책이다. [vLLM 0.27.1 NIXL guide](https://github.com/vllm-project/vllm/blob/v0.27.1/docs/features/nixl_connector_usage.md#kv-load-failure-policy)는 production에서 `recompute`가 Decode engine에 Prefill 연산을 유입시켜 진행 중인 Decode의 latency까지 악화할 수 있다고 경고한다.
+
+| Engine | 권장값 | 근거 |
+|---|---|---|
+| Prefill (`kv_producer`) | `fail` | 표준 단방향 P→D에서는 remote KV를 load하지 않아 이 정책이 실질적으로 발동하지 않는다. 양방향 KV transfer를 별도로 활성화하지 않는 한 기본값을 유지한다. |
+| Decode (`kv_consumer`) | `fail` | KV load 실패 요청을 즉시 실패시켜 Decode latency isolation을 보존한다. 특히 장기 context에서는 Decode 측 recompute가 큰 Prefill 연산으로 변해 tail latency를 악화시킨다. |
+
+따라서 기본 운영값은 phase override 없이 model 공통으로 한 번 선언한다.
+
+```yaml
+kvTransfer:
+  connector: NixlConnector
+  config:
+    kv_load_failure_policy: fail
+```
+
+`recompute`는 다음 조건을 모두 검토한 임시 availability-first 정책으로만 사용한다.
+
+- request 실패보다 단일 요청의 지연 증가를 우선 허용
+- 입력 길이가 짧고 상한이 통제됨
+- Decode GPU에 Prefill fallback 여유가 있음
+- KV transfer 실패율과 Decode ITL/p99에 alert가 있음
+
+현재 운영 workload처럼 50K~200K 장기 context 비중이 높으면 `recompute`를 기본값으로 사용하지 않는다. 초기 connector 검증에서도 `fail`을 사용해야 transfer 실패가 Decode의 local recompute에 가려지지 않는다.
+
+### 7.6 Hardware / fabric별 transport 선택
+
+Transport는 GPU 제품명만으로 결정할 수 없다. 같은 H200이라도 Network A에는 IB/GDRDMA가 있고 Network B에는 없으며, 현재 P/D Cell은 P와 D가 한 Pod·한 Node에 있어 IB 자체를 사용하지 않는다. Helm render 시점에는 실제 배치 Node, UCX/Mooncake build plugin, PCIe peer-access 상태를 알 수 없으므로 chart가 `H200 → RDMA`처럼 자동 선택하면 잘못된 경로를 강제할 수 있다.
+
+| 배치 범위 / 장비 | NIXL 권장 | Mooncake 권장 | 운영 판단 |
+|---|---|---|---|
+| 같은 Node, L40S/H100, NVLink 없음 | `backends: [UCX]`; `UCX_TLS` 생략 또는 `all` | 비교 검증 시 `mooncake_protocol: tcp` | NIXL/UCX 우선. NVLink가 없어도 network TCP가 아니라 가능한 CUDA IPC/P2P·PCIe local path를 사용한다. |
+| 같은 Node, H200 NVLink/NVSwitch | `backends: [UCX]`; `UCX_TLS` 생략 또는 `all` | 별도 성능 검증 전에는 NIXL 우선 | UCX의 CUDA transport가 topology가 제공하는 local GPU P2P path를 사용하도록 제한하지 않는다. Cell 내부에서는 IB HCA를 강제하지 않는다. |
+| 서로 다른 Node, IB + GDRDMA 검증 완료 | `backends: [UCX]`; 시작은 `UCX_TLS=all`, 이후 `rc,cuda`와 검증된 HCA pin 비교 | `mooncake_protocol: rdma` | Network A 장기 multi-node P/D 후보. `UCX_NET_DEVICES`/`device_name`은 실제 NIC 이름 확인 후 지정한다. |
+| 서로 다른 Node, RDMA 없음 | NIXL/UCX의 `tcp,cuda` 또는 Mooncake TCP와 비교 | `mooncake_protocol: tcp` | 대용량 장기-context KV에는 병목 가능성이 높으므로 기능 지원과 성능을 별도 검증한다. |
+
+NIXL의 기본 plugin은 UCX다. 같은 Node에서 NVLink 유무는 `backends` 이름을 바꾸는 조건이 아니다. NVLink/NVSwitch 또는 PCIe는 CUDA peer path 아래의 물리 fabric이고, NIXL 설정에는 계속 `UCX`를 사용한다.
+
+안전한 초기값:
+
+```yaml
+env:
+  - name: UCX_TLS
+    value: all
+  - name: UCX_NET_DEVICES
+    value: all
+kvTransfer:
+  connector: NixlConnector
+  config:
+    kv_load_failure_policy: fail
+    kv_connector_extra_config:
+      backends: [UCX]
+      enforce_handshake_compat: true
+```
+
+`UCX_TLS`를 직접 제한할 때는 GPU memory transport를 반드시 포함한다. 예를 들어 cross-node IB는 `rc,cuda`, TCP는 `tcp,cuda`부터 검증한다. NCCL의 `NCCL_IB_HCA`, `NCCL_SOCKET_IFNAME`은 NIXL/UCX transport 선택에 적용되지 않는다.
+
+Mooncake는 vLLM 0.27.1에서 protocol 기본값이 `rdma`이므로 RDMA가 없는 Node에서는 반드시 `tcp`를 명시한다. chart가 protocol을 자동 결정하지 않는다.
+
+배포 전/후 확인 항목:
+
+```text
+nvidia-smi topo -m                 # GPU 간 NVLink/PCIe 및 NIC NUMA 관계
+CUDA p2pBandwidthLatencyTest       # GPU peer access와 실제 local bandwidth
+ucx_info -d                        # cuda/IB/TCP transport가 image에 포함됐는지
+ibv_devinfo                        # cross-node RDMA를 사용할 때 HCA/port 상태
+vLLM NIXL transfer metrics/log     # 실제 성공/실패, bandwidth, expired request
+```
+
+### 7.7 같은 Pod 안의 port 충돌 방지
 
 P2D2처럼 여러 vLLM server가 한 Pod network namespace를 공유하면 HTTP port뿐 아니라 vLLM internal/DP/NIXL side-channel port도 고유해야 한다. Template이 다음 값을 자동 할당한다.
 
@@ -634,7 +705,7 @@ vLLM 공식 NIXL integration도 non-DP에는 `VLLM_PORT`, DP에는 `VLLM_DP_MAST
 
 NIXL side-channel env는 `NixlConnector`, `NixlPullConnector`, `NixlPushConnector`일 때만 자동 생성한다. `MultiConnector`의 child로 NIXL을 넣는 경우에는 `models[].kvTransfer.nixlSideChannelEnabled: true`를 명시한다.
 
-### 7.6 지원 범위의 경계
+### 7.8 지원 범위의 경계
 
 Chart는 raw `KVTransferConfig`를 전달하므로 `MultiConnector`, external connector 등도 표현할 수 있다. 다만 다음은 Helm이 보장하지 않는다.
 

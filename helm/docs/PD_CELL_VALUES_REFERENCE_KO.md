@@ -240,6 +240,8 @@ KV transfer는 `pdCellSpec` 공통 상속 대상이 아니다. 각 model마다 c
 
 `kv_connector`와 `kv_role`은 values에서 지정해도 Helm이 선택한 connector와 phase role로 마지막에 덮어쓴다.
 
+운영 기본 권장은 Prefill/Decode 모두 `kv_load_failure_policy: fail`이다. 이 정책은 표준 P→D flow에서 Decode의 remote KV load 실패에 실질적으로 적용된다. `recompute`는 Decode engine에서 Prefill을 다시 수행해 다른 Decode 요청의 tail latency를 악화시킬 수 있으므로 장기-context production 기본값으로 사용하지 않는다. Hardware/fabric별 NIXL·Mooncake 선택 기준은 `PD_CELL_0.1.8_KO.md`의 `Hardware / fabric별 transport 선택` 절을 따른다.
+
 ## 생성되는 Service
 
 각 model마다 `<release>-<name>-engine-service`를 만든다. selector는 Kubernetes identity인 `models[].name`을 사용하며 target은 `pd-router` named port다. 따라서 같은 `servedModelNames`와 profile을 사용하는 P1D1, P2D1, P2D2 topology를 동시에 정의해도 `name`만 고유하면 리소스가 충돌하지 않는다.

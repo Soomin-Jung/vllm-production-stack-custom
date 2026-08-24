@@ -257,7 +257,8 @@ pdCellSpec:
           # kv_port: 14579
           # kv_connector_module_path: package.module
           # enable_permute_local_kv: false
-          kv_load_failure_policy: recompute
+          # Production 권장값. recompute는 Decode에서 긴 Prefill fallback을 유발할 수 있다.
+          kv_load_failure_policy: fail
           kv_connector_extra_config:
             backends:
               - UCX
@@ -265,7 +266,6 @@ pdCellSpec:
         prefillConfig:
           kv_buffer_size: 2000000000
         decodeConfig:
-          kv_load_failure_policy: fail
           enable_permute_local_kv: false
 
       prefill:
@@ -309,8 +309,9 @@ pdCellSpec:
             mountPath: /prefill-cache
         containerSecurityContext: {}
         kvTransferConfig:
+          # Phase 최종 override 예시. 실제 image에 설치된 NIXL plugin만 지정한다.
           kv_connector_extra_config:
-            backends: [UCX, GDS]
+            backends: [UCX]
 
       decode:
         count: 2 # 필수: Cell Pod 안 Decode container 수
@@ -351,4 +352,4 @@ pdCellSpec:
             mountPath: /decode-cache
         containerSecurityContext: {}
         kvTransferConfig:
-          kv_load_failure_policy: recompute
+          kv_load_failure_policy: fail
