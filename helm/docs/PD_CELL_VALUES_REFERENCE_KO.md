@@ -319,7 +319,7 @@ OPENAI_API_KEY
 | `requestGPU` | 필수 | container GPU reservation |
 | `profile` | 필수 | vLLM `--config` path |
 | `portBase` | P 8101 / D 8201 | HTTP base |
-| `internalPortMode` | `vllm` | `vllm|dp|auto` |
+| `internalPortMode` | `vllm` | `vllm\|dp\|auto` |
 | `internalPortBase` | P 20000 / D 30000 | internal port |
 | `internalPortStride` | `100` | index stride |
 | `dpMasterPortBase` | P 24000 / D 34000 | DP master |
