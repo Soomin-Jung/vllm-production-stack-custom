@@ -1,0 +1,22 @@
+name: Validate Mooncake internal-proxy image build
+
+on:
+  pull_request:
+    paths:
+      - 'docker/Dockerfile.vllm-mooncake'
+      - 'docker/mooncake/**'
+      - '.github/workflows/mooncake-image-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate scripts and pinned build flags
+        run: bash docker/mooncake/scripts/validate-static.sh
