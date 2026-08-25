@@ -28,37 +28,26 @@ jobs:
         with:
           version: v3.17.3
 
-      - name: Render debug output
+      - name: Helm lint examples
         shell: bash
         run: |
-          set +e
-          helm template pd-test ./helm -n inference \
-            -f global-values.yaml \
-            -f helm/examples/pd-cell-values.yaml \
-            --debug > /tmp/pd-debug.txt 2>&1
-          rc=$?
-          if [ "$rc" -ne 0 ]; then
-            echo '--- Helm debug output ---'
-            cat /tmp/pd-debug.txt
-          fi
-          exit 0
-
-      - name: Helm lint P-D Cell example
-        run: |
+          set -euo pipefail
           helm lint ./helm \
             -f global-values.yaml \
             -f helm/examples/pd-cell-values.yaml
           helm lint ./helm \
             -f helm/examples/pd-cell-values-full.yaml
 
-      - name: Render P-D Cell example
+      - name: Render Mooncake P-D Cell baseline
+        shell: bash
         run: |
+          set -euo pipefail
           helm template pd-test ./helm -n inference \
             -f global-values.yaml \
             -f helm/examples/pd-cell-values.yaml \
             > /tmp/pd-cell.yaml
 
-      - name: Verify rendered P-D Cell invariants
+      - name: Verify fixed vLLM Router orchestration contract
         shell: bash
         run: |
           set -euo pipefail
@@ -71,107 +60,106 @@ jobs:
             }
           }
 
+          absent() {
+            local needle="$1"
+            if grep -Fq -- "$needle" /tmp/pd-cell.yaml; then
+              echo "Legacy/forbidden P/D invariant still rendered: $needle"
+              exit 1
+            fi
+          }
+
           contains 'kind: Deployment'
-          contains 'pd-test-example-pd-p2d2-pd-cell'
+          contains 'pd-test-example-pd-p1d1-pd-cell'
+          contains 'pd-orchestrator: "vllm-router"'
+          contains 'pd-kv-connector: "mooncake"'
           contains 'name: pd-router'
-          contains 'name: prefill-0'
-          contains 'name: prefill-1'
-          contains 'name: decode-0'
-          contains 'name: decode-1'
-          contains 'containerPort: 8101'
-          contains 'containerPort: 8102'
-          contains 'containerPort: 8201'
-          contains 'containerPort: 8202'
-          contains 'disaggregated_prefill_orchestrated'
-          contains 'NixlConnector'
+          contains '- vllm-router'
+          contains '--vllm-pd-disaggregation'
+          contains '--kv-connector'
+          contains 'mooncake'
+          contains '--prefill'
+          contains 'http://127.0.0.1:8101'
+          contains '"9001"'
+          contains '--decode'
+          contains 'http://127.0.0.1:8201'
+          contains '--health-check-interval-secs'
+          contains '--health-check-timeout-secs'
+          contains '--prometheus-port'
+          contains 'containerPort: 29000'
+          contains 'MooncakeConnector'
           contains 'kv_producer'
           contains 'kv_consumer'
-          contains 'name: VLLM_NIXL_SIDE_CHANNEL_PORT'
-          contains 'name: VLLM_PORT'
-          contains 'name: PROMETHEUS_MULTIPROC_DIR'
-          contains 'value: /tmp'
-          contains '--static-aliases'
-          contains 'example-alias:example-model'
+          contains 'name: VLLM_MOONCAKE_BOOTSTRAP_PORT'
+          contains 'name: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT'
+          contains 'nvlink_intra'
           contains '--served-model-name'
           contains '"example-alias"'
-          contains '/profiles/example/pd-prefill.yaml'
-          contains '/profiles/example/pd-decode.yaml'
-          contains 'pd-cell: "true"'
+          contains 'name: PROMETHEUS_MULTIPROC_DIR'
+          contains 'value: /tmp'
           contains 'targetPort: pd-router'
 
-      - name: Verify Cell replica and GPU resource model
+          absent 'disaggregated_prefill_orchestrated'
+          absent '--static-backends'
+          absent '--static-models'
+          absent '--static-aliases'
+
+      - name: Verify NIXL mapping still uses vLLM Router
         shell: bash
         run: |
           set -euo pipefail
-          grep -Fq -- 'replicas: 1' /tmp/pd-cell.yaml
-          test "$(grep -c -- 'nvidia.com/gpu: "2"' /tmp/pd-cell.yaml)" -ge 4
-          test "$(grep -c -- 'cpu: "8000m"' /tmp/pd-cell.yaml)" -ge 4
-          test "$(grep -c -- 'memory: "20Gi"' /tmp/pd-cell.yaml)" -ge 4
-
-      - name: Verify generic KVTransferConfig and Mooncake rendering
-        shell: bash
-        run: |
-          set -euo pipefail
-
           helm template pd-test ./helm -n inference \
             -f global-values.yaml \
             -f helm/examples/pd-cell-values.yaml \
-            --set-string 'pdCellSpec.models[0].kvTransfer.config.kv_load_failure_policy=recompute' \
+            --set-string 'pdCellSpec.models[0].kvTransfer.connector=NixlConnector' \
             --set-string 'pdCellSpec.models[0].kvTransfer.config.kv_connector_extra_config.backends[0]=UCX' \
-            > /tmp/pd-nixl-config.yaml
+            > /tmp/pd-nixl.yaml
 
-          grep -Fq -- 'kv_load_failure_policy' /tmp/pd-nixl-config.yaml
-          grep -Fq -- 'recompute' /tmp/pd-nixl-config.yaml
-          grep -Fq -- 'backends' /tmp/pd-nixl-config.yaml
-          grep -Fq -- 'UCX' /tmp/pd-nixl-config.yaml
+          grep -Fq -- 'pd-orchestrator: "vllm-router"' /tmp/pd-nixl.yaml
+          grep -Fq -- 'pd-kv-connector: "nixl"' /tmp/pd-nixl.yaml
+          grep -Fq -- '--vllm-pd-disaggregation' /tmp/pd-nixl.yaml
+          grep -Fq -- 'NixlConnector' /tmp/pd-nixl.yaml
+          grep -Fq -- 'name: VLLM_NIXL_SIDE_CHANNEL_PORT' /tmp/pd-nixl.yaml
 
+      - name: Verify API-key propagation to Cell router
+        shell: bash
+        run: |
+          set -euo pipefail
           helm template pd-test ./helm -n inference \
             -f global-values.yaml \
             -f helm/examples/pd-cell-values.yaml \
-            --set-string 'pdCellSpec.models[0].prefill.internalPortMode=dp' \
-            --set-string 'pdCellSpec.models[0].decode.internalPortMode=dp' \
-            > /tmp/pd-dp-ports.yaml
+            --set-string servingEngineSpec.vllmApiKey=test-api-key \
+            > /tmp/pd-auth.yaml
 
-          grep -Fq -- 'name: VLLM_DP_MASTER_PORT' /tmp/pd-dp-ports.yaml
-          if grep -Fq -- 'name: VLLM_PORT' /tmp/pd-dp-ports.yaml; then
-            echo 'VLLM_PORT must not be forced when internalPortMode=dp'
+          grep -Fq -- 'name: OPENAI_API_KEY' /tmp/pd-auth.yaml
+          grep -Fq -- 'name: VLLM_API_KEY' /tmp/pd-auth.yaml
+
+      - name: Verify legacy Cell router selector is rejected
+        shell: bash
+        run: |
+          set -euo pipefail
+          if helm template pd-test ./helm -n inference \
+              -f global-values.yaml \
+              -f helm/examples/pd-cell-values.yaml \
+              --set-string pdCellSpec.router.type=lmstack \
+              > /tmp/pd-legacy.yaml 2>/tmp/pd-legacy.err; then
+            echo 'router.type=lmstack must not be accepted inside P/D Cell'
             exit 1
           fi
+          grep -Fq -- 'router.type was removed' /tmp/pd-legacy.err
 
-          helm template pd-test ./helm -n inference \
-            -f global-values.yaml \
-            -f helm/examples/pd-cell-values.yaml \
-            --set-string 'pdCellSpec.models[0].kvTransfer.connector=MooncakeConnector' \
-            --set-string 'pdCellSpec.models[0].kvTransfer.config.kv_connector_extra_config.mooncake_protocol=tcp' \
-            --set 'pdCellSpec.models[0].kvTransfer.config.kv_connector_extra_config.num_workers=16' \
-            > /tmp/pd-mooncake.yaml
-
-          grep -Fq -- 'MooncakeConnector' /tmp/pd-mooncake.yaml
-          grep -Fq -- 'mooncake_protocol' /tmp/pd-mooncake.yaml
-          grep -Fq -- 'name: VLLM_MOONCAKE_BOOTSTRAP_PORT' /tmp/pd-mooncake.yaml
-          grep -Fq -- 'name: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT' /tmp/pd-mooncake.yaml
-
-      - name: Verify vLLM Router CLI and asymmetric GPU example
+      - name: Run P-D Cell helm-unittest suite
         shell: bash
         run: |
           set -euo pipefail
+          helm plugin install https://github.com/helm-unittest/helm-unittest.git --version 0.8.2
+          helm unittest ./helm -f 'tests/pdCell_test.yaml'
 
-          helm template pd-test ./helm -n inference \
-            -f helm/examples/pd-cell-values-full.yaml \
-            --set-string pdCellSpec.router.type=vllm \
-            --set-string pdCellSpec.router.repository=registry.example/vllm-router \
-            > /tmp/pd-vllm-router.yaml
-
-          grep -Fq -- '--vllm-pd-disaggregation' /tmp/pd-vllm-router.yaml
-          grep -Fq -- '--prefill' /tmp/pd-vllm-router.yaml
-          grep -Fq -- '--decode' /tmp/pd-vllm-router.yaml
-          grep -Fq -- '--kv-connector' /tmp/pd-vllm-router.yaml
-          grep -Fq -- 'nvidia.com/gpu: "4"' /tmp/pd-vllm-router.yaml
-          grep -Fq -- 'nvidia.com/gpu: "2"' /tmp/pd-vllm-router.yaml
-
-      - name: Upload rendered manifest
+      - name: Upload rendered manifests
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: pd-cell-rendered-manifest
-          path: /tmp/pd-cell.yaml
+          name: pd-cell-rendered-manifests
+          path: |
+            /tmp/pd-cell.yaml
+            /tmp/pd-nixl.yaml
+            /tmp/pd-auth.yaml
