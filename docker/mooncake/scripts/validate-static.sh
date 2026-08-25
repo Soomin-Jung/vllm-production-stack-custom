@@ -29,6 +29,9 @@ grep -Fq -- 'COPY sources.list /etc/apt/sources.list' "${DOCKERFILE}"
 grep -Fq -- 'update-ca-certificates' "${DOCKERFILE}"
 grep -Fq -- 'ARG VLLM_BASE_IMAGE=vllm/vllm-openai:v0.26.0-cu129' "${DOCKERFILE}"
 grep -Fq -- 'rm -fv /etc/apt/sources.list.d/*.list' "${DOCKERFILE}"
+# The Dockerfile expression must remain literal here; expansion would inspect
+# this validation shell's environment instead of the file contents.
+# shellcheck disable=SC2016
 grep -Fq -- 'LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LIBRARY_PATH}' "${DOCKERFILE}"
 grep -Fq -- 'mooncake-offline_*.tar.gz' "${DOCKERFILE}"
 grep -Fq -- 'sha256sum --check SHA256SUMS' "${DOCKERFILE}"
