@@ -1,4 +1,4 @@
-name: Validate offline Mooncake image build
+name: Validate Mooncake internal-proxy image build
 
 on:
   pull_request:

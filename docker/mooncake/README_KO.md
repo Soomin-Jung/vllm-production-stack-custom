@@ -1,8 +1,8 @@
-# vLLM 이미지용 Mooncake 0.3.10.post2 오프라인 빌드 가이드
+# vLLM 이미지용 Mooncake 0.3.10.post2 사내 프록시 빌드 가이드
 
 ## 1. 목적과 적용 범위
 
-이 디렉터리는 폐쇄망 Kaniko에서 기존 vLLM 이미지에
+이 디렉터리는 폐쇄망 Kaniko에서 사내 APT/pip 프록시를 사용하여 기존 vLLM 이미지에
 `mooncake-transfer-engine==0.3.10.post2`를 소스 빌드하여 추가한다.
 
 생성되는 Transfer Engine은 다음 두 transport를 모두 포함한다.
@@ -80,7 +80,7 @@ USE_ETCD=OFF
 따라서 이 빌드에는 Go 실행 파일, Go module, `GOPROXY`가 전혀 필요하지 않다.
 Dockerfile 정적 검증도 GitHub 접근과 Go 관련 명령이 들어오면 실패한다.
 
-## 4. 고정된 소스와 반입물
+## 4. 고정된 소스와 빌드 context
 
 ### 4.1 소스 잠금
 
@@ -96,38 +96,60 @@ Dockerfile 정적 검증도 GitHub 접근과 Go 관련 명령이 들어오면 �
 GitHub에서 제공하는 일반 source tarball만 가져오면 submodule 본문이 비어
 있다. 반드시 위 두 submodule까지 실제 파일로 채운 bundle을 반입해야 한다.
 
-### 4.2 폐쇄망에 반입할 파일
+### 4.2 폐쇄망에 수동 반입할 외부 소스
 
-인터넷 연결 구간에서 준비 스크립트를 실행하면 다음이 생성된다.
+인터넷 연결 구간에서 준비 스크립트를 실행하면 다음 두 파일이 생성된다.
 
 ```text
 docker/mooncake/vendor/
 ├── mooncake-v0.3.10.post2-src.tar.gz
-├── SHA256SUMS
-└── wheelhouse/
-    ├── auditwheel-6.4.2-...
-    ├── build-1.3.0-...
-    ├── packaging-25.0-...
-    ├── pip-25.2-...
-    ├── pyelftools-0.32-...
-    ├── pyproject_hooks-1.2.0-...
-    ├── setuptools-80.9.0-...
-    └── wheel-0.45.1-...
+└── SHA256SUMS
 ```
 
-다음 항목은 파일로 반입하지 않고 기존 내부 저장소를 사용한다.
+source archive 안에는 Mooncake 본체와 고정된 pybind11/yalantinglibs submodule
+본문이 모두 들어 있다. 따라서 별도 Python wheelhouse는 수동 반입하지 않는다.
+
+다음 의존성은 기존 내부 저장소를 사용한다.
 
 | 의존성 | 공급 경로 |
 |---|---|
 | vLLM base image | 내부 Docker registry/Artifactory proxy |
-| Ubuntu build packages | 기존 APT Artifactory proxy 설정 |
+| Ubuntu build packages | `/etc/apt/sources.list`에 복사한 APT Artifactory 설정 |
 | CUDA compiler/dev package | 기존 NVIDIA APT mirror 또는 devel base |
+| Python build packages | `/etc/pip.conf`에 복사한 pip Artifactory 설정 |
 
 이 Dockerfile은 Ubuntu vLLM base를 전제로 하므로 패키지 관리자는 `apt`다.
 YUM/APK proxy만 있고 APT proxy가 없다면 현재 이미지 계열과 맞는 APT mirror를
 먼저 Artifactory에 노출해야 한다.
 
-### 4.3 인터넷 연결 구간에서 bundle 생성
+### 4.3 Kaniko context에 추가할 사내 설정 파일
+
+Dockerfile의 `COPY`는 저장소 root 기준이다. Kaniko를 실행하기 전에 build context를
+다음처럼 구성한다.
+
+```text
+<repository-root>/
+├── certs/
+│   └── <internal-root-or-intermediate-ca>.crt
+├── pip.conf
+├── sources.list
+└── docker/
+    ├── Dockerfile.vllm-mooncake
+    └── mooncake/vendor/
+        ├── mooncake-v0.3.10.post2-src.tar.gz
+        └── SHA256SUMS
+```
+
+- CA 파일은 PEM 형식이고 확장자가 `.crt`여야 한다.
+- `pip.conf`에는 사내 index URL과 필요한 trusted-host/인증 설정을 둔다.
+- `sources.list`에는 폐쇄망에서 접근 가능한 Ubuntu/NVIDIA mirror만 둔다.
+- 인증정보가 포함된 설정 파일과 사내 CA는 공개 Git 저장소에 commit하지 않는다.
+
+Dockerfile은 이 설정으로 `configured-base` stage를 먼저 만든다. 이후 builder와
+runtime이 모두 이를 상속하므로 최종 vLLM 이미지에도 사내 CA와 저장소 설정이
+일관되게 적용된다.
+
+### 4.4 인터넷 연결 구간에서 source bundle 생성
 
 저장소 root에서 실행한다.
 
@@ -140,23 +162,21 @@ bash docker/mooncake/scripts/prepare-offline-inputs.sh
 1. Mooncake를 고정 commit으로 checkout한다.
 2. pybind11과 yalantinglibs를 고정 submodule commit으로 checkout한다.
 3. commit 정보를 `SOURCE_MANIFEST.env`로 bundle 안에 기록한다.
-4. Python 빌드 wheel과 모든 전이 의존성을 내려받는다.
-5. 전체 반입물의 `SHA256SUMS`를 만든 후 즉시 재검증한다.
+4. source archive의 `SHA256SUMS`를 만든 후 즉시 재검증한다.
 
 생성 파일은 Git에 commit되지 않도록 ignore되어 있지만 Docker/Kaniko build
 context에는 포함된다.
 
-### 4.4 폐쇄망 반입 후 무결성 확인
+### 4.5 폐쇄망 반입 후 무결성 확인
 
 ```bash
 cd docker/mooncake/vendor
 sha256sum --check SHA256SUMS
 ```
 
-세 항목을 함께 옮겨야 한다.
+두 파일을 함께 옮겨야 한다.
 
-- source archive
-- `wheelhouse/` 전체
+- Mooncake와 submodule이 들어 있는 source archive
 - `SHA256SUMS`
 
 ## 5. ABI 일치 전략
@@ -187,7 +207,7 @@ registry.example/vllm-openai@sha256:<digest>
 
 ## 6. Kaniko 빌드
 
-빌드 context는 저장소 root여야 한다.
+빌드 context는 `certs/`, `pip.conf`, `sources.list`가 있는 저장소 root여야 한다.
 
 ```bash
 /kaniko/executor \
@@ -201,7 +221,8 @@ registry.example/vllm-openai@sha256:<digest>
 ```
 
 Dockerfile에는 BuildKit 전용 `RUN --mount`가 없으므로 Kaniko에서 별도 문법
-변환이 필요 없다.
+변환이 필요 없다. APT와 pip는 각각 복사된 `sources.list`와 `pip.conf`를 사용하며,
+GitHub/PyPI/Ubuntu public repository에 직접 접근하지 않는다.
 
 ### CUDA 13 base를 사용할 때
 
@@ -391,7 +412,8 @@ fallback 부재를 함께 확인해야 한다.
 | `nvcc: not found` | CUDA APT mirror와 `CUDA_DEVEL_PACKAGES` | runtime base에 devel package를 추가하지 못함 |
 | `Python.h` 없음 | `PYTHON_VERSION`, base image | builder Python과 vLLM Python ABI가 불일치할 위험 |
 | yalantinglibs CMake package 없음 | submodule/선행 install log | pinned yalantinglibs build 또는 install 실패 |
-| pip가 외부 index를 조회 | Dockerfile 변조 여부 | 기본값은 `PIP_NO_INDEX=1`; 외부 조회가 없어야 함 |
+| pip가 외부 index를 조회 | `/etc/pip.conf`의 index 설정 | 사내 Artifactory URL만 사용해야 함 |
+| APT TLS 인증 실패 | `certs/*.crt`, `sources.list` | CA가 PEM `.crt`인지와 mirror URL을 확인 |
 | transport marker 누락 | `CMAKE_FEATURES.txt` | CMake flag가 실제 build에 반영되지 않음 |
 | GPU Pod에서 `libcuda.so.1` 누락 | NVIDIA runtime/device plugin | build 문제가 아니라 container runtime driver mount 문제 |
 | `nvlink_intra` 설정인데 `nvlink` log | `MC_INTRANODE_NVLINK` 양쪽 주입 | protocol 문자열과 transport 자동 설치 조건이 어긋남 |
@@ -399,7 +421,8 @@ fallback 부재를 함께 확인해야 한다.
 
 ## 11. 이번 PR에서 의도적으로 하지 않는 것
 
-- Mooncake third-party source와 wheel binary를 Git 저장소에 commit하지 않는다.
+- Mooncake third-party source bundle을 Git 저장소에 commit하지 않는다.
+- `pip.conf`, `sources.list`, 사내 CA의 실제 값이나 credential을 공개 저장소에 기록하지 않는다.
 - Artifactory 주소나 credential을 Dockerfile에 기록하지 않는다.
 - Go proxy를 새로 구성하지 않는다.
 - PR #2/#4 Helm template을 이 PR에서 수정하지 않는다.

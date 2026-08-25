@@ -9,17 +9,16 @@ MOONCAKE_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 
 OUTPUT_DIR=${1:-${MOONCAKE_DIR}/vendor}
 BUNDLE_PATH=${OUTPUT_DIR}/${MOONCAKE_SOURCE_ARCHIVE}
-WHEELHOUSE=${OUTPUT_DIR}/wheelhouse
 CHECKSUMS=${OUTPUT_DIR}/SHA256SUMS
 
-for command_name in git python3 tar sha256sum; do
+for command_name in git tar sha256sum; do
   command -v "${command_name}" >/dev/null 2>&1 || {
     echo "Missing required command: ${command_name}" >&2
     exit 1
   }
 done
 
-if [[ -e "${BUNDLE_PATH}" || -e "${WHEELHOUSE}" || -e "${CHECKSUMS}" ]]; then
+if [[ -e "${BUNDLE_PATH}" || -e "${CHECKSUMS}" ]]; then
   echo "Offline inputs already exist under ${OUTPUT_DIR}; move them before regenerating" >&2
   exit 1
 fi
@@ -60,17 +59,11 @@ tar \
   -czf "${BUNDLE_PATH}" \
   Mooncake
 
-mkdir -p "${WHEELHOUSE}"
-python3 -m pip download \
-  --only-binary=:all: \
-  --destination "${WHEELHOUSE}" \
-  --requirement "${MOONCAKE_DIR}/requirements-build.txt"
-
 (
   cd "${OUTPUT_DIR}"
-  sha256sum "${MOONCAKE_SOURCE_ARCHIVE}" wheelhouse/*.whl > SHA256SUMS
+  sha256sum "${MOONCAKE_SOURCE_ARCHIVE}" > SHA256SUMS
   sha256sum --check SHA256SUMS
 )
 
 echo "Prepared offline inputs in ${OUTPUT_DIR}"
-echo "Transfer ${MOONCAKE_SOURCE_ARCHIVE}, wheelhouse/, and SHA256SUMS together"
+echo "Transfer ${MOONCAKE_SOURCE_ARCHIVE} and SHA256SUMS together"

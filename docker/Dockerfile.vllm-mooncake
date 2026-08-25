@@ -1,10 +1,26 @@
 ARG VLLM_BASE_IMAGE
 
-FROM ${VLLM_BASE_IMAGE} AS mooncake-builder
+FROM ${VLLM_BASE_IMAGE} AS configured-base
 
-# The upstream vLLM image runs as root; package installation requires it.
+# The upstream vLLM image runs as root. Keep the internal trust and package
+# repository configuration in both the builder and final runtime image.
 # hadolint ignore=DL3002,DL3066
 USER root
+
+COPY certs/ /opt/certs/
+COPY pip.conf /etc/pip.conf
+COPY sources.list /etc/apt/sources.list
+
+RUN set -eux; \
+    test -s /etc/pip.conf; \
+    test -s /etc/apt/sources.list; \
+    test -n "$(find /opt/certs -maxdepth 1 -type f -name '*.crt' -print -quit)"; \
+    find /opt/certs -maxdepth 1 -type f -name '*.crt' \
+      -exec cp -v {} /usr/local/share/ca-certificates/ \;; \
+    update-ca-certificates; \
+    rm -rf /opt/certs
+
+FROM configured-base AS mooncake-builder
 
 ARG PYTHON_VERSION=3.12
 ARG MOONCAKE_BUILD_JOBS=8
@@ -13,8 +29,6 @@ ARG CUDA_DEVEL_PACKAGES="cuda-nvcc-12-9 cuda-cudart-dev-12-9 cuda-driver-dev-12-
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_INDEX=1 \
-    PIP_FIND_LINKS=/opt/mooncake/vendor/wheelhouse \
     CUDA_HOME=/usr/local/cuda \
     PATH=/usr/local/cuda/bin:${PATH} \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
@@ -27,8 +41,9 @@ COPY docker/mooncake/scripts/verify-source-lock.sh /opt/mooncake/verify-source-l
 COPY docker/mooncake/scripts/verify-install.py /opt/mooncake/verify-install.py
 COPY docker/mooncake/vendor/ /opt/mooncake/vendor/
 
-# The base image and APT repositories are expected to be supplied through the
-# internal registry/Artifactory. No GitHub, PyPI, or Go proxy is used here.
+# The base image, APT packages, and Python packages are supplied through the
+# internal registry and the repository settings copied into configured-base.
+# No GitHub or Go proxy is used during this build.
 # hadolint ignore=DL3008
 RUN set -eux; \
     apt-get update; \
@@ -60,11 +75,13 @@ RUN set -eux; \
     fi; \
     rm -rf /var/lib/apt/lists/*
 
+WORKDIR /opt/mooncake/vendor
+
 RUN set -eux; \
     . /opt/mooncake/SOURCE_LOCK.env; \
     test -f "/opt/mooncake/vendor/${MOONCAKE_SOURCE_ARCHIVE}"; \
-    test -d /opt/mooncake/vendor/wheelhouse; \
-    test -n "$(find /opt/mooncake/vendor/wheelhouse -maxdepth 1 -type f -name '*.whl' -print -quit)"; \
+    test -f /opt/mooncake/vendor/SHA256SUMS; \
+    sha256sum --check SHA256SUMS; \
     tar -xzf "/opt/mooncake/vendor/${MOONCAKE_SOURCE_ARCHIVE}" -C /opt/mooncake; \
     /opt/mooncake/verify-source-lock.sh /opt/mooncake/Mooncake; \
     command -v "python${PYTHON_VERSION}"; \
@@ -72,10 +89,10 @@ RUN set -eux; \
     "python${PYTHON_VERSION}" -c \
       'import os, sysconfig; header=os.path.join(sysconfig.get_paths()["include"], "Python.h"); assert os.path.isfile(header), header'; \
     "python${PYTHON_VERSION}" -m pip install \
-      --no-index \
       --no-cache-dir \
-      --find-links=/opt/mooncake/vendor/wheelhouse \
       --requirement /opt/mooncake/requirements-build.txt
+
+WORKDIR /opt/mooncake
 
 # yalantinglibs is a pinned Mooncake submodule, but Mooncake resolves it as an
 # installed CMake package. Build it locally before configuring Mooncake.
@@ -148,7 +165,7 @@ RUN set -eux; \
     test "$#" -eq 1; \
     test -f "$1"
 
-FROM ${VLLM_BASE_IMAGE} AS runtime
+FROM configured-base AS runtime
 
 # Preserve the upstream vLLM image execution user and entrypoint contract.
 # hadolint ignore=DL3002,DL3066

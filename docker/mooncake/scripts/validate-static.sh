@@ -23,10 +23,21 @@ grep -Fq -- 'ai.mooncake.transport.nvlink="true"' "${DOCKERFILE}"
 grep -Fq -- 'ai.mooncake.transport.nvlink_intra="true"' "${DOCKERFILE}"
 grep -Fq -- "${MOONCAKE_VERSION}" "${DOCKERFILE}"
 grep -Fq -- "${MOONCAKE_COMMIT}" "${DOCKERFILE}"
+grep -Fq -- 'COPY certs/ /opt/certs/' "${DOCKERFILE}"
+grep -Fq -- 'COPY pip.conf /etc/pip.conf' "${DOCKERFILE}"
+grep -Fq -- 'COPY sources.list /etc/apt/sources.list' "${DOCKERFILE}"
+grep -Fq -- 'update-ca-certificates' "${DOCKERFILE}"
+grep -Fq -- 'sha256sum --check SHA256SUMS' "${DOCKERFILE}"
+
+if grep -Eq -- 'wheelhouse|pip download' \
+  "${DOCKERFILE}" "${MOONCAKE_DIR}/scripts/prepare-offline-inputs.sh"; then
+  echo "Python packages must come from pip.conf, not a manually imported wheelhouse" >&2
+  exit 1
+fi
 
 if grep -Eq -- 'git clone|go install|GOPROXY|https://github.com' "${DOCKERFILE}"; then
   echo "Dockerfile must not access GitHub or Go tooling during the closed-network build" >&2
   exit 1
 fi
 
-echo "Mooncake offline image build contract is valid"
+echo "Mooncake internal-proxy image build contract is valid"
