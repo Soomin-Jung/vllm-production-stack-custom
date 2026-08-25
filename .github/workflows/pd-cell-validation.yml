@@ -73,7 +73,7 @@ jobs:
           contains 'pd-orchestrator: "vllm-router"'
           contains 'pd-kv-connector: "mooncake"'
           contains 'name: pd-router'
-          contains '- vllm-router'
+          contains '- "vllm-router"'
           contains '--vllm-pd-disaggregation'
           contains '--kv-connector'
           contains 'mooncake'
