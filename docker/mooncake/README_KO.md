@@ -17,8 +17,11 @@
 이미지 빌드 변경과 Helm diff가 섞이지 않는다.
 
 대상은 현재 P/D 시험에 사용하는 Ubuntu 계열 vLLM CUDA 이미지다. 기본값은
-Python 3.12와 CUDA 12.9 개발 패키지이며, 다른 조합은 build argument로
-명시적으로 바꾼다.
+`vllm/vllm-openai:v0.26.0-cu129`, Python 3.12, CUDA 12.9 개발 패키지다.
+다른 조합은 build argument로 명시적으로 바꾼다.
+
+2026-08-25 내부 Kaniko build에서 wheel 생성과 final image 설치까지 통과했다.
+GPU KV 전송 경로의 정상 동작은 PR #4 P/D runtime 시험에서 별도로 확인한다.
 
 ## 2. 공식 wheel에 transport가 없는 이유
 
@@ -102,7 +105,7 @@ GitHub에서 제공하는 일반 source tarball만 가져오면 submodule 본문
 
 ```text
 docker/mooncake/vendor/
-├── mooncake-v0.3.10.post2-src.tar.gz
+├── mooncake-offline_0.3.10.post2.tar.gz
 └── SHA256SUMS
 ```
 
@@ -136,7 +139,7 @@ Dockerfile의 `COPY`는 저장소 root 기준이다. Kaniko를 실행하기 전�
 └── docker/
     ├── Dockerfile.vllm-mooncake
     └── mooncake/vendor/
-        ├── mooncake-v0.3.10.post2-src.tar.gz
+        ├── mooncake-offline_0.3.10.post2.tar.gz
         └── SHA256SUMS
 ```
 
@@ -179,6 +182,11 @@ sha256sum --check SHA256SUMS
 - Mooncake와 submodule이 들어 있는 source archive
 - `SHA256SUMS`
 
+실제 내부 작업처럼 Mooncake release archive와 두 submodule archive를 수동으로
+조립한 경우 `SOURCE_MANIFEST.env`가 없을 수 있다. 이때 build는 package version과
+pybind11/yalantinglibs의 필수 파일 존재를 검증한다. 정확한 commit provenance까지
+강제하려면 준비 스크립트가 생성한 manifest를 포함한다.
+
 ## 5. ABI 일치 전략
 
 이전 CUDA runtime ABI 문제를 피하기 위해 builder와 final stage가 동일한
@@ -202,8 +210,21 @@ compiler와 소스가 남지 않는다.
 registry.example/vllm-openai@sha256:<digest>
 ```
 
-같은 `v0.27.1-cu129` tag가 재게시되면 Python, CUDA, glibc가 바뀌어 빌드
+같은 `v0.26.0-cu129` tag가 재게시되면 Python, CUDA, glibc가 바뀌어 빌드
 재현성이 깨질 수 있기 때문이다.
+
+### CUDA stub linker path
+
+내부 CUDA 12.9 runtime base에 개발 패키지를 추가한 뒤 Mooncake CMake link에서
+CUDA driver stub을 찾지 못하는 오류가 발생했다. 다음 build-time 변수로 해결했다.
+
+```text
+LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LIBRARY_PATH}
+```
+
+`LIBRARY_PATH`는 compiler/linker의 link-time 검색 경로다. final runtime에서 실제
+driver 대신 stub을 load하지 않도록 stub 경로를 `LD_LIBRARY_PATH`에는 추가하지
+않는다. 실제 `libcuda.so.1`은 GPU Pod의 NVIDIA container runtime이 제공한다.
 
 ## 6. Kaniko 빌드
 
@@ -213,7 +234,7 @@ registry.example/vllm-openai@sha256:<digest>
 /kaniko/executor \
   --context dir:///workspace/vllm-production-stack-custom \
   --dockerfile docker/Dockerfile.vllm-mooncake \
-  --destination registry.example/vllm-openai:v0.27.1-cu129-mooncake-0.3.10.post2 \
+  --destination registry.example/vllm-openai:v0.26.0-cu129-mooncake-0.3.10.post2 \
   --build-arg VLLM_BASE_IMAGE=registry.example/vllm-openai@sha256:<digest> \
   --build-arg PYTHON_VERSION=3.12 \
   --build-arg MOONCAKE_BUILD_JOBS=8 \
@@ -223,6 +244,10 @@ registry.example/vllm-openai@sha256:<digest>
 Dockerfile에는 BuildKit 전용 `RUN --mount`가 없으므로 Kaniko에서 별도 문법
 변환이 필요 없다. APT와 pip는 각각 복사된 `sources.list`와 `pip.conf`를 사용하며,
 GitHub/PyPI/Ubuntu public repository에 직접 접근하지 않는다.
+
+내부 검증 환경에서는 base image에 남아 있던 public/NVIDIA list가 사내 mirror와
+섞이지 않도록 `/etc/apt/sources.list.d/*.list`를 제거했다. 또한 proxy에서
+`libc6-bin` 해석에 실패하여 검증된 `libc6` 패키지로 설치 목록을 정리했다.
 
 ### CUDA 13 base를 사용할 때
 
@@ -292,6 +317,24 @@ PR #4의 model-local `kvTransfer`와 model 공통 `env` 계약을 기준으로 �
 Prefill과 Decode가 같은 model block의 env를 상속하므로 양쪽 process에 동일한
 transport 선택 환경변수가 들어간다.
 
+Mooncake 0.3.10.post2에서 vLLM의 `mooncake_protocol`은 Python allocator 선택에
+사용되고, 실제 자동 설치 transport는 compile flag, 환경변수, HCA discovery로
+결정된다. 이번처럼 `USE_MNNVL` 또는 `USE_INTRA_NVLINK`가 활성화된 build의
+우선순위는 다음과 같다.
+
+```text
+MC_INTRANODE_NVLINK 존재
+  -> nvlink_intra
+else MC_FORCE_MNNVL 존재 또는 HCA 없음
+  -> nvlink
+else
+  -> rdma
+```
+
+이 compile branch에는 TCP 자동 fallback이 없다. `USE_TCP=ON`은 구현체를
+컴파일하지만 자동으로 설치한다는 의미는 아니다. vLLM의 requested protocol log와
+Mooncake의 실제 transport install log를 함께 확인해야 한다.
+
 ### 8.1 권장: 동일 노드 P/D에서 `nvlink_intra`
 
 Network B의 H200 NVSwitch 동일 노드 P/D Cell은 먼저 이 경로를 검증한다.
@@ -302,7 +345,7 @@ pdCellSpec:
   models:
     - name: qwen-pd-p1d1
       repository: registry.example/vllm-openai
-      tag: v0.27.1-cu129-mooncake-0.3.10.post2
+      tag: v0.26.0-cu129-mooncake-0.3.10.post2
 
       env:
         - name: MC_INTRANODE_NVLINK
@@ -329,7 +372,7 @@ pdCellSpec:
   models:
     - name: qwen-pd-p1d1
       repository: registry.example/vllm-openai
-      tag: v0.27.1-cu129-mooncake-0.3.10.post2
+      tag: v0.26.0-cu129-mooncake-0.3.10.post2
 
       env:
         - name: MC_FORCE_MNNVL
@@ -412,6 +455,7 @@ fallback 부재를 함께 확인해야 한다.
 | `nvcc: not found` | CUDA APT mirror와 `CUDA_DEVEL_PACKAGES` | runtime base에 devel package를 추가하지 못함 |
 | `Python.h` 없음 | `PYTHON_VERSION`, base image | builder Python과 vLLM Python ABI가 불일치할 위험 |
 | yalantinglibs CMake package 없음 | submodule/선행 install log | pinned yalantinglibs build 또는 install 실패 |
+| CMake link에서 CUDA driver symbol/library 누락 | `LIBRARY_PATH` | `/usr/local/cuda/lib64/stubs`가 link-time 경로에 필요 |
 | pip가 외부 index를 조회 | `/etc/pip.conf`의 index 설정 | 사내 Artifactory URL만 사용해야 함 |
 | APT TLS 인증 실패 | `certs/*.crt`, `sources.list` | CA가 PEM `.crt`인지와 mirror URL을 확인 |
 | transport marker 누락 | `CMAKE_FEATURES.txt` | CMake flag가 실제 build에 반영되지 않음 |
@@ -428,5 +472,5 @@ fallback 부재를 함께 확인해야 한다.
 - PR #2/#4 Helm template을 이 PR에서 수정하지 않는다.
 - Kaniko build 성공만으로 GPU NVLink runtime 성공을 선언하지 않는다.
 
-실제 폐쇄망 Kaniko build와 H200 P/D runtime 결과가 확인되기 전까지 PR은 Draft로
-유지한다.
+폐쇄망 Kaniko image build는 통과했다. H200 P/D runtime과 실제 선택 transport는
+PR #4에서 검증한다.

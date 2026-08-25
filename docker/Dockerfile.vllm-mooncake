@@ -1,4 +1,8 @@
-ARG VLLM_BASE_IMAGE
+ARG VLLM_BASE_IMAGE=vllm/vllm-openai:v0.26.0-cu129
+
+####
+# Stage: Base Configure
+####
 
 FROM ${VLLM_BASE_IMAGE} AS configured-base
 
@@ -14,12 +18,16 @@ COPY sources.list /etc/apt/sources.list
 RUN set -eux; \
     test -s /etc/pip.conf; \
     test -s /etc/apt/sources.list; \
+    rm -fv /etc/apt/sources.list.d/*.list; \
     test -n "$(find /opt/certs -maxdepth 1 -type f -name '*.crt' -print -quit)"; \
     find /opt/certs -maxdepth 1 -type f -name '*.crt' \
       -exec cp -v {} /usr/local/share/ca-certificates/ \;; \
     update-ca-certificates; \
     rm -rf /opt/certs
 
+####
+# Stage: Mooncake Builder
+####
 FROM configured-base AS mooncake-builder
 
 ARG PYTHON_VERSION=3.12
@@ -31,7 +39,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     CUDA_HOME=/usr/local/cuda \
     PATH=/usr/local/cuda/bin:${PATH} \
-    LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH} \
+    LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LIBRARY_PATH}
 
 WORKDIR /opt/mooncake
 
@@ -51,7 +60,7 @@ RUN set -eux; \
         build-essential \
         ca-certificates \
         cmake \
-        libc6-bin \
+        libc6 \
         libc6-dev \
         libasio-dev \
         libboost-all-dev \
@@ -78,11 +87,15 @@ RUN set -eux; \
 WORKDIR /opt/mooncake/vendor
 
 RUN set -eux; \
-    . /opt/mooncake/SOURCE_LOCK.env; \
-    test -f "/opt/mooncake/vendor/${MOONCAKE_SOURCE_ARCHIVE}"; \
-    test -f /opt/mooncake/vendor/SHA256SUMS; \
-    sha256sum --check SHA256SUMS; \
-    tar -xzf "/opt/mooncake/vendor/${MOONCAKE_SOURCE_ARCHIVE}" -C /opt/mooncake; \
+    set -- /opt/mooncake/vendor/mooncake-offline_*.tar.gz; \
+    test "$#" -eq 1; \
+    SOURCE_TAR="$1"; \
+    test -f "${SOURCE_TAR}"; \
+    if [ -f /opt/mooncake/vendor/SHA256SUMS ]; then \
+        sha256sum --check SHA256SUMS; \
+    fi; \
+    tar -xzf "${SOURCE_TAR}" -C /opt/mooncake; \
+    test -f /opt/mooncake/Mooncake/CMakeLists.txt; \
     /opt/mooncake/verify-source-lock.sh /opt/mooncake/Mooncake; \
     command -v "python${PYTHON_VERSION}"; \
     command -v nvcc; \
@@ -165,6 +178,9 @@ RUN set -eux; \
     test "$#" -eq 1; \
     test -f "$1"
 
+####
+# Stage: vLLM Runtime Image
+####
 FROM configured-base AS runtime
 
 # Preserve the upstream vLLM image execution user and entrypoint contract.

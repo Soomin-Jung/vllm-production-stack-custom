@@ -65,5 +65,5 @@ tar \
   sha256sum --check SHA256SUMS
 )
 
-echo "Prepared offline inputs in ${OUTPUT_DIR}"
+echo "Prepared Mooncake source closure in ${OUTPUT_DIR}"
 echo "Transfer ${MOONCAKE_SOURCE_ARCHIVE} and SHA256SUMS together"

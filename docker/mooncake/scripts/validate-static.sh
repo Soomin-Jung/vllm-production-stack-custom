@@ -27,7 +27,16 @@ grep -Fq -- 'COPY certs/ /opt/certs/' "${DOCKERFILE}"
 grep -Fq -- 'COPY pip.conf /etc/pip.conf' "${DOCKERFILE}"
 grep -Fq -- 'COPY sources.list /etc/apt/sources.list' "${DOCKERFILE}"
 grep -Fq -- 'update-ca-certificates' "${DOCKERFILE}"
+grep -Fq -- 'ARG VLLM_BASE_IMAGE=vllm/vllm-openai:v0.26.0-cu129' "${DOCKERFILE}"
+grep -Fq -- 'rm -fv /etc/apt/sources.list.d/*.list' "${DOCKERFILE}"
+grep -Fq -- 'LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LIBRARY_PATH}' "${DOCKERFILE}"
+grep -Fq -- 'mooncake-offline_*.tar.gz' "${DOCKERFILE}"
 grep -Fq -- 'sha256sum --check SHA256SUMS' "${DOCKERFILE}"
+
+if grep -Fq -- 'libc6-bin' "${DOCKERFILE}"; then
+  echo "Use the internally validated libc6 package instead of libc6-bin" >&2
+  exit 1
+fi
 
 if grep -Eq -- 'wheelhouse|pip download' \
   "${DOCKERFILE}" "${MOONCAKE_DIR}/scripts/prepare-offline-inputs.sh"; then

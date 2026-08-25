@@ -13,14 +13,6 @@ fi
 . "${LOCK_FILE}"
 
 manifest="${SOURCE_DIR}/SOURCE_MANIFEST.env"
-if [[ ! -f "${manifest}" ]]; then
-  echo "Missing ${manifest}; prepare the source with prepare-offline-inputs.sh" >&2
-  exit 1
-fi
-
-# shellcheck disable=SC1090
-. "${manifest}"
-
 assert_equal() {
   local name=$1
   local actual=$2
@@ -31,10 +23,16 @@ assert_equal() {
   fi
 }
 
-assert_equal MOONCAKE_VERSION "${SOURCE_MOONCAKE_VERSION:-}" "${MOONCAKE_VERSION}"
-assert_equal MOONCAKE_COMMIT "${SOURCE_MOONCAKE_COMMIT:-}" "${MOONCAKE_COMMIT}"
-assert_equal PYBIND11_COMMIT "${SOURCE_PYBIND11_COMMIT:-}" "${PYBIND11_COMMIT}"
-assert_equal YALANTINGLIBS_COMMIT "${SOURCE_YALANTINGLIBS_COMMIT:-}" "${YALANTINGLIBS_COMMIT}"
+if [[ -f "${manifest}" ]]; then
+  # shellcheck disable=SC1090
+  . "${manifest}"
+  assert_equal MOONCAKE_VERSION "${SOURCE_MOONCAKE_VERSION:-}" "${MOONCAKE_VERSION}"
+  assert_equal MOONCAKE_COMMIT "${SOURCE_MOONCAKE_COMMIT:-}" "${MOONCAKE_COMMIT}"
+  assert_equal PYBIND11_COMMIT "${SOURCE_PYBIND11_COMMIT:-}" "${PYBIND11_COMMIT}"
+  assert_equal YALANTINGLIBS_COMMIT "${SOURCE_YALANTINGLIBS_COMMIT:-}" "${YALANTINGLIBS_COMMIT}"
+else
+  echo "SOURCE_MANIFEST.env not present; validating version and populated submodules only" >&2
+fi
 
 test -f "${SOURCE_DIR}/extern/pybind11/include/pybind11/pybind11.h"
 test -f "${SOURCE_DIR}/extern/yalantinglibs/CMakeLists.txt"
