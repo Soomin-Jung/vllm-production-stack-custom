@@ -43,21 +43,21 @@ On an Internet-connected or package-staging host with the target architecture:
 
 ```bash
 cd docker/vllm-router
-rm -rf wheelhouse
-mkdir -p wheelhouse
-
-python3.12 -m pip download \
-  --dest wheelhouse \
-  --only-binary=:all: \
-  "vllm-router==0.1.15"
-
-(
-  cd wheelhouse
-  sha256sum ./*.whl > SHA256SUMS
-)
-
-tar -czf vllm-router-0.1.15-wheelhouse.tar.gz wheelhouse
+./prepare-wheelhouse.sh 0.1.15
 ```
+
+The script:
+
+1. downloads `vllm-router==0.1.15` and every resolved Python dependency as
+   binary wheels only,
+2. verifies the published v0.1.15 Router-wheel SHA256 for x86_64/aarch64,
+3. generates `wheelhouse/SHA256SUMS` for the complete dependency set, and
+4. creates `vllm-router-0.1.15-wheelhouse.tar.gz` for closed-network import.
+
+For a later Router version, the script still prepares the wheelhouse but emits a
+warning until the new release-wheel SHA256 is reviewed and pinned in the script.
+That warning is an explicit release-review gate, not an invitation to skip
+artifact verification.
 
 Transfer the tarball into the closed network, extract it back under this
 directory, and build with an internally mirrored Python base image:
@@ -81,10 +81,11 @@ The Dockerfile uses all of the following controls:
 - `--find-links`: packages come only from the copied wheelhouse.
 - `--only-binary=:all:`: a missing wheel fails instead of silently compiling
   source code.
-- optional `SHA256SUMS` verification before installation.
+- `SHA256SUMS` verification when the manifest is present.
 - package-version assertion and `vllm-router --help` smoke check during build.
 
 The `BASE_IMAGE` itself must already be reachable from the internal registry.
+For production, mirror/pin that base image by digest as well.
 
 ## Path B: internal PyPI proxy build
 
@@ -120,7 +121,7 @@ instead of unexpectedly requiring Rust/Cargo access.
 
 The official Python slim image already includes `ca-certificates`; the proxy
 Dockerfile adds the supplied `.crt` files to the system trust store before pip
-access. No apt package installation is required for the router image itself.
+access. No apt package installation is required for the Router image itself.
 
 ## Why the upstream `Dockerfile.router` is not copied as-is
 
@@ -166,7 +167,7 @@ so Cargo vendoring is feasible for this release. Do not use an unpinned online
 
 ## Required runtime capability gate
 
-Before using a newly packaged router version in P/D Cell, verify at least:
+Before using a newly packaged Router version in P/D Cell, verify at least:
 
 ```bash
 vllm-router --help | grep -- --vllm-pd-disaggregation
