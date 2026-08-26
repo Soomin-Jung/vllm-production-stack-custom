@@ -13,13 +13,12 @@ ARG VLLM_ROUTER_VERSION=0.1.15
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-WORKDIR /app
-
 COPY wheelhouse/ /opt/vllm-router-wheelhouse/
 
+WORKDIR /opt/vllm-router-wheelhouse
+
 RUN set -eux; \
-    if [ -f /opt/vllm-router-wheelhouse/SHA256SUMS ]; then \
-        cd /opt/vllm-router-wheelhouse; \
+    if [ -f SHA256SUMS ]; then \
         sha256sum -c SHA256SUMS; \
     fi; \
     python -m pip install \
@@ -31,6 +30,8 @@ RUN set -eux; \
     python -c "import importlib.metadata as m; assert m.version('vllm-router') == '${VLLM_ROUTER_VERSION}'"; \
     vllm-router --help >/dev/null; \
     rm -rf /opt/vllm-router-wheelhouse
+
+WORKDIR /app
 
 EXPOSE 8000
 EXPOSE 29000
