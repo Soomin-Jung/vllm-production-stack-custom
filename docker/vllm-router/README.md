@@ -62,54 +62,59 @@ docker/vllm-router/
 `v0.1.15`. Record the corresponding upstream tag/commit SHA in the release
 change record before building.
 
-## Cargo/Artifactory proxy
+## Cargo proxy
 
-The Artifactory Cargo remote repository should proxy the official Rust registry
-endpoint:
-
-```text
-https://index.crates.io
-```
-
-JFrog Cargo repositories use a sparse client index URL in this form:
+The internal Cargo remote/proxy should use the official crates.io sparse index
+as its upstream:
 
 ```text
-sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/
+index.crates.io
 ```
 
-Start from `cargo-config.toml.example`:
+Use `cargo-config.toml.example` as the client-side template. The repository keeps
+the same names used by the internal deployment convention:
 
 ```toml
 # ~/.cargo/config.toml
-# Proxy upstream/registry URL in Artifactory: https://index.crates.io
+# Proxy 연결 URL: index.crates.io
+# 설정 레퍼런스: https://doc.rust-lang.org/cargo/reference/config.html
 
 [registry]
 default = "cargo-proxy"
-global-credential-providers = ["cargo:token"]
 
 [registries.cargo-proxy]
-index = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+index = "sparse+http://<<DOMAIN>>/<<ENDPOINT>>/"
 
 [source.crates-io]
-replace-with = "cargo-proxy-source"
+replace-with = "cargo-proxy"
 
-[source.cargo-proxy-source]
-registry = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+[source.cargo-proxy]
+registry = "sparse+http://<<DOMAIN>>/<<ENDPOINT>>/"
 ```
 
-The `[source.crates-io]` replacement is important. Setting only
-`[registry] default = "cargo-proxy"` is not sufficient to guarantee that normal
-`Cargo.toml` dependencies are resolved through the internal proxy.
+Replace `<<DOMAIN>>` and `<<ENDPOINT>>` with the real internal endpoint. Use
+`https://` instead of `http://` when the internal service is TLS-enabled; the
+Docker builder installs the corporate CA before Cargo access. A sparse registry
+URL should keep the trailing `/`.
+
+Two Cargo settings have different jobs:
+
+- `[registry].default = "cargo-proxy"` selects the default named registry for
+  registry-oriented Cargo commands.
+- `[source.crates-io].replace-with = "cargo-proxy"` redirects normal
+  `Cargo.toml` dependencies away from crates.io, so the replacement source
+  `[source.cargo-proxy]` is required for the actual build path.
+
+TOML files must use ordinary ASCII quotes (`"`), not smart quotes (`“ ”`).
 
 For v0.1.15, `Cargo.lock` contains crates.io registry dependencies and no
 `git+...` package sources, so a Cargo remote repository that proxies crates.io
 is sufficient for the Rust dependency graph.
 
 Do not commit credentials. If the Cargo remote requires authentication, inject
-credentials using the build system's secret mechanism. For a highly restricted
-image builder, a read-only internal Cargo remote or fully vendored dependency
-bundle is preferable to putting a token in Docker build arguments or image
-layers.
+credentials using Cargo credentials or the build system's secret mechanism. A
+read-only internal Cargo remote or fully vendored dependency bundle is preferred
+to putting a token in Docker build arguments or image layers.
 
 ## Production path: Rust source build through internal proxies
 
