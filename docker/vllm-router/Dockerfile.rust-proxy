@@ -22,6 +22,8 @@
 ARG RUST_BUILDER_IMAGE=rustlang/rust:nightly-bullseye
 FROM ${RUST_BUILDER_IMAGE} AS rust-builder
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ARG VLLM_ROUTER_VERSION=0.1.15
 
 # Install corporate trust before contacting internal HTTPS package endpoints.
@@ -34,8 +36,10 @@ RUN set -eux; \
 
 # Upstream v0.1.15 Dockerfile.router is Bullseye-based and installs these build
 # dependencies. Keep the same package contract, but resolve it through the
-# internal apt proxy.
+# internal apt proxy. Package versions are intentionally controlled by the
+# pinned/mirrored Bullseye repository snapshot rather than duplicated here.
 COPY ./sources.list /etc/apt/sources.list
+# hadolint ignore=DL3008
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -71,6 +75,8 @@ RUN set -eux; \
 ARG RUNTIME_IMAGE=python:3.12-slim-bullseye
 FROM ${RUNTIME_IMAGE}
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Copy the resulting trust bundle rather than contacting apt in the runtime
 # stage. This keeps the final image independent of package repositories.
 COPY --from=rust-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
@@ -79,7 +85,10 @@ COPY --from=rust-builder /src/vllm-router/target/release/vllm-router /usr/local/
 RUN set -eux; \
     chmod 0555 /usr/local/bin/vllm-router; \
     ldd /usr/local/bin/vllm-router | tee /tmp/vllm-router.ldd; \
-    ! grep -q 'not found' /tmp/vllm-router.ldd; \
+    if grep -q 'not found' /tmp/vllm-router.ldd; then \
+      cat /tmp/vllm-router.ldd; \
+      exit 1; \
+    fi; \
     vllm-router --help >/dev/null; \
     rm -f /tmp/vllm-router.ldd
 
