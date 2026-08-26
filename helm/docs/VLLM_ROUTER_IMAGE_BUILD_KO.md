@@ -69,16 +69,10 @@ Cargo remote가 crates.io만 정확히 proxy하면 별도 Git repository clone �
 
 ## Cargo proxy 설정
 
-Artifactory Cargo remote repository의 upstream/Registry URL은 다음을 사용한다.
+사내 Cargo remote/proxy의 upstream은 crates.io sparse index를 사용한다.
 
 ```text
-https://index.crates.io
-```
-
-Cargo client가 접속하는 사내 sparse index는 보통 다음 형태다.
-
-```text
-sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/
+index.crates.io
 ```
 
 PR에는 다음 template을 제공한다.
@@ -87,41 +81,57 @@ PR에는 다음 template을 제공한다.
 docker/vllm-router/cargo-config.toml.example
 ```
 
-예:
+사내 convention과 동일한 예시는 다음과 같다.
 
 ```toml
 # ~/.cargo/config.toml
-# Proxy upstream/registry URL: https://index.crates.io
+# Proxy 연결 URL: index.crates.io
+# 설정 레퍼런스: https://doc.rust-lang.org/cargo/reference/config.html
 
 [registry]
 default = "cargo-proxy"
-global-credential-providers = ["cargo:token"]
 
 [registries.cargo-proxy]
-index = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+index = "sparse+http://<<DOMAIN>>/<<ENDPOINT>>/"
 
 [source.crates-io]
-replace-with = "cargo-proxy-source"
+replace-with = "cargo-proxy"
 
-[source.cargo-proxy-source]
-registry = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+[source.cargo-proxy]
+registry = "sparse+http://<<DOMAIN>>/<<ENDPOINT>>/"
 ```
 
-중요한 점은 다음이다.
+`<<DOMAIN>>` / `<<ENDPOINT>>`는 실제 사내 endpoint로 치환한다. 내부 endpoint가
+TLS를 사용하면 `https://`를 사용하며 builder에는 사내 CA를 먼저 설치한다.
+sparse registry URL은 마지막 `/`까지 포함한다.
+
+중요한 점은 두 설정의 역할이 다르다는 것이다.
 
 ```text
 [registry]
 default = "cargo-proxy"
 ```
 
-만 설정하는 것으로는 일반 `Cargo.toml` dependency가 crates.io 대신 proxy를
-통해 resolution된다는 보장이 부족하다. **`[source.crates-io] replace-with`를
-함께 설정**해서 dependency source 자체를 사내 Cargo remote로 치환한다.
+는 default named registry를 지정한다. 일반 `Cargo.toml` dependency를
+crates.io 대신 proxy로 강제하려면 다음 source replacement가 별도로 필요하다.
+
+```toml
+[source.crates-io]
+replace-with = "cargo-proxy"
+
+[source.cargo-proxy]
+registry = "sparse+http://<<DOMAIN>>/<<ENDPOINT>>/"
+```
+
+Cargo 공식 config reference도 `[source.<name>]`에 `replace-with`와 `registry`
+source 정의를 두는 방식을 제공한다. 따라서 PR에서는 registry 이름과
+replacement source 이름을 모두 `cargo-proxy`로 맞춰 혼동을 줄인다.
+
+TOML 문자열에는 스마트 따옴표(`“ ”`)가 아니라 ASCII 큰따옴표(`"`)를 사용한다.
 
 인증 token/password는 repository에 commit하지 않는다. Cargo remote가 인증을
-요구한다면 build system의 secret injection을 사용하거나, image build
-환경에서 read-only 접근이 가능한 사내 remote 또는 vendored dependency 경로를
-사용한다. token을 Docker `ARG`나 source tree에 넣는 방식은 사용하지 않는다.
+요구한다면 Cargo credentials 또는 build system secret injection을 사용한다.
+token을 Docker `ARG`나 source tree에 넣는 방식은 사용하지 않는다.
 
 ## Rust production build context
 
