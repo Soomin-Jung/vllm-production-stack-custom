@@ -1,6 +1,8 @@
-# syntax=docker/dockerfile:1
-
 # Closed-network image for the Cell-local vLLM Router.
+#
+# Keep this file on baseline Dockerfile syntax only. In particular, do not add a
+# '# syntax=docker/dockerfile:...' directive unless its frontend image is also
+# mirrored internally; BuildKit can otherwise try to resolve it externally.
 #
 # This image intentionally installs the official vllm-router release wheel from
 # a pre-populated local wheelhouse. No network access is required during the
