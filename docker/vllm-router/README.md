@@ -43,7 +43,7 @@ On an Internet-connected or package-staging host with the target architecture:
 
 ```bash
 cd docker/vllm-router
-./prepare-wheelhouse.sh 0.1.15
+bash prepare-wheelhouse.sh 0.1.15
 ```
 
 The script:
