@@ -1,8 +1,9 @@
-# syntax=docker/dockerfile:1
-
 # Closed-network convenience image for environments with an internal PyPI proxy.
+# Keep baseline Dockerfile syntax only so BuildKit does not need to resolve an
+# external Dockerfile frontend image.
+#
 # The build context is expected to provide:
-#   ./pip.conf   -> internal PyPI/Artifactory configuration
+#   ./pip.conf    -> internal PyPI/Artifactory configuration
 #   ./certs/*.crt -> corporate CA certificates
 #
 # No Rust/Cargo toolchain is required. --only-binary=:all: deliberately prevents
