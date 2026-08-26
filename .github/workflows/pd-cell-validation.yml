@@ -10,6 +10,8 @@ on:
       - 'helm/tests/pdCell_test.yaml'
       - 'helm/docs/PD_CELL_0.1.8_KO.md'
       - 'helm/docs/PD_CELL_VALUES_REFERENCE_KO.md'
+      - 'helm/docs/VLLM_ROUTER_IMAGE_BUILD_KO.md'
+      - 'docker/vllm-router/**'
       - '.github/workflows/pd-cell-validation.yml'
   workflow_dispatch:
 
@@ -27,6 +29,25 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: v3.17.3
+
+      - name: Validate closed-network Router packaging contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bash -n docker/vllm-router/prepare-wheelhouse.sh
+          grep -Fq -- '--no-index' docker/vllm-router/Dockerfile
+          grep -Fq -- '--find-links=/opt/vllm-router-wheelhouse' docker/vllm-router/Dockerfile
+          grep -Fq -- '--only-binary=:all:' docker/vllm-router/Dockerfile
+          grep -Fq -- 'sha256sum -c SHA256SUMS' docker/vllm-router/Dockerfile
+          grep -Fq -- 'vllm-router --help' docker/vllm-router/Dockerfile
+          grep -Fq -- '--only-binary=:all:' docker/vllm-router/Dockerfile.proxy
+          grep -Fq -- 'update-ca-certificates' docker/vllm-router/Dockerfile.proxy
+          grep -Fq -- 'vllm-router --help' docker/vllm-router/Dockerfile.proxy
+          grep -Fq -- '2f268b001a546d7921c2e87b510869134a212f0ab2faf138b78eb554c93a2241' \
+            docker/vllm-router/prepare-wheelhouse.sh
+          grep -Fq -- 'c30070b2f8559fc33da4b114e58d28881775585dd6f6e1ac173ea494c8fbe20e' \
+            docker/vllm-router/prepare-wheelhouse.sh
 
       - name: Helm lint examples
         shell: bash
