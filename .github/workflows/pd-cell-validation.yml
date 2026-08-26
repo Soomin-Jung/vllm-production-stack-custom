@@ -54,7 +54,7 @@ jobs:
           grep -Fq -- 'c30070b2f8559fc33da4b114e58d28881775585dd6f6e1ac173ea494c8fbe20e' \
             docker/vllm-router/prepare-wheelhouse.sh
 
-          if grep -Fq -- '# syntax=' docker/vllm-router/Dockerfile \
+          if grep -Eq '^# syntax=' docker/vllm-router/Dockerfile \
               docker/vllm-router/Dockerfile.proxy; then
             echo 'Closed-network Router Dockerfiles must not require an external BuildKit frontend'
             exit 1
