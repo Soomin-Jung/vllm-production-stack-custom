@@ -18,8 +18,15 @@
 #
 # Do not add '# syntax=docker/dockerfile:...' unless the frontend image is also
 # mirrored internally.
+#
+# IMPORTANT: any ARG referenced by FROM must be declared in the global scope,
+# before the first FROM. Do not move RUNTIME_IMAGE below the builder FROM.
+# Also avoid passing an explicitly empty value such as --build-arg RUNTIME_IMAGE=,
+# because that overrides the default with an empty string.
 
 ARG RUST_BUILDER_IMAGE=rustlang/rust:nightly-bullseye
+ARG RUNTIME_IMAGE=python:3.12-slim-bullseye
+
 FROM ${RUST_BUILDER_IMAGE} AS rust-builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -72,8 +79,7 @@ RUN set -eux; \
 # python:3.12-slim-bullseye as its tested runtime. It can be reduced to a pinned
 # Debian Bullseye runtime after `ldd`/runtime certification confirms all shared
 # libraries are present.
-ARG RUNTIME_IMAGE=python:3.12-slim-bullseye
-FROM ${RUNTIME_IMAGE}
+FROM ${RUNTIME_IMAGE} AS runtime
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
