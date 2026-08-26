@@ -1,0 +1,91 @@
+# Production-oriented source build for the Cell-local vLLM Router.
+#
+# This keeps the upstream v0.1.15 execution model: build and run the standalone
+# Rust `vllm-router` binary directly. The differences from upstream
+# Dockerfile.router are only for closed-network reproducibility:
+#   - base images can be resolved from an internal registry,
+#   - Debian packages use the supplied internal sources.list,
+#   - Cargo resolves crates.io dependencies through the supplied cargo proxy,
+#   - corporate CA certificates are installed before apt/Cargo access,
+#   - Cargo.lock is enforced with --locked,
+#   - the final image does not run pip or install the Python package.
+#
+# Expected build context inputs (local/private, not committed):
+#   ./router-src/        extracted source tree for the pinned vllm-project/router tag
+#   ./cargo-config.toml  internal Cargo/Artifactory client configuration
+#   ./sources.list       Debian Bullseye internal apt proxy configuration
+#   ./certs/*.crt        corporate CA certificates
+#
+# Do not add '# syntax=docker/dockerfile:...' unless the frontend image is also
+# mirrored internally.
+
+ARG RUST_BUILDER_IMAGE=rustlang/rust:nightly-bullseye
+FROM ${RUST_BUILDER_IMAGE} AS rust-builder
+
+ARG VLLM_ROUTER_VERSION=0.1.15
+
+# Install corporate trust before contacting internal HTTPS package endpoints.
+COPY ./certs /opt/certs
+RUN set -eux; \
+    find /opt/certs -type f -name '*.crt' \
+      -exec cp -v '{}' /usr/local/share/ca-certificates/ ';'; \
+    update-ca-certificates; \
+    rm -rf /opt/certs
+
+# Upstream v0.1.15 Dockerfile.router is Bullseye-based and installs these build
+# dependencies. Keep the same package contract, but resolve it through the
+# internal apt proxy.
+COPY ./sources.list /etc/apt/sources.list
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      pkg-config \
+      libssl-dev; \
+    rm -rf /var/lib/apt/lists/*
+
+# The official Rust image uses CARGO_HOME=/usr/local/cargo. The config must
+# redirect crates.io dependency resolution to the internal Cargo proxy.
+COPY ./cargo-config.toml /usr/local/cargo/config.toml
+
+WORKDIR /src/vllm-router
+
+# Only the standalone Rust binary is required by the P/D Cell. Keep Cargo.lock
+# from the exact release source and fail if dependency resolution would mutate it.
+COPY ./router-src/Cargo.toml ./Cargo.toml
+COPY ./router-src/Cargo.lock ./Cargo.lock
+COPY ./router-src/src ./src
+
+RUN set -eux; \
+    grep -A3 '^\[package\]' Cargo.toml | grep -Fq "version = \"${VLLM_ROUTER_VERSION}\""; \
+    cargo --version; \
+    rustc --version; \
+    cargo build --release --locked; \
+    ./target/release/vllm-router --help >/dev/null
+
+# Preserve upstream runtime-family parity first. Python is not used by the
+# process; this base is retained because upstream v0.1.15 Dockerfile.router uses
+# python:3.12-slim-bullseye as its tested runtime. It can be reduced to a pinned
+# Debian Bullseye runtime after `ldd`/runtime certification confirms all shared
+# libraries are present.
+ARG RUNTIME_IMAGE=python:3.12-slim-bullseye
+FROM ${RUNTIME_IMAGE}
+
+# Copy the resulting trust bundle rather than contacting apt in the runtime
+# stage. This keeps the final image independent of package repositories.
+COPY --from=rust-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=rust-builder /src/vllm-router/target/release/vllm-router /usr/local/bin/vllm-router
+
+RUN set -eux; \
+    chmod 0555 /usr/local/bin/vllm-router; \
+    ldd /usr/local/bin/vllm-router | tee /tmp/vllm-router.ldd; \
+    ! grep -q 'not found' /tmp/vllm-router.ldd; \
+    vllm-router --help >/dev/null; \
+    rm -f /tmp/vllm-router.ldd
+
+WORKDIR /app
+
+EXPOSE 8000
+EXPOSE 29000
+
+CMD ["vllm-router", "--host", "0.0.0.0", "--port", "8000"]
