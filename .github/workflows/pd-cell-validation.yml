@@ -25,6 +25,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Python for Router release-wheel staging
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Setup Helm
         uses: azure/setup-helm@v4
         with:
@@ -48,6 +53,36 @@ jobs:
             docker/vllm-router/prepare-wheelhouse.sh
           grep -Fq -- 'c30070b2f8559fc33da4b114e58d28881775585dd6f6e1ac173ea494c8fbe20e' \
             docker/vllm-router/prepare-wheelhouse.sh
+
+          if grep -Fq -- '# syntax=' docker/vllm-router/Dockerfile \
+              docker/vllm-router/Dockerfile.proxy; then
+            echo 'Closed-network Router Dockerfiles must not require an external BuildKit frontend'
+            exit 1
+          fi
+
+      - name: Build and execute vLLM Router release-wheel image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bash docker/vllm-router/prepare-wheelhouse.sh 0.1.15
+          rm -f docker/vllm-router/vllm-router-0.1.15-wheelhouse.tar.gz
+
+          docker build \
+            -f docker/vllm-router/Dockerfile \
+            --build-arg BASE_IMAGE=python:3.12-slim-bookworm \
+            --build-arg VLLM_ROUTER_VERSION=0.1.15 \
+            -t pd-cell-vllm-router:v0.1.15 \
+            docker/vllm-router
+
+          docker run --rm pd-cell-vllm-router:v0.1.15 \
+            vllm-router --help > /tmp/vllm-router-help.txt
+
+          grep -Fq -- '--vllm-pd-disaggregation' /tmp/vllm-router-help.txt
+          grep -Fq -- '--kv-connector' /tmp/vllm-router-help.txt
+          grep -Fq -- 'nixl' /tmp/vllm-router-help.txt
+          grep -Fq -- 'mooncake' /tmp/vllm-router-help.txt
+          grep -Fq -- 'moriio' /tmp/vllm-router-help.txt
 
       - name: Helm lint examples
         shell: bash
