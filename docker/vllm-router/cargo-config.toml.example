@@ -1,0 +1,37 @@
+# ~/.cargo/config.toml
+#
+# Closed-network Cargo proxy example for the vLLM Router Rust build.
+#
+# Artifactory remote repository upstream/registry URL:
+#   https://index.crates.io
+#
+# Replace the placeholders below with the internal Artifactory endpoint.
+# JFrog Cargo repositories use the sparse index endpoint:
+#   https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/
+#
+# IMPORTANT:
+# [registry].default alone does NOT redirect ordinary crates.io dependencies.
+# Keep the [source.crates-io] replacement below so Cargo.toml dependencies are
+# resolved through the internal Cargo proxy.
+
+[registry]
+default = "cargo-proxy"
+# Required by newer Cargo clients when token-based authentication is used.
+# Harmless when the internal remote repository permits anonymous read access.
+global-credential-providers = ["cargo:token"]
+
+[registries.cargo-proxy]
+index = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+
+# Dependency resolution path. This is the critical part for cargo build.
+[source.crates-io]
+replace-with = "cargo-proxy-source"
+
+[source.cargo-proxy-source]
+registry = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+
+# Do not put tokens or passwords in this file when it is committed/shared.
+# If authentication is required, provide the token through Cargo's credentials
+# mechanism or the build system's secret injection facility. For closed-network
+# image builds, an internal read-only/anonymous Cargo remote or a vendored
+# dependency bundle is preferable to baking credentials into Docker layers.
