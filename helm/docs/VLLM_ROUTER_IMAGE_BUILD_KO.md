@@ -2,220 +2,279 @@
 
 ## 결론
 
-P/D Cell의 Cell-local Router는 `vllm-project/router`를 사용하지만,
-`vllm/vllm-router` Docker Hub 저장소에는 현재 `v0.1.15` 같은 정식 release
-Docker tag가 제공되지 않는다.
+P/D Cell의 Cell-local Router는 `vllm-project/router`를 사용한다.
+2026-08-26 기준 Docker Hub `vllm/vllm-router`에는 `v0.1.15` 같은 안정적인
+release Docker tag가 없고 nightly 계열만 제공된다.
 
-Upstream `v0.1.15` release pipeline을 확인하면 역할이 명확히 분리되어 있다.
-
-- version tag release: x86_64/aarch64 wheel 및 source distribution 빌드, 테스트,
-  PyPI publish
-- Docker publish: `NIGHTLY=1`일 때만 실행
-- Docker tag: `nightly`, `nightly-YYYYMMDD-<sha>` 계열
-
-따라서 운영 환경에서는 `nightly` 이미지를 고정해서 사용하지 않고,
-**정식 PyPI release wheel을 사내 Docker image로 재패키징**하는 것을 기본
-정책으로 한다.
-
-현재 기준:
+따라서 운영 기준은 다음과 같이 고정한다.
 
 ```text
-upstream tag       v0.1.15
-PyPI package       vllm-router==0.1.15
-P/D connector      nixl / mooncake / moriio
-Python wheel ABI   cp38-abi3
-Linux baseline     manylinux_2_28
+Production primary
+  exact Router release source
+    -> Cargo.lock
+    -> 사내 APT/Cargo proxy
+    -> cargo build --release --locked
+    -> standalone Rust vllm-router
+    -> 사내 image/digest
+
+Fallback
+  official PyPI release wheel
+    -> wheel hash 검증
+    -> 사내 image
 ```
 
-## 왜 PyPI wheel 경로가 기본인가
+PyPI wheel 역시 Rust core를 포함한 공식 release artifact지만, P/D Cell의
+production primary는 upstream `Dockerfile.router` 및 Mooncake 예제와 실행
+경로가 가장 가까운 **standalone Rust binary**로 한다.
 
-`v0.1.15` release pipeline은 다음을 수행한다.
+## upstream v0.1.15 기본 환경
 
-1. x86_64/aarch64 release artifact build
-2. Rust binary smoke test
-3. Python wheel install/import test
-4. version tag일 때 PyPI publish
-
-즉 PyPI wheel은 임시 산출물이 아니라 upstream의 정식 release artifact다.
-
-반면 upstream `Dockerfile.router`는 실제 nightly Docker build에서 사용되는
-유효한 Dockerfile이지만 다음 특성이 있다.
+공식 `Dockerfile.router`의 OS family는 두 stage 모두 Debian 11 Bullseye다.
 
 ```text
-rustlang/rust:nightly-bullseye
-        ↓
-apt-get
-        ↓
-cargo build --release
-        ↓
-python:3.12-slim-bullseye
-        ↓
-pip install ...
+Builder  rustlang/rust:nightly-bullseye
+Runtime  python:3.12-slim-bullseye
 ```
 
-폐쇄망 관점에서는 그대로 사용하기 어렵다.
+upstream builder에서 설치하는 system package는 다음과 같다.
 
-- Rust nightly base가 mutable tag다.
-- Cargo가 crates.io에 접근한다.
-- apt repository 접근이 필요하다.
-- runtime stage에도 추가 pip network access가 존재한다.
-- release wheel이 이미 존재하므로 같은 Rust binary를 매번 다시 compile할
-  운영상 이점이 작다.
+```text
+build-essential
+pkg-config
+libssl-dev
+```
 
-따라서 upstream Dockerfile은 **reference/fallback**으로 취급하고, 정상적인
-release version은 wheel 기반으로 사내 이미지를 만든다.
+폐쇄망에서는 public base tag를 직접 pull하지 않고 사내 Docker registry에
+mirror한 image를 사용한다. `nightly-bullseye`는 mutable tag이므로 실제 운영
+build record에는 내부 immutable tag 또는 digest를 남긴다.
 
-## 권장 경로 A: 완전 offline wheelhouse
+Runtime은 우선 upstream parity를 위해 `python:3.12-slim-bullseye` family를
+사용하지만 실제 process는 Python이 아니라 `/usr/local/bin/vllm-router` Rust
+binary다. `ldd` 및 runtime certification 후 필요한 shared library가 모두
+확인되면 `debian:bullseye-slim` 계열로 축소할 수 있다.
 
-가장 확실한 폐쇄망 방식이다.
+## 필요한 외부 저장소와 사내 대체점
 
-외부 또는 package staging 환경에서:
+| 용도 | upstream | 폐쇄망 입력 |
+| --- | --- | --- |
+| builder/runtime image | Docker Hub | 사내 Docker registry mirror |
+| OS package | Debian Bullseye repository | `sources.list` + 사내 APT proxy |
+| Rust dependency | crates.io | Cargo/Artifactory remote proxy |
+| Router source | GitHub `vllm-project/router` | exact release source tarball 반입 |
+
+v0.1.15 `Cargo.lock`에는 crates.io registry dependency가 존재하지만
+`git+...` package source는 없다. 따라서 release source를 한번 반입한 뒤에는
+Cargo remote가 crates.io만 정확히 proxy하면 별도 Git repository clone 없이
+빌드할 수 있다.
+
+## Cargo proxy 설정
+
+Artifactory Cargo remote repository의 upstream/Registry URL은 다음을 사용한다.
+
+```text
+https://index.crates.io
+```
+
+Cargo client가 접속하는 사내 sparse index는 보통 다음 형태다.
+
+```text
+sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/
+```
+
+PR에는 다음 template을 제공한다.
+
+```text
+docker/vllm-router/cargo-config.toml.example
+```
+
+예:
+
+```toml
+# ~/.cargo/config.toml
+# Proxy upstream/registry URL: https://index.crates.io
+
+[registry]
+default = "cargo-proxy"
+global-credential-providers = ["cargo:token"]
+
+[registries.cargo-proxy]
+index = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+
+[source.crates-io]
+replace-with = "cargo-proxy-source"
+
+[source.cargo-proxy-source]
+registry = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+```
+
+중요한 점은 다음이다.
+
+```text
+[registry]
+default = "cargo-proxy"
+```
+
+만 설정하는 것으로는 일반 `Cargo.toml` dependency가 crates.io 대신 proxy를
+통해 resolution된다는 보장이 부족하다. **`[source.crates-io] replace-with`를
+함께 설정**해서 dependency source 자체를 사내 Cargo remote로 치환한다.
+
+인증 token/password는 repository에 commit하지 않는다. Cargo remote가 인증을
+요구한다면 build system의 secret injection을 사용하거나, image build
+환경에서 read-only 접근이 가능한 사내 remote 또는 vendored dependency 경로를
+사용한다. token을 Docker `ARG`나 source tree에 넣는 방식은 사용하지 않는다.
+
+## Rust production build context
+
+사내 build 전에 다음을 준비한다.
+
+```text
+docker/vllm-router/
+├── Dockerfile.rust-proxy
+├── cargo-config.toml.example
+├── cargo-config.toml          # 실제 사내 endpoint, Git ignore
+├── sources.list               # Debian Bullseye 사내 APT proxy, Git ignore
+├── certs/                     # 사내 CA, Git ignore
+└── router-src/                # exact v0.1.15 source, Git ignore
+    ├── Cargo.toml
+    ├── Cargo.lock
+    └── src/
+```
+
+빌드 예:
 
 ```bash
 cd docker/vllm-router
-bash prepare-wheelhouse.sh 0.1.15
+
+docker build \
+  -f Dockerfile.rust-proxy \
+  --build-arg RUST_BUILDER_IMAGE=<internal-registry>/rustlang/rust:<pinned-bullseye-tag-or-digest> \
+  --build-arg RUNTIME_IMAGE=<internal-registry>/python:3.12-slim-bullseye \
+  --build-arg VLLM_ROUTER_VERSION=0.1.15 \
+  -t <internal-registry>/vllm/vllm-router:v0.1.15 \
+  .
 ```
 
-`prepare-wheelhouse.sh`는 다음을 자동 수행한다.
+`Dockerfile.rust-proxy`는 다음을 보장한다.
 
-1. Router와 dependency를 `--only-binary=:all:`로 다운로드
-2. x86_64/aarch64의 v0.1.15 Router wheel을 upstream 공개 SHA256과 대조
-3. 전체 dependency wheel에 대한 `wheelhouse/SHA256SUMS` 생성
-4. `vllm-router-0.1.15-wheelhouse.tar.gz` 생성
+1. 사내 CA를 먼저 trust store에 반영한다.
+2. Debian package는 supplied `sources.list`만 사용한다.
+3. Cargo는 supplied `/usr/local/cargo/config.toml`을 사용한다.
+4. exact release의 `Cargo.lock`을 보존하고 `--locked`로 build한다.
+5. final image에는 source/Cargo toolchain을 복사하지 않는다.
+6. pip/PyPI를 production Rust path에서 사용하지 않는다.
+7. builder와 runtime 모두 `vllm-router --help` smoke를 수행한다.
+8. final runtime에서 `ldd` 결과의 `not found`를 build failure로 처리한다.
 
-현재 스크립트에 고정한 v0.1.15 공식 Router wheel SHA256:
+## upstream Dockerfile.router와의 차이
+
+upstream `v0.1.15/Dockerfile.router` 자체는 공식/유효 recipe다. 문제는 폐쇄망
+production에서 그대로 실행하면 다음 external access가 필요하다는 점이다.
+
+```text
+rustlang/rust:nightly-bullseye
+  -> Debian apt
+  -> crates.io
+  -> python:3.12-slim-bullseye
+  -> pip/PyPI
+```
+
+사내 production Dockerfile은 **Rust binary build 방식은 유지**하되:
+
+```text
+Docker Hub  -> internal registry
+Debian      -> internal APT proxy
+crates.io   -> internal Cargo proxy
+GitHub      -> reviewed source tarball
+pip         -> 제거
+```
+
+로 치환한다.
+
+## Cargo proxy가 없는 완전 offline build
+
+Cargo remote까지 사용할 수 없다면 외부/staging 환경에서:
+
+```bash
+cargo vendor --locked vendor/
+```
+
+를 수행하고:
+
+```toml
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
+```
+
+로 설정한 뒤:
+
+```bash
+cargo build --release --locked --offline
+```
+
+을 사용한다. v0.1.15에는 Cargo Git dependency가 없으므로 이 경로를 사용할 수
+있다.
+
+## Wheel fallback
+
+기존 파일은 fallback과 CI cross-check 목적으로 유지한다.
+
+```text
+docker/vllm-router/Dockerfile
+  -> 완전 offline wheelhouse
+
+docker/vllm-router/Dockerfile.proxy
+  -> 사내 PyPI proxy
+
+docker/vllm-router/prepare-wheelhouse.sh
+  -> release wheel/dependency staging 및 SHA256 gate
+```
+
+v0.1.15 공식 Router wheel SHA256:
 
 | Architecture | SHA256 |
 | --- | --- |
 | x86_64 | `2f268b001a546d7921c2e87b510869134a212f0ab2faf138b78eb554c93a2241` |
 | aarch64 | `c30070b2f8559fc33da4b114e58d28881775585dd6f6e1ac173ea494c8fbe20e` |
 
-새 버전에서 SHA256을 아직 코드 리뷰하지 않았다면 스크립트는 wheelhouse를
-생성하되 warning을 출력한다. 운영 반입 전에 반드시 해당 release artifact
-hash를 확인하고 스크립트의 pin을 갱신한다.
+Wheel은 emergency/recovery 경로로 유효하지만 production primary는 아니다.
 
-반입 후:
+## 신규 Router version 도입 절차
 
-```bash
-cd docker/vllm-router
+1. upstream release tag와 commit SHA 확인
+2. `Cargo.toml` / `Cargo.lock` diff 및 신규 Git dependency 유무 확인
+3. upstream `Dockerfile.router`/release pipeline 변경 확인
+4. 사내 base image digest 고정
+5. Cargo proxy에서 `cargo build --release --locked` 수행
+6. `ldd` unresolved library 없음 확인
+7. `vllm-router --help`에서 P/D 및 connector option 확인
+8. image digest 기록 및 사내 registry push
+9. P1D1부터 actual KV transfer runtime certification
+10. 검증 완료 후 Helm Router tag/digest 변경
 
-tar -xzf vllm-router-0.1.15-wheelhouse.tar.gz
+## Runtime capability gate
 
-docker build \
-  -f Dockerfile \
-  --build-arg BASE_IMAGE=internal-registry/base/python:3.12-slim-bookworm \
-  --build-arg VLLM_ROUTER_VERSION=0.1.15 \
-  -t internal-registry/vllm/vllm-router:v0.1.15 \
-  .
-```
-
-이 Dockerfile은 build 중 package network access를 사용하지 않는다.
-
-```text
---no-index
---find-links=/opt/vllm-router-wheelhouse
---only-binary=:all:
-```
-
-으로 install한다.
-
-`SHA256SUMS`가 존재하면 모든 wheel을 다시 검증하고, 설치 후에는 package
-version assertion과 `vllm-router --help` smoke test까지 수행한다. wheel 또는
-dependency가 누락되면 source compile로 우회하지 않고 build가 즉시 실패한다.
-
-`BASE_IMAGE`도 사내 registry에 mirror한 image를 사용하고 production에서는
-가능하면 digest까지 고정한다.
-
-## 권장 경로 B: 사내 PyPI proxy
-
-사내 PyPI/Artifactory proxy가 안정적으로 동작하면
-`docker/vllm-router/Dockerfile.proxy`를 사용한다.
-
-빌드 컨텍스트:
-
-```text
-docker/vllm-router/
-├── Dockerfile.proxy
-├── pip.conf
-└── certs/
-    └── corporate-root-ca.crt
-```
-
-예:
-
-```bash
-docker build \
-  -f Dockerfile.proxy \
-  --build-arg BASE_IMAGE=internal-registry/base/python:3.12-slim-bookworm \
-  --build-arg VLLM_ROUTER_VERSION=0.1.15 \
-  -t internal-registry/vllm/vllm-router:v0.1.15 \
-  .
-```
-
-이 경로도 `--only-binary=:all:`을 사용한다. 따라서 proxy에 wheel이 없고
-sdist만 있는 상태에서 갑자기 Rust compile을 시작하지 않는다.
-
-기본 `python:3.12-slim-bookworm` 계열은 `ca-certificates`를 runtime dependency로
-포함하므로 `Dockerfile.proxy`는 별도 apt install 없이 제공된 사내 `.crt`를
-trust store에 추가하고 `update-ca-certificates`를 수행할 수 있다. 실제 사내
-base image가 이를 제거한 경우에는 base image 자체에서 CA toolchain을
-복원해야 한다.
-
-## Source build가 필요한 경우
-
-다음 경우에만 source build를 사용한다.
-
-- 필요한 architecture용 release wheel이 없음
-- upstream release 전 commit을 반드시 사용해야 함
-- 사내 patch를 Rust source에 적용해야 함
-
-이 경우 raw upstream `Dockerfile.router`를 그대로 사용하지 말고 최소한 다음
-조건을 적용한다.
-
-1. release tag와 commit SHA 고정
-2. builder/runtime base image를 사내 registry에 mirror하고 digest pin
-3. `Cargo.lock` 유지
-4. 외부 staging 환경에서 `cargo vendor --locked vendor/`
-5. crates.io를 local vendor directory로 replace
-6. `cargo build --release --locked --offline`
-7. build artifact에서 `vllm-router --help` smoke test
-8. P/D connector option 확인 후 사내 registry push
-
-`v0.1.15`의 `Cargo.toml`에는 Git dependency가 없으므로 crates.io dependency를
-vendor하는 방식이 가능하다.
-
-## 신규 version 도입 절차
-
-새로운 vLLM Router release가 나오면 다음 순서로 갱신한다.
-
-1. Git tag와 PyPI version 일치 확인
-2. release wheel architecture 확인
-3. Mooncake/NIXL/MoriIO CLI 지원 확인
-4. release wheel hash를 `prepare-wheelhouse.sh`에 기록
-5. wheelhouse 생성 및 사내 image build
-6. image digest 기록
-7. P1D1 smoke test
-8. Mooncake/NIXL 실제 KV transfer certification
-9. 검증 완료 후 Helm values의 Router tag/digest 변경
-
-Docker Hub nightly 존재 여부는 release artifact 선택 기준으로 사용하지 않는다.
-
-## Helm 연결
-
-```yaml
-pdCellSpec:
-  router:
-    repository: internal-registry/vllm/vllm-router
-    tag: v0.1.15
-```
-
-P/D Cell chart는 image 내부의 `vllm-router` command를 명시적으로 실행한다.
-따라서 사내 이미지 build 이후 최소한 다음이 통과해야 한다.
+최소:
 
 ```bash
 vllm-router --help | grep -- --vllm-pd-disaggregation
 vllm-router --help | grep -- --kv-connector
 ```
 
-그 다음 Mooncake를 사용하는 경우 bootstrap `/query`, `transfer_id`, 실제 KV
-send/receive까지 별도의 runtime certification을 수행한다.
+현재 chart baseline에서는 `nixl`, `mooncake`, `moriio`가 보여야 한다.
+Mooncake에서는 그 다음 bootstrap `/query`, 동일 request의 `transfer_id`,
+Prefill KV send 및 Decode KV receive/load까지 실제 runtime으로 증명해야 한다.
+
+## Helm 연결
+
+```yaml
+pdCellSpec:
+  router:
+    repository: <internal-registry>/vllm/vllm-router
+    tag: v0.1.15
+```
+
+운영 배포 기록에는 가능하면 human-readable tag와 함께 immutable image digest도
+남긴다.
