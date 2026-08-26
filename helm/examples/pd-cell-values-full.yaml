@@ -6,7 +6,9 @@
 #   KV connector   : declared per model and translated to vllm-router's connector mode.
 #
 # vllm-router v0.1.15 is the minimum pinned baseline used by this chart for
-# Mooncake orchestration. Build/pin the image by tag/SHA/digest in an air-gapped registry.
+# Mooncake orchestration. Docker Hub has no release-tagged image for this
+# baseline; package the official release wheel into the internal registry by
+# following docker/vllm-router/README.md and pin the resulting image/digest.
 
 servingEngineSpec:
   labels:
@@ -132,7 +134,7 @@ pdCellSpec:
   # Cell-local P/D orchestrator: ALWAYS vllm-project/router.
   # There is no router.type selector and no full router.args escape hatch.
   router:
-    repository: vllm/vllm-router
+    repository: internal-registry/vllm/vllm-router
     tag: v0.1.15
     imagePullPolicy: IfNotPresent
     port: 8000
