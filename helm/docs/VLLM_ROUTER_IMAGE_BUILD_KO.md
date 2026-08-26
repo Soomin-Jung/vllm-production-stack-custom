@@ -69,25 +69,30 @@ release version은 wheel 기반으로 사내 이미지를 만든다.
 
 가장 확실한 폐쇄망 방식이다.
 
-외부 또는 staging 환경에서:
+외부 또는 package staging 환경에서:
 
 ```bash
 cd docker/vllm-router
-rm -rf wheelhouse
-mkdir -p wheelhouse
-
-python3.12 -m pip download \
-  --dest wheelhouse \
-  --only-binary=:all: \
-  "vllm-router==0.1.15"
-
-(
-  cd wheelhouse
-  sha256sum ./*.whl > SHA256SUMS
-)
-
-tar -czf vllm-router-0.1.15-wheelhouse.tar.gz wheelhouse
+bash prepare-wheelhouse.sh 0.1.15
 ```
+
+`prepare-wheelhouse.sh`는 다음을 자동 수행한다.
+
+1. Router와 dependency를 `--only-binary=:all:`로 다운로드
+2. x86_64/aarch64의 v0.1.15 Router wheel을 upstream 공개 SHA256과 대조
+3. 전체 dependency wheel에 대한 `wheelhouse/SHA256SUMS` 생성
+4. `vllm-router-0.1.15-wheelhouse.tar.gz` 생성
+
+현재 스크립트에 고정한 v0.1.15 공식 Router wheel SHA256:
+
+| Architecture | SHA256 |
+| --- | --- |
+| x86_64 | `2f268b001a546d7921c2e87b510869134a212f0ab2faf138b78eb554c93a2241` |
+| aarch64 | `c30070b2f8559fc33da4b114e58d28881775585dd6f6e1ac173ea494c8fbe20e` |
+
+새 버전에서 SHA256을 아직 코드 리뷰하지 않았다면 스크립트는 wheelhouse를
+생성하되 warning을 출력한다. 운영 반입 전에 반드시 해당 release artifact
+hash를 확인하고 스크립트의 pin을 갱신한다.
 
 반입 후:
 
@@ -114,8 +119,12 @@ docker build \
 
 으로 install한다.
 
-wheel이 없거나 dependency가 누락되면 source compile로 우회하지 않고 build가
-즉시 실패한다.
+`SHA256SUMS`가 존재하면 모든 wheel을 다시 검증하고, 설치 후에는 package
+version assertion과 `vllm-router --help` smoke test까지 수행한다. wheel 또는
+dependency가 누락되면 source compile로 우회하지 않고 build가 즉시 실패한다.
+
+`BASE_IMAGE`도 사내 registry에 mirror한 image를 사용하고 production에서는
+가능하면 digest까지 고정한다.
 
 ## 권장 경로 B: 사내 PyPI proxy
 
@@ -146,18 +155,11 @@ docker build \
 이 경로도 `--only-binary=:all:`을 사용한다. 따라서 proxy에 wheel이 없고
 sdist만 있는 상태에서 갑자기 Rust compile을 시작하지 않는다.
 
-## v0.1.15 release wheel hash
-
-현재 upstream PyPI 기준:
-
-| Architecture | SHA256 |
-| --- | --- |
-| x86_64 | `2f268b001a546d7921c2e87b510869134a212f0ab2faf138b78eb554c93a2241` |
-| aarch64 | `c30070b2f8559fc33da4b114e58d28881775585dd6f6e1ac173ea494c8fbe20e` |
-
-실제 wheelhouse에는 router wheel뿐 아니라 resolved Python dependency wheel도
-포함되므로, 반입 시 전체 파일에 대해 별도의 `SHA256SUMS`를 생성하고 Docker
-build 단계에서 검증한다.
+기본 `python:3.12-slim-bookworm` 계열은 `ca-certificates`를 runtime dependency로
+포함하므로 `Dockerfile.proxy`는 별도 apt install 없이 제공된 사내 `.crt`를
+trust store에 추가하고 `update-ca-certificates`를 수행할 수 있다. 실제 사내
+base image가 이를 제거한 경우에는 base image 자체에서 CA toolchain을
+복원해야 한다.
 
 ## Source build가 필요한 경우
 
@@ -189,12 +191,12 @@ vendor하는 방식이 가능하다.
 1. Git tag와 PyPI version 일치 확인
 2. release wheel architecture 확인
 3. Mooncake/NIXL/MoriIO CLI 지원 확인
-4. release wheel hash 기록
-5. 사내 image build
+4. release wheel hash를 `prepare-wheelhouse.sh`에 기록
+5. wheelhouse 생성 및 사내 image build
 6. image digest 기록
 7. P1D1 smoke test
 8. Mooncake/NIXL 실제 KV transfer certification
-9. 검증 완료 후 Helm values의 router tag/digest 변경
+9. 검증 완료 후 Helm values의 Router tag/digest 변경
 
 Docker Hub nightly 존재 여부는 release artifact 선택 기준으로 사용하지 않는다.
 
