@@ -71,10 +71,19 @@ jobs:
               cfg = tomllib.load(fh)
 
           assert cfg['registry']['default'] == 'cargo-proxy'
-          assert cfg['registries']['cargo-proxy']['index'].startswith('sparse+https://')
-          assert cfg['source']['crates-io']['replace-with'] == 'cargo-proxy-source'
-          assert cfg['source']['cargo-proxy-source']['registry'].startswith('sparse+https://')
+
+          index = cfg['registries']['cargo-proxy']['index']
+          replacement = cfg['source']['cargo-proxy']['registry']
+          assert index.startswith(('sparse+http://', 'sparse+https://'))
+          assert index.endswith('/')
+          assert replacement == index
+          assert cfg['source']['crates-io']['replace-with'] == 'cargo-proxy'
           PY
+
+          grep -Fq -- 'Proxy 연결 URL: index.crates.io' \
+            docker/vllm-router/cargo-config.toml.example
+          grep -Fq -- 'doc.rust-lang.org/cargo/reference/config.html' \
+            docker/vllm-router/cargo-config.toml.example
 
           # Wheel path is retained as fallback/release-artifact cross-check.
           bash -n docker/vllm-router/prepare-wheelhouse.sh
