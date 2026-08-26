@@ -3,12 +3,16 @@
 # Global traffic routing may continue to use LMStack Router. The router inside
 # every P/D Cell is intentionally fixed to vllm-project/router because the
 # orchestrator must understand the selected KV connector contract.
+#
+# vllm/vllm-router does not currently publish release-tagged Docker images.
+# Package the official vllm-router release wheel into the internal registry by
+# following docker/vllm-router/README.md, then pin that internal image here.
 
 pdCellSpec:
   enabled: true
 
   router:
-    repository: vllm/vllm-router
+    repository: internal-registry/vllm/vllm-router
     tag: v0.1.15
     port: 8000
     policy: consistent_hash
