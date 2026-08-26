@@ -1,37 +1,31 @@
 # ~/.cargo/config.toml
+# Proxy 연결 URL: index.crates.io
+# 설정 레퍼런스: https://doc.rust-lang.org/cargo/reference/config.html
 #
-# Closed-network Cargo proxy example for the vLLM Router Rust build.
+# <<DOMAIN>> / <<ENDPOINT>>를 실제 사내 Cargo proxy 값으로 치환한다.
+# sparse registry URL은 마지막 '/'까지 포함해야 한다.
+# 사내 endpoint가 TLS를 사용하면 http:// 대신 https://를 사용하고,
+# Docker builder에는 사내 CA를 먼저 설치한다.
 #
-# Artifactory remote repository upstream/registry URL:
-#   https://index.crates.io
-#
-# Replace the placeholders below with the internal Artifactory endpoint.
-# JFrog Cargo repositories use the sparse index endpoint:
-#   https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/
-#
-# IMPORTANT:
-# [registry].default alone does NOT redirect ordinary crates.io dependencies.
-# Keep the [source.crates-io] replacement below so Cargo.toml dependencies are
-# resolved through the internal Cargo proxy.
+# NOTE:
+# [registry].default는 cargo publish/install 같은 registry 선택의 기본값이다.
+# 일반 Cargo.toml dependency를 crates.io 대신 사내 proxy로 강제하려면
+# [source.crates-io].replace-with와 replacement source 정의도 함께 둔다.
+# TOML 문자열에는 스마트 따옴표(“ ”)가 아니라 ASCII 큰따옴표(")를 사용한다.
 
 [registry]
 default = "cargo-proxy"
-# Required by newer Cargo clients when token-based authentication is used.
-# Harmless when the internal remote repository permits anonymous read access.
-global-credential-providers = ["cargo:token"]
 
 [registries.cargo-proxy]
-index = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+index = "sparse+http://<<DOMAIN>>/<<ENDPOINT>>/"
 
-# Dependency resolution path. This is the critical part for cargo build.
 [source.crates-io]
-replace-with = "cargo-proxy-source"
+replace-with = "cargo-proxy"
 
-[source.cargo-proxy-source]
-registry = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+[source.cargo-proxy]
+registry = "sparse+http://<<DOMAIN>>/<<ENDPOINT>>/"
 
-# Do not put tokens or passwords in this file when it is committed/shared.
-# If authentication is required, provide the token through Cargo's credentials
-# mechanism or the build system's secret injection facility. For closed-network
-# image builds, an internal read-only/anonymous Cargo remote or a vendored
-# dependency bundle is preferable to baking credentials into Docker layers.
+# 인증이 필요한 사내 Cargo registry라면 credential을 이 파일에 직접 넣지 않는다.
+# Cargo credentials 또는 build system secret injection을 사용한다.
+# 필요 시 아래 provider를 [registry] 아래에 추가할 수 있다.
+# global-credential-providers = ["cargo:token"]
