@@ -1,26 +1,201 @@
 # vLLM Router internal image build
 
-This directory defines the deployable image path for the Cell-local
+This directory defines the deployable image supply path for the Cell-local
 `vllm-project/router` used by the P/D Cell chart.
 
-## Packaging decision
+## Production decision
 
-As of 2026-08-26, `vllm/vllm-router` on Docker Hub does not provide a
-release-tagged image such as `v0.1.15`. The upstream release pipeline publishes
-versioned Python artifacts to PyPI, while its Docker publishing section runs
-only for `NIGHTLY=1` and creates `nightly` / dated-nightly images.
+As of 2026-08-26, Docker Hub `vllm/vllm-router` does not provide a stable
+release-tagged image such as `v0.1.15`; the published Docker images are nightly
+artifacts. Do not use a moving nightly image as the production P/D Cell baseline.
 
-For production and closed-network use, do not pin the moving `nightly` tag.
-Build an internal image from the official versioned PyPI wheel instead.
+For the production baseline, follow the upstream execution model as closely as
+possible:
+
+```text
+pinned vllm-project/router release source
+        -> Cargo.lock
+        -> internal Debian/Cargo proxies
+        -> cargo build --release --locked
+        -> standalone Rust vllm-router binary
+        -> internal runtime image
+        -> registry digest pin
+```
+
+The official PyPI wheel remains a supported fallback/recovery path. It also
+contains the Rust Router core via PyO3, but the primary production image uses
+the same standalone Rust binary path as upstream `Dockerfile.router`.
 
 Current P/D Cell baseline:
 
 ```text
 vllm-project/router tag: v0.1.15
-PyPI package:            vllm-router==0.1.15
-x86_64 wheel:            cp38-abi3-manylinux_2_28_x86_64
-arm64 wheel:             cp38-abi3-manylinux_2_28_aarch64
+Builder OS family:       Debian 11 Bullseye
+Upstream builder image:  rustlang/rust:nightly-bullseye
+Upstream runtime image:  python:3.12-slim-bullseye
+Cell process:             standalone vllm-router Rust binary
 ```
+
+In production, mirror both base images into the internal registry and pin them
+by immutable internal tag or digest. `nightly-bullseye` is kept only as the
+upstream reference default in the example Dockerfile.
+
+## Required closed-network inputs
+
+Prepare these local files before building. They are ignored by Git.
+
+```text
+docker/vllm-router/
+├── Dockerfile.rust-proxy
+├── cargo-config.toml.example       # committed template
+├── cargo-config.toml               # internal Cargo proxy config
+├── sources.list                    # Debian Bullseye apt proxy
+├── certs/
+│   └── corporate-root-ca.crt
+└── router-src/                     # extracted exact release source tree
+    ├── Cargo.toml
+    ├── Cargo.lock
+    └── src/
+```
+
+`router-src/` should come from the exact reviewed Router release, currently
+`v0.1.15`. Record the corresponding upstream tag/commit SHA in the release
+change record before building.
+
+## Cargo/Artifactory proxy
+
+The Artifactory Cargo remote repository should proxy the official Rust registry
+endpoint:
+
+```text
+https://index.crates.io
+```
+
+JFrog Cargo repositories use a sparse client index URL in this form:
+
+```text
+sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/
+```
+
+Start from `cargo-config.toml.example`:
+
+```toml
+# ~/.cargo/config.toml
+# Proxy upstream/registry URL in Artifactory: https://index.crates.io
+
+[registry]
+default = "cargo-proxy"
+global-credential-providers = ["cargo:token"]
+
+[registries.cargo-proxy]
+index = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+
+[source.crates-io]
+replace-with = "cargo-proxy-source"
+
+[source.cargo-proxy-source]
+registry = "sparse+https://<ARTIFACTORY_HOST>/artifactory/api/cargo/<CARGO_REMOTE_REPO>/index/"
+```
+
+The `[source.crates-io]` replacement is important. Setting only
+`[registry] default = "cargo-proxy"` is not sufficient to guarantee that normal
+`Cargo.toml` dependencies are resolved through the internal proxy.
+
+For v0.1.15, `Cargo.lock` contains crates.io registry dependencies and no
+`git+...` package sources, so a Cargo remote repository that proxies crates.io
+is sufficient for the Rust dependency graph.
+
+Do not commit credentials. If the Cargo remote requires authentication, inject
+credentials using the build system's secret mechanism. For a highly restricted
+image builder, a read-only internal Cargo remote or fully vendored dependency
+bundle is preferable to putting a token in Docker build arguments or image
+layers.
+
+## Production path: Rust source build through internal proxies
+
+Copy `cargo-config.toml.example` to `cargo-config.toml`, replace its placeholders,
+prepare the Bullseye `sources.list`, corporate CA, and release source tree, then:
+
+```bash
+cd docker/vllm-router
+
+docker build \
+  -f Dockerfile.rust-proxy \
+  --build-arg RUST_BUILDER_IMAGE=<internal-registry>/rustlang/rust:<pinned-bullseye-tag-or-digest> \
+  --build-arg RUNTIME_IMAGE=<internal-registry>/python:3.12-slim-bullseye \
+  --build-arg VLLM_ROUTER_VERSION=0.1.15 \
+  -t <internal-registry>/vllm/vllm-router:v0.1.15 \
+  .
+```
+
+`Dockerfile.rust-proxy` deliberately keeps the upstream v0.1.15 build/runtime
+family while removing unnecessary external access:
+
+- corporate CA is installed before apt/Cargo access,
+- `sources.list` points apt to the internal Bullseye proxy,
+- `/usr/local/cargo/config.toml` redirects dependency resolution to the internal
+  Cargo proxy,
+- `Cargo.lock` is enforced with `cargo build --release --locked`,
+- no pip/PyPI operation occurs in the Rust production path,
+- the final process is the standalone `/usr/local/bin/vllm-router`,
+- final-image `ldd` rejects unresolved shared libraries,
+- `vllm-router --help` is executed during both builder and runtime stages.
+
+The runtime default remains `python:3.12-slim-bullseye` only for upstream image
+parity; Python is not used by the Router process. After internal `ldd` and
+runtime certification, a pinned `debian:bullseye-slim`-class runtime may be used
+if it supplies every required shared library and the corporate trust bundle.
+
+## Why raw upstream Dockerfile.router is not copied as-is
+
+Upstream `v0.1.15/Dockerfile.router` is a valid and useful reference. It builds
+the standalone Rust binary and uses Debian Bullseye for both stages. However it
+assumes online/mutable inputs:
+
+```text
+rustlang/rust:nightly-bullseye
+        -> apt-get from Debian
+        -> cargo build from crates.io
+        -> python:3.12-slim-bullseye
+        -> additional pip operations
+```
+
+For the closed network we retain the standalone Rust execution path, but replace
+those network dependencies with internal registry/APT/Cargo endpoints and remove
+the unnecessary pip installation from the production build.
+
+## Fully vendored Rust fallback
+
+If the Cargo proxy is unavailable or policy requires a zero-package-network
+build, stage dependencies outside the closed image build:
+
+```bash
+cargo vendor --locked vendor/
+```
+
+Then configure:
+
+```toml
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
+```
+
+and build with:
+
+```bash
+cargo build --release --locked --offline
+```
+
+This is feasible for v0.1.15 because its Cargo lockfile does not contain Git
+dependency sources.
+
+## Wheel fallback
+
+The existing `Dockerfile` / `Dockerfile.proxy` / `prepare-wheelhouse.sh` path is
+kept as a fallback and CI reference for the upstream release wheel.
 
 Published v0.1.15 wheel SHA256 values:
 
@@ -29,166 +204,33 @@ Published v0.1.15 wheel SHA256 values:
 | x86_64 | `2f268b001a546d7921c2e87b510869134a212f0ab2faf138b78eb554c93a2241` |
 | aarch64 | `c30070b2f8559fc33da4b114e58d28881775585dd6f6e1ac173ea494c8fbe20e` |
 
-The release wheel is preferable to rebuilding Rust for every release because
-it is a first-class upstream release artifact. The upstream Buildkite release
-pipeline builds the wheels for x86_64/aarch64, smoke-tests them, and publishes
-them to PyPI on version tags.
-
-## Path A: fully offline wheelhouse build
-
-This is the preferred path when the image build environment must not access any
-package registry.
-
-On an Internet-connected or package-staging host with the target architecture:
-
-```bash
-cd docker/vllm-router
-bash prepare-wheelhouse.sh 0.1.15
-```
-
-The script:
-
-1. downloads `vllm-router==0.1.15` and every resolved Python dependency as
-   binary wheels only,
-2. verifies the published v0.1.15 Router-wheel SHA256 for x86_64/aarch64,
-3. generates `wheelhouse/SHA256SUMS` for the complete dependency set, and
-4. creates `vllm-router-0.1.15-wheelhouse.tar.gz` for closed-network import.
-
-For a later Router version, the script still prepares the wheelhouse but emits a
-warning until the new release-wheel SHA256 is reviewed and pinned in the script.
-That warning is an explicit release-review gate, not an invitation to skip
-artifact verification.
-
-Transfer the tarball into the closed network, extract it back under this
-directory, and build with an internally mirrored Python base image:
-
-```bash
-cd docker/vllm-router
-
-tar -xzf vllm-router-0.1.15-wheelhouse.tar.gz
-
-docker build \
-  -f Dockerfile \
-  --build-arg BASE_IMAGE=internal-registry/base/python:3.12-slim-bookworm \
-  --build-arg VLLM_ROUTER_VERSION=0.1.15 \
-  -t internal-registry/vllm/vllm-router:v0.1.15 \
-  .
-```
-
-The Dockerfile uses all of the following controls:
-
-- `--no-index`: package registries are never contacted.
-- `--find-links`: packages come only from the copied wheelhouse.
-- `--only-binary=:all:`: a missing wheel fails instead of silently compiling
-  source code.
-- `SHA256SUMS` verification when the manifest is present.
-- package-version assertion and `vllm-router --help` smoke check during build.
-
-The `BASE_IMAGE` itself must already be reachable from the internal registry.
-For production, mirror/pin that base image by digest as well.
-
-## Path B: internal PyPI proxy build
-
-If the closed network has a reliable PyPI/Artifactory proxy, use
-`Dockerfile.proxy`.
-
-Prepare local build inputs that are intentionally ignored by Git:
-
-```text
-docker/vllm-router/
-├── Dockerfile.proxy
-├── pip.conf
-└── certs/
-    └── corporate-root-ca.crt
-```
-
-Build:
-
-```bash
-cd docker/vllm-router
-
-docker build \
-  -f Dockerfile.proxy \
-  --build-arg BASE_IMAGE=internal-registry/base/python:3.12-slim-bookworm \
-  --build-arg VLLM_ROUTER_VERSION=0.1.15 \
-  -t internal-registry/vllm/vllm-router:v0.1.15 \
-  .
-```
-
-`Dockerfile.proxy` also uses `--only-binary=:all:`. If the internal PyPI proxy
-has only an sdist or an incomplete mirror, the image build fails immediately
-instead of unexpectedly requiring Rust/Cargo access.
-
-The official Python slim image already includes `ca-certificates`; the proxy
-Dockerfile adds the supplied `.crt` files to the system trust store before pip
-access. No apt package installation is required for the Router image itself.
-
-## Why the upstream `Dockerfile.router` is not copied as-is
-
-Upstream `v0.1.15/Dockerfile.router` is a valid upstream image recipe and is
-used directly by the upstream Buildkite nightly Docker jobs. It builds the Rust
-binary with `cargo build --release` and places it into a Python slim runtime.
-
-It is therefore useful as a reference, but it is not the preferred production
-recipe for this closed-network stack because it depends on mutable and online
-build inputs:
-
-- `rustlang/rust:nightly-bullseye` is a moving nightly compiler image.
-- `apt-get` requires Debian package access.
-- `cargo build` requires crates.io unless dependencies are mirrored or vendored.
-- the runtime stage performs additional online pip operations that are not
-  required when using the published release wheel.
-
-The upstream release pipeline itself separates these concerns: version tags
-produce and test release binaries/wheels, while DockerHub publishing is
-nightly-only. The internal image should therefore package the release wheel,
-not depend on a moving nightly image.
-
-## Source-build fallback
-
-Use a source build only if an upstream release wheel is unavailable for the
-required architecture or a local source patch is necessary.
-
-For a closed-network source build, the minimum safe procedure is:
-
-1. Pin an upstream release tag and record its commit SHA.
-2. Carry `Cargo.toml`, `Cargo.lock`, `src/`, and the rest of the release source
-   into the staging environment.
-3. On a connected staging host run `cargo vendor --locked vendor/`.
-4. Configure Cargo to replace `crates-io` with the local `vendor/` directory.
-5. Mirror and pin the Rust builder/runtime base images internally.
-6. Build with `cargo build --release --locked --offline`.
-7. Smoke-test `vllm-router --help` and the required P/D connector flags.
-8. Push the resulting image to the internal registry and deploy by digest.
-
-`v0.1.15/Cargo.toml` uses registry dependencies rather than Git dependencies,
-so Cargo vendoring is feasible for this release. Do not use an unpinned online
-`cargo build` as the normal production image path.
+The wheel route is useful for emergency recovery and release-artifact
+cross-checks, but it is not the primary production image path for P/D Cell.
 
 ## Required runtime capability gate
 
-Before using a newly packaged Router version in P/D Cell, verify at least:
+For every newly built Router image:
 
 ```bash
 vllm-router --help | grep -- --vllm-pd-disaggregation
 vllm-router --help | grep -- --kv-connector
 ```
 
-For the current chart baseline, the accepted connector values must include
-`nixl`, `mooncake`, and `moriio`, and Mooncake deployment must subsequently pass
-the runtime bootstrap/transfer certification documented in
-`helm/docs/PD_CELL_0.1.8_KO.md`.
+The current chart baseline requires the connector values `nixl`, `mooncake`,
+and `moriio` to be present. Mooncake deployment must then pass bootstrap
+`/query`, request `transfer_id`, producer send, and consumer receive/load runtime
+certification before PR merge.
 
 ## Helm image pin
 
-After the image is pushed to the internal registry:
+After pushing the image to the internal registry:
 
 ```yaml
 pdCellSpec:
   router:
-    repository: internal-registry/vllm/vllm-router
+    repository: <internal-registry>/vllm/vllm-router
     tag: v0.1.15
 ```
 
-For production, prefer a digest-pinned image policy in the deployment process
-even if the values file keeps the human-readable release tag.
+For production deployment, record and prefer the immutable registry digest even
+when Helm values retain the human-readable release tag.
