@@ -25,7 +25,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python for Router release-wheel staging
+      - name: Setup Python for Router packaging validation
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -40,6 +40,43 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Production primary: standalone Rust binary through internal proxies.
+          grep -Fq -- 'RUST_BUILDER_IMAGE=rustlang/rust:nightly-bullseye' \
+            docker/vllm-router/Dockerfile.rust-proxy
+          grep -Fq -- 'RUNTIME_IMAGE=python:3.12-slim-bullseye' \
+            docker/vllm-router/Dockerfile.rust-proxy
+          grep -Fq -- 'COPY ./sources.list /etc/apt/sources.list' \
+            docker/vllm-router/Dockerfile.rust-proxy
+          grep -Fq -- 'COPY ./cargo-config.toml /usr/local/cargo/config.toml' \
+            docker/vllm-router/Dockerfile.rust-proxy
+          grep -Fq -- 'cargo build --release --locked' \
+            docker/vllm-router/Dockerfile.rust-proxy
+          grep -Fq -- 'ldd /usr/local/bin/vllm-router' \
+            docker/vllm-router/Dockerfile.rust-proxy
+          grep -Fq -- 'vllm-router --help' \
+            docker/vllm-router/Dockerfile.rust-proxy
+
+          if grep -Eq '(^|[[:space:]])pip(3)?[[:space:]]+install' \
+              docker/vllm-router/Dockerfile.rust-proxy; then
+            echo 'Production Rust Router image must not depend on pip/PyPI'
+            exit 1
+          fi
+
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          path = Path('docker/vllm-router/cargo-config.toml.example')
+          with path.open('rb') as fh:
+              cfg = tomllib.load(fh)
+
+          assert cfg['registry']['default'] == 'cargo-proxy'
+          assert cfg['registries']['cargo-proxy']['index'].startswith('sparse+https://')
+          assert cfg['source']['crates-io']['replace-with'] == 'cargo-proxy-source'
+          assert cfg['source']['cargo-proxy-source']['registry'].startswith('sparse+https://')
+          PY
+
+          # Wheel path is retained as fallback/release-artifact cross-check.
           bash -n docker/vllm-router/prepare-wheelhouse.sh
           grep -Fq -- '--no-index' docker/vllm-router/Dockerfile
           grep -Fq -- '--find-links=/opt/vllm-router-wheelhouse' docker/vllm-router/Dockerfile
@@ -55,12 +92,13 @@ jobs:
             docker/vllm-router/prepare-wheelhouse.sh
 
           if grep -Eq '^# syntax=' docker/vllm-router/Dockerfile \
-              docker/vllm-router/Dockerfile.proxy; then
+              docker/vllm-router/Dockerfile.proxy \
+              docker/vllm-router/Dockerfile.rust-proxy; then
             echo 'Closed-network Router Dockerfiles must not require an external BuildKit frontend'
             exit 1
           fi
 
-      - name: Build and execute vLLM Router release-wheel image
+      - name: Build and execute vLLM Router release-wheel fallback image
         shell: bash
         run: |
           set -euo pipefail
