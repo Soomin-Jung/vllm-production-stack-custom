@@ -156,6 +156,9 @@
     {{- $decodeVllmBin := $prefillVllmBin -}}
 
     {{- if $isMooncakeConnector -}}
+      {{- if ne $gpuResourceType "nvidia.com/gpu" -}}
+        {{- fail (printf "pdCellSpec model %s: MooncakeConnector pod-local reservation requires requestGPUType=nvidia.com/gpu; MIG/time-slicing/shared GPU resources are not supported" $name) -}}
+      {{- end -}}
       {{- if lt $pGpuCount 1 -}}
         {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill.requestGPU must be >= 1" $name) -}}
       {{- end -}}
