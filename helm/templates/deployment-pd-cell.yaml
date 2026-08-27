@@ -144,54 +144,8 @@
 
     {{- $kv := deepCopy ($modelSpec.kvTransfer | default dict) -}}
     {{- $kvConnector := required (printf "pdCellSpec model %s: models[].kvTransfer.connector is required" $name) $kv.connector -}}
-    {{- $isMooncakeConnector := eq $kvConnector "MooncakeConnector" -}}
     {{- $kvBaseConfig := deepCopy ($kv.config | default dict) -}}
     {{- $bootstrapPortBase := int (default 9001 $kv.bootstrapPortBase) -}}
-
-    {{- $pGpuCount := int (required (printf "pdCellSpec model %s: prefill.requestGPU is required" $name) $prefill.requestGPU) -}}
-    {{- $dGpuCount := int (required (printf "pdCellSpec model %s: decode.requestGPU is required" $name) $decode.requestGPU) -}}
-    {{- $gpuReservationTotal := 0 -}}
-    {{- $gpuResourceType := default "nvidia.com/gpu" $prefill.requestGPUType -}}
-    {{- $prefillVllmBin := ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") -}}
-    {{- $decodeVllmBin := $prefillVllmBin -}}
-
-    {{- if $isMooncakeConnector -}}
-      {{- if lt $pGpuCount 1 -}}
-        {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill.requestGPU must be >= 1" $name) -}}
-      {{- end -}}
-      {{- if lt $dGpuCount 1 -}}
-        {{- fail (printf "pdCellSpec model %s: MooncakeConnector decode.requestGPU must be >= 1" $name) -}}
-      {{- end -}}
-      {{- $decodeGpuResourceType := default "nvidia.com/gpu" $decode.requestGPUType -}}
-      {{- if ne $gpuResourceType $decodeGpuResourceType -}}
-        {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill/decode requestGPUType must match because one pod-local reservation owns the full GPU set" $name) -}}
-      {{- end -}}
-      {{- $gpuReservationTotal = add (mul $pCount $pGpuCount) (mul $dCount $dGpuCount) -}}
-
-      {{- range $arg := ($prefill.extraArgs | default (list)) -}}
-        {{- if or (eq (printf "%v" $arg) "--device-ids") (hasPrefix "--device-ids=" (printf "%v" $arg)) -}}
-          {{- fail (printf "pdCellSpec model %s: prefill --device-ids is chart-managed for MooncakeConnector" $name) -}}
-        {{- end -}}
-      {{- end -}}
-      {{- range $arg := ($decode.extraArgs | default (list)) -}}
-        {{- if or (eq (printf "%v" $arg) "--device-ids") (hasPrefix "--device-ids=" (printf "%v" $arg)) -}}
-          {{- fail (printf "pdCellSpec model %s: decode --device-ids is chart-managed for MooncakeConnector" $name) -}}
-        {{- end -}}
-      {{- end -}}
-
-      {{- if $prefill.command -}}
-        {{- if or (not (kindIs "slice" $prefill.command)) (ne (len $prefill.command) 2) (ne (printf "%v" (index $prefill.command 1)) "serve") -}}
-          {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
-        {{- end -}}
-        {{- $prefillVllmBin = printf "%v" (index $prefill.command 0) -}}
-      {{- end -}}
-      {{- if $decode.command -}}
-        {{- if or (not (kindIs "slice" $decode.command)) (ne (len $decode.command) 2) (ne (printf "%v" (index $decode.command 1)) "serve") -}}
-          {{- fail (printf "pdCellSpec model %s: MooncakeConnector decode.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
-        {{- end -}}
-        {{- $decodeVllmBin = printf "%v" (index $decode.command 0) -}}
-      {{- end -}}
-    {{- end -}}
     {{- $abortTimeout := int (default 600 $kv.abortRequestTimeout) -}}
     {{- $nixlSideChannelEnabled := has $kvConnector (list "NixlConnector" "NixlPullConnector" "NixlPushConnector") -}}
     {{- if hasKey $kv "nixlSideChannelEnabled" -}}
@@ -329,20 +283,6 @@
       {{- $_ := set $podVolumeMap $e.name $e -}}
     {{- end -}}
 
-    {{- if $isMooncakeConnector -}}
-      {{- range $reservedName := (list "pd-mooncake-gpu-map" "pd-mooncake-gpu-launcher") -}}
-        {{- if hasKey $podVolumeMap $reservedName -}}
-          {{- fail (printf "pdCellSpec model %s: volume name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
-        {{- end -}}
-        {{- if hasKey $prefillMountMap $reservedName -}}
-          {{- fail (printf "pdCellSpec model %s: prefill volumeMount name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
-        {{- end -}}
-        {{- if hasKey $decodeMountMap $reservedName -}}
-          {{- fail (printf "pdCellSpec model %s: decode volumeMount name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
-        {{- end -}}
-      {{- end -}}
-    {{- end -}}
-
     {{- $podSecurityContext := mergeOverwrite (deepCopy ($root.Values.servingEngineSpec.securityContext | default dict)) ($pdCellSpec.securityContext | default dict) -}}
     {{- $podSecurityContext = mergeOverwrite $podSecurityContext ($modelSpec.securityContext | default dict) -}}
     {{- $engineSecurityContext := mergeOverwrite (deepCopy ($root.Values.servingEngineSpec.containerSecurityContext | default dict)) ($pdCellSpec.containerSecurityContext | default dict) -}}
@@ -458,179 +398,6 @@ spec:
       terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
 
       containers:
-        {{- if $isMooncakeConnector }}
-        - name: gpu-reservation
-          image: "{{ $repository }}:{{ $tag }}"
-          imagePullPolicy: {{ $engineImagePullPolicy | quote }}
-          command:
-            - "/bin/bash"
-            - "-ceu"
-            - |
-              GPU_DIR=/var/run/pd-gpu
-              TMP_FILE="${GPU_DIR}/gpus.tmp.$"
-              FINAL_FILE="${GPU_DIR}/gpus"
-              mkdir -p "${GPU_DIR}"
-              trap 'rm -f "${TMP_FILE}"' EXIT
-
-              nvidia-smi --query-gpu=pci.bus_id,uuid --format=csv,noheader,nounits |
-                awk -F',' '{
-                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1);
-                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2);
-                  print $1 "," $2
-                }' |
-                sort -t',' -k1,1 |
-                cut -d',' -f2 > "${TMP_FILE}"
-
-              ACTUAL_COUNT="$(grep -cve '^[[:space:]]*
-          image: "{{ $routerRepository }}:{{ $routerTag }}"
-          imagePullPolicy: {{ $routerImagePullPolicy | quote }}
-          command:
-            {{- if $router.command }}
-              {{- toYaml $router.command | nindent 12 }}
-            {{- else }}
-            - "vllm-router"
-            {{- end }}
-          args:
-            - "--host"
-            - "0.0.0.0"
-            - "--port"
-            - {{ $routerPort | quote }}
-            - "--policy"
-            - {{ $routerPolicy | quote }}
-            - "--vllm-pd-disaggregation"
-            - "--kv-connector"
-            - {{ $routerKvConnector | quote }}
-            - "--health-check-interval-secs"
-            - {{ $routerHealthInterval | quote }}
-            - "--health-check-timeout-secs"
-            - {{ $routerHealthTimeout | quote }}
-            {{- range $i := until $pCount }}
-            - "--prefill"
-            - {{ printf "http://127.0.0.1:%d" (add $pPortBase $i) | quote }}
-              {{- if eq $routerKvConnector "mooncake" }}
-            - {{ printf "%d" (add $bootstrapPortBase $i) | quote }}
-              {{- end }}
-            {{- end }}
-            {{- range $i := until $dCount }}
-            - "--decode"
-            - {{ printf "http://127.0.0.1:%d" (add $dPortBase $i) | quote }}
-            {{- end }}
-            {{- if gt $routerPrometheusPort 0 }}
-            - "--prometheus-host"
-            - "0.0.0.0"
-            - "--prometheus-port"
-            - {{ $routerPrometheusPort | quote }}
-            {{- end }}
-            {{- range $routerExtraArgs }}
-            - {{ . | quote }}
-            {{- end }}
-          env:
-            {{- with (values $routerEnvMap) }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
-            {{- $vllmApiKey := $root.Values.servingEngineSpec.vllmApiKey }}
-            {{- if $vllmApiKey }}
-            - name: VLLM_API_KEY
-              {{- if kindIs "string" $vllmApiKey }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Release.Name }}-secrets
-                  key: vllmApiKey
-              {{- else }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $vllmApiKey.secretName }}
-                  key: {{ $vllmApiKey.secretKey }}
-              {{- end }}
-            - name: OPENAI_API_KEY
-              {{- if kindIs "string" $vllmApiKey }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Release.Name }}-secrets
-                  key: vllmApiKey
-              {{- else }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $vllmApiKey.secretName }}
-                  key: {{ $vllmApiKey.secretKey }}
-              {{- end }}
-            {{- end }}
-          {{- with $routerEnvFrom }}
-          envFrom:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          ports:
-            - name: pd-router
-              containerPort: {{ $routerPort }}
-              protocol: TCP
-            {{- if gt $routerPrometheusPort 0 }}
-            - name: router-metrics
-              containerPort: {{ $routerPrometheusPort }}
-              protocol: TCP
-            {{- end }}
-          startupProbe:
-            httpGet:
-              path: {{ $routerHealthPath }}
-              port: {{ $routerPort }}
-            initialDelaySeconds: {{ default 5 $router.startupProbeInitialDelaySeconds }}
-            periodSeconds: {{ default 5 $router.startupProbePeriodSeconds }}
-            failureThreshold: {{ default 180 $router.startupProbeFailureThreshold }}
-          livenessProbe:
-            httpGet:
-              path: {{ $routerHealthPath }}
-              port: {{ $routerPort }}
-            periodSeconds: {{ default 10 $router.livenessProbePeriodSeconds }}
-            failureThreshold: {{ default 3 $router.livenessProbeFailureThreshold }}
-          readinessProbe:
-            httpGet:
-              path: {{ $routerHealthPath }}
-              port: {{ $routerPort }}
-            periodSeconds: {{ default 5 $router.readinessProbePeriodSeconds }}
-            failureThreshold: {{ default 3 $router.readinessProbeFailureThreshold }}
-          resources:
-            {{- toYaml $routerResources | nindent 12 }}
-          {{- with $routerSecurityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with (values $routerMountMap) }}
-          volumeMounts:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-
- "${TMP_FILE}" || true)"
-              if [[ "${ACTUAL_COUNT}" != "${PD_GPU_TOTAL}" ]]; then
-                echo "[pd-gpu] reservation mismatch: expected=${PD_GPU_TOTAL} visible=${ACTUAL_COUNT}" >&2
-                cat "${TMP_FILE}" >&2 || true
-                exit 1
-              fi
-
-              mv -f "${TMP_FILE}" "${FINAL_FILE}"
-              trap - EXIT
-              echo "[pd-gpu] reservation ready: $(paste -sd, "${FINAL_FILE}")"
-              exec sleep infinity
-          env:
-            - name: PD_GPU_TOTAL
-              value: {{ $gpuReservationTotal | quote }}
-          resources:
-            requests:
-              cpu: "10m"
-              memory: "64Mi"
-              {{ $gpuResourceType }}: {{ $gpuReservationTotal | quote }}
-            limits:
-              cpu: "100m"
-              memory: "256Mi"
-              {{ $gpuResourceType }}: {{ $gpuReservationTotal | quote }}
-          readinessProbe:
-            exec:
-              command: ["/bin/bash", "-c", "test -s /var/run/pd-gpu/gpus"]
-            periodSeconds: 2
-            failureThreshold: 150
-          volumeMounts:
-            - name: pd-mooncake-gpu-map
-              mountPath: /var/run/pd-gpu
-        {{- end }}
-
         - name: pd-router
           image: "{{ $routerRepository }}:{{ $routerTag }}"
           imagePullPolicy: {{ $routerImagePullPolicy | quote }}
@@ -755,13 +522,6 @@ spec:
           {{- $dpMasterPort := add $pDpMasterPortBase $i -}}
           {{- $sideChannelPort := add $pSideChannelPortBase $i -}}
           {{- $phaseEnvMap := deepCopy $modelEnvMap -}}
-          {{- $containerGpuIndices := list -}}
-          {{- if $isMooncakeConnector -}}
-            {{- $gpuOffset := mul $i $pGpuCount -}}
-            {{- range $gpuIndex := until $pGpuCount -}}
-              {{- $containerGpuIndices = append $containerGpuIndices (printf "%d" (add $gpuOffset $gpuIndex)) -}}
-            {{- end -}}
-          {{- end -}}
 
           {{- range $e := ($prefill.env | default (list)) -}}
             {{- $_ := set $phaseEnvMap $e.name $e -}}
@@ -779,33 +539,16 @@ spec:
             {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_BOOTSTRAP_PORT" (dict "name" "VLLM_MOONCAKE_BOOTSTRAP_PORT" "value" (printf "%d" $bootstrapPort)) -}}
             {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) -}}
           {{- end -}}
-          {{- if $isMooncakeConnector -}}
-            {{- $_ := set $phaseEnvMap "NVIDIA_VISIBLE_DEVICES" (dict "name" "NVIDIA_VISIBLE_DEVICES" "value" "all") -}}
-            {{- $_ := set $phaseEnvMap "PD_GPU_TOTAL" (dict "name" "PD_GPU_TOTAL" "value" (printf "%d" $gpuReservationTotal)) -}}
-            {{- $_ := set $phaseEnvMap "CNTR_GPU_IDX" (dict "name" "CNTR_GPU_IDX" "value" (join "," $containerGpuIndices)) -}}
-            {{- $_ := set $phaseEnvMap "PD_VLLM_BIN" (dict "name" "PD_VLLM_BIN" "value" $prefillVllmBin) -}}
-          {{- end -}}
           {{- $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp") -}}
           {{- $kvConfig := mergeOverwrite (deepCopy $kvBaseConfig) ($kv.prefillConfig | default dict) -}}
           {{- $kvConfig = mergeOverwrite $kvConfig ($prefill.kvTransferConfig | default dict) -}}
-          {{- if $isMooncakeConnector -}}
-            {{- $extraConfig := deepCopy ($kvConfig.kv_connector_extra_config | default dict) -}}
-            {{- if hasKey $extraConfig "mooncake_protocol" -}}
-              {{- fail (printf "pdCellSpec model %s: mooncake_protocol is chart-managed for node-local P/D Cell; remove it from values (forced to nvlink_intra)" $name) -}}
-            {{- end -}}
-            {{- $_ := set $extraConfig "mooncake_protocol" "nvlink_intra" -}}
-            {{- $_ := set $kvConfig "kv_connector_extra_config" $extraConfig -}}
-          {{- end -}}
           {{- $_ := set $kvConfig "kv_connector" $kvConnector -}}
           {{- $_ := set $kvConfig "kv_role" "kv_producer" -}}
         - name: {{ printf "prefill-%d" $i }}
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ $engineImagePullPolicy | quote }}
           command:
-            {{- if $isMooncakeConnector }}
-            - "/bin/bash"
-            - "/opt/pd-cell-gpu/launch-vllm.sh"
-            {{- else if $prefill.command }}
+            {{- if $prefill.command }}
               {{- toYaml $prefill.command | nindent 12 }}
             {{- else }}
             - {{ ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") | quote }}
@@ -879,11 +622,7 @@ spec:
             initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
             failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
-          {{- if $isMooncakeConnector }}
-          resources: {{- include "chart.pdEngineResourcesWithoutGpu" $prefill | nindent 12 }}
-          {{- else }}
           resources: {{- include "chart.resources" $prefill | nindent 12 }}
-          {{- end }}
           {{- with $prefillSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -891,14 +630,6 @@ spec:
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- if $isMooncakeConnector }}
-            - name: pd-mooncake-gpu-map
-              mountPath: /var/run/pd-gpu
-              readOnly: true
-            - name: pd-mooncake-gpu-launcher
-              mountPath: /opt/pd-cell-gpu
-              readOnly: true
-            {{- end }}
             {{- with (values $prefillMountMap) }}
               {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -910,14 +641,6 @@ spec:
           {{- $dpMasterPort := add $dDpMasterPortBase $i -}}
           {{- $sideChannelPort := add $dSideChannelPortBase $i -}}
           {{- $phaseEnvMap := deepCopy $modelEnvMap -}}
-          {{- $containerGpuIndices := list -}}
-          {{- if $isMooncakeConnector -}}
-            {{- $decodeGpuBase := mul $pCount $pGpuCount -}}
-            {{- $gpuOffset := add $decodeGpuBase (mul $i $dGpuCount) -}}
-            {{- range $gpuIndex := until $dGpuCount -}}
-              {{- $containerGpuIndices = append $containerGpuIndices (printf "%d" (add $gpuOffset $gpuIndex)) -}}
-            {{- end -}}
-          {{- end -}}
 
           {{- range $e := ($decode.env | default (list)) -}}
             {{- $_ := set $phaseEnvMap $e.name $e -}}
@@ -934,33 +657,16 @@ spec:
           {{- if eq $routerKvConnector "mooncake" -}}
             {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) -}}
           {{- end -}}
-          {{- if $isMooncakeConnector -}}
-            {{- $_ := set $phaseEnvMap "NVIDIA_VISIBLE_DEVICES" (dict "name" "NVIDIA_VISIBLE_DEVICES" "value" "all") -}}
-            {{- $_ := set $phaseEnvMap "PD_GPU_TOTAL" (dict "name" "PD_GPU_TOTAL" "value" (printf "%d" $gpuReservationTotal)) -}}
-            {{- $_ := set $phaseEnvMap "CNTR_GPU_IDX" (dict "name" "CNTR_GPU_IDX" "value" (join "," $containerGpuIndices)) -}}
-            {{- $_ := set $phaseEnvMap "PD_VLLM_BIN" (dict "name" "PD_VLLM_BIN" "value" $decodeVllmBin) -}}
-          {{- end -}}
           {{- $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp") -}}
           {{- $kvConfig := mergeOverwrite (deepCopy $kvBaseConfig) ($kv.decodeConfig | default dict) -}}
           {{- $kvConfig = mergeOverwrite $kvConfig ($decode.kvTransferConfig | default dict) -}}
-          {{- if $isMooncakeConnector -}}
-            {{- $extraConfig := deepCopy ($kvConfig.kv_connector_extra_config | default dict) -}}
-            {{- if hasKey $extraConfig "mooncake_protocol" -}}
-              {{- fail (printf "pdCellSpec model %s: mooncake_protocol is chart-managed for node-local P/D Cell; remove it from values (forced to nvlink_intra)" $name) -}}
-            {{- end -}}
-            {{- $_ := set $extraConfig "mooncake_protocol" "nvlink_intra" -}}
-            {{- $_ := set $kvConfig "kv_connector_extra_config" $extraConfig -}}
-          {{- end -}}
           {{- $_ := set $kvConfig "kv_connector" $kvConnector -}}
           {{- $_ := set $kvConfig "kv_role" "kv_consumer" -}}
         - name: {{ printf "decode-%d" $i }}
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ $engineImagePullPolicy | quote }}
           command:
-            {{- if $isMooncakeConnector }}
-            - "/bin/bash"
-            - "/opt/pd-cell-gpu/launch-vllm.sh"
-            {{- else if $decode.command }}
+            {{- if $decode.command }}
               {{- toYaml $decode.command | nindent 12 }}
             {{- else }}
             - {{ ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") | quote }}
@@ -1034,11 +740,7 @@ spec:
             initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
             failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
-          {{- if $isMooncakeConnector }}
-          resources: {{- include "chart.pdEngineResourcesWithoutGpu" $decode | nindent 12 }}
-          {{- else }}
           resources: {{- include "chart.resources" $decode | nindent 12 }}
-          {{- end }}
           {{- with $decodeSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -1046,14 +748,6 @@ spec:
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- if $isMooncakeConnector }}
-            - name: pd-mooncake-gpu-map
-              mountPath: /var/run/pd-gpu
-              readOnly: true
-            - name: pd-mooncake-gpu-launcher
-              mountPath: /opt/pd-cell-gpu
-              readOnly: true
-            {{- end }}
             {{- with (values $decodeMountMap) }}
               {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -1069,14 +763,6 @@ spec:
           hostPath:
             path: /dev/shm
             type: Directory
-        {{- if $isMooncakeConnector }}
-        - name: pd-mooncake-gpu-map
-          emptyDir: {}
-        - name: pd-mooncake-gpu-launcher
-          configMap:
-            name: "{{ $root.Release.Name }}-pd-cell-gpu-launcher"
-            defaultMode: 0555
-        {{- end }}
         {{- with (values $podVolumeMap) }}
           {{- toYaml . | nindent 8 }}
         {{- end }}
