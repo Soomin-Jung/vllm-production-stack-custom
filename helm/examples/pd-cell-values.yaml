@@ -33,10 +33,10 @@ pdCellSpec:
         connector: MooncakeConnector
         bootstrapPortBase: 9001
         abortRequestTimeout: 600
+        # Node-local P/D Cell forces Mooncake nvlink_intra in the chart.
+        # Do not set kv_connector_extra_config.mooncake_protocol in values.
         config:
           kv_load_failure_policy: fail
-          kv_connector_extra_config:
-            mooncake_protocol: nvlink_intra
 
       prefill:
         count: 1
