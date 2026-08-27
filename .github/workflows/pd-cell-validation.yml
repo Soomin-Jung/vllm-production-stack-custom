@@ -3,6 +3,8 @@ name: Validate P-D Cell Helm extension
 on:
   pull_request:
     paths:
+      - 'helm/templates/_helpers.tpl'
+      - 'helm/templates/configmap-pd-cell-gpu-launcher.yaml'
       - 'helm/templates/deployment-pd-cell.yaml'
       - 'helm/templates/service-pd-cell.yaml'
       - 'helm/examples/pd-cell-values.yaml'
@@ -175,8 +177,16 @@ jobs:
           contains 'pd-test-example-pd-p1d1-pd-cell'
           contains 'pd-orchestrator: "vllm-router"'
           contains 'pd-kv-connector: "mooncake"'
+          contains 'name: gpu-reservation'
           contains 'name: pd-router'
           contains '- "vllm-router"'
+          contains 'name: NVIDIA_VISIBLE_DEVICES'
+          contains 'name: CNTR_GPU_IDX'
+          contains 'value: "0,1,2,3"'
+          contains 'value: "4,5,6,7"'
+          contains '/opt/pd-cell-gpu/launch-vllm.sh'
+          contains 'pd-mooncake-gpu-map'
+          contains 'pd-mooncake-gpu-launcher'
           contains '--vllm-pd-disaggregation'
           contains '--kv-connector'
           contains 'mooncake'
@@ -201,6 +211,17 @@ jobs:
           contains 'value: /tmp'
           contains 'targetPort: pd-router'
 
+          # The reservation sidecar is the only Mooncake container that owns
+          # Kubernetes GPU extended resources. It has requests + limits, so the
+          # exact resource key must appear twice in the rendered baseline.
+          gpu_resource_count="$(grep -Fc -- 'nvidia.com/gpu: "8"' /tmp/pd-cell.yaml || true)"
+          if [[ "${gpu_resource_count}" != "2" ]]; then
+            echo "Expected exactly two reservation GPU resource lines, got ${gpu_resource_count}"
+            exit 1
+          fi
+
+          absent 'hostIPC:'
+          absent 'shareProcessNamespace:'
           absent 'disaggregated_prefill_orchestrated'
           absent '--static-backends'
           absent '--static-models'
@@ -222,6 +243,46 @@ jobs:
           grep -Fq -- '--vllm-pd-disaggregation' /tmp/pd-nixl.yaml
           grep -Fq -- 'NixlConnector' /tmp/pd-nixl.yaml
           grep -Fq -- 'name: VLLM_NIXL_SIDE_CHANNEL_PORT' /tmp/pd-nixl.yaml
+
+          # NIXL remains on the legacy per-engine GPU allocation path. The
+          # Mooncake GPU reservation wrapper must not leak into this render.
+          if grep -Fq -- 'name: gpu-reservation' /tmp/pd-nixl.yaml; then
+            echo 'NIXL render must not contain Mooncake gpu-reservation'
+            exit 1
+          fi
+          if grep -Fq -- 'pd-mooncake-gpu-launcher' /tmp/pd-nixl.yaml; then
+            echo 'NIXL render must not contain Mooncake GPU launcher'
+            exit 1
+          fi
+          if grep -Fq -- 'name: NVIDIA_VISIBLE_DEVICES' /tmp/pd-nixl.yaml; then
+            echo 'NIXL render must keep its existing device-plugin visibility contract'
+            exit 1
+          fi
+
+          # P1D1 minimal example: per-engine GPU resources remain 4 + 4, each
+          # rendered under requests and limits.
+          nixl_gpu_resource_count="$(grep -Fc -- 'nvidia.com/gpu: "4"' /tmp/pd-nixl.yaml || true)"
+          if [[ "${nixl_gpu_resource_count}" != "4" ]]; then
+            echo "Expected four NIXL per-engine GPU resource lines, got ${nixl_gpu_resource_count}"
+            exit 1
+          fi
+
+      - name: Verify Mooncake protocol and device IDs are chart-owned
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if helm template pd-test ./helm -n inference               -f global-values.yaml               -f helm/examples/pd-cell-values.yaml               --set-string 'pdCellSpec.models[0].kvTransfer.config.kv_connector_extra_config.mooncake_protocol=rdma'               > /tmp/pd-forbidden-protocol.yaml 2>/tmp/pd-forbidden-protocol.err; then
+            echo 'Mooncake protocol override must be rejected'
+            exit 1
+          fi
+          grep -Fq -- 'mooncake_protocol is chart-managed' /tmp/pd-forbidden-protocol.err
+
+          if helm template pd-test ./helm -n inference               -f global-values.yaml               -f helm/examples/pd-cell-values.yaml               --set-string 'pdCellSpec.models[0].prefill.extraArgs[0]=--device-ids=0,1,2,3'               > /tmp/pd-forbidden-device-ids.yaml 2>/tmp/pd-forbidden-device-ids.err; then
+            echo 'Mooncake --device-ids override must be rejected'
+            exit 1
+          fi
+          grep -Fq -- 'device-ids is chart-managed' /tmp/pd-forbidden-device-ids.err
 
       - name: Verify API-key propagation to Cell router
         shell: bash
