@@ -185,6 +185,48 @@ limits:
 {{- end }}
 
 {{/*
+Define CPU/memory resources for Mooncake P/D engine containers whose GPU
+devices are reserved by the pod-local gpu-reservation sidecar.
+
+requestGPU remains the sizing source of truth for default CPU/memory, but no
+GPU extended resource is attached to the engine container itself.
+*/}}
+{{- define "chart.pdEngineResourcesWithoutGpu" -}}
+{{- $modelSpec := . -}}
+{{- if not (hasKey $modelSpec "requestGPU") -}}
+{{- fail "Value 'modelSpec.requestGPU' must be defined!" -}}
+{{- end -}}
+{{- $gpuCount := int $modelSpec.requestGPU -}}
+{{- if lt $gpuCount 1 -}}
+{{- fail (printf "Mooncake P/D engine requestGPU must be >= 1, got %d" $gpuCount) -}}
+{{- end -}}
+{{- if or
+    (hasKey $modelSpec "requestGPUMem")
+    (hasKey $modelSpec "requestGPUMemPercentage")
+    (hasKey $modelSpec "requestGPUCores")
+    (hasKey $modelSpec "limitGPUMem")
+    (hasKey $modelSpec "limitGPUMemPercentage")
+    (hasKey $modelSpec "limitGPUCores")
+-}}
+{{- fail "Mooncake P/D shared GPU reservation does not support per-container gpumem/gpucores extended resources" -}}
+{{- end -}}
+{{- $defaultCPU := printf "%dm" (mul $gpuCount 4000) -}}
+{{- $defaultMemory := printf "%dGi" (mul $gpuCount 10) -}}
+requests:
+  memory: {{ default $defaultMemory $modelSpec.requestMemory | quote }}
+  cpu: {{ default $defaultCPU $modelSpec.requestCPU | quote }}
+{{- if or (hasKey $modelSpec "limitMemory") (hasKey $modelSpec "limitCPU") }}
+limits:
+  {{- if hasKey $modelSpec "limitMemory" }}
+  memory: {{ $modelSpec.limitMemory | quote }}
+  {{- end }}
+  {{- if hasKey $modelSpec "limitCPU" }}
+  cpu: {{ $modelSpec.limitCPU | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
   Define labels for serving engine and its service
 */}}
 {{- define "chart.engineLabels" -}}
