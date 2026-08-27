@@ -884,6 +884,14 @@ spec:
           hostPath:
             path: /dev/shm
             type: Directory
+        {{- if $isMooncakeConnector }}
+        - name: pd-mooncake-gpu-map
+          emptyDir: {}
+        - name: pd-mooncake-gpu-launcher
+          configMap:
+            name: "{{ $root.Release.Name }}-pd-cell-gpu-launcher"
+            defaultMode: 0555
+        {{- end }}
         {{- with (values $podVolumeMap) }}
           {{- toYaml . | nindent 8 }}
         {{- end }}
