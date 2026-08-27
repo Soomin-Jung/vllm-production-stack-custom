@@ -204,8 +204,10 @@ kvTransfer:
   config:
     kv_load_failure_policy: fail
     kv_connector_extra_config:
-      mooncake_protocol: nvlink_intra
       num_workers: 16
+
+# mooncake_protocol은 입력하지 않는다.
+# node-local P/D Cell이 nvlink_intra를 강제한다.
   prefillConfig: {}
   decodeConfig: {}
 ```
@@ -268,6 +270,79 @@ Decode에는 bootstrap server를 띄우지 않는다.
 
 ---
 
+## Mooncake 전용 GPU reservation / launcher
+
+exact `MooncakeConnector`에서는 GPU allocation semantics가 다른 connector와 다르다.
+
+운영자는 기존 topology field만 선언한다.
+
+```yaml
+prefill:
+  count: 2
+  requestGPU: 2
+
+decode:
+  count: 1
+  requestGPU: 4
+```
+
+Chart는 자동으로:
+
+```text
+total GPU = 2*2 + 1*4 = 8
+
+gpu-reservation -> nvidia.com/gpu: 8
+prefill-0       -> CNTR_GPU_IDX=0,1
+prefill-1       -> CNTR_GPU_IDX=2,3
+decode-0        -> CNTR_GPU_IDX=4,5,6,7
+```
+
+을 만든다.
+
+Mooncake engine container에는 GPU extended resource를 직접 붙이지 않는다. 대신:
+
+```text
+NVIDIA_VISIBLE_DEVICES=all
+```
+
+을 manifest에 넣고, Chart launcher가 reservation sidecar의 PCI-bus 정렬 UUID 목록을 읽어
+모든 P/D engine에 동일한 `CUDA_VISIBLE_DEVICES`를 설정한다. 실제 compute GPU는
+vLLM 0.26.0 `--device-ids=<CNTR_GPU_IDX>`로 선택한다.
+
+따라서 `requestGPU`의 의미는 Mooncake에서:
+
+```text
+engine topology / local worker GPU count
++ CPU/memory sizing 기준
++ pod reservation 합계 계산 기준
+```
+
+이다.
+
+다음 값은 Chart-owned이므로 사용자가 설정하면 안 된다.
+
+```text
+kv_connector_extra_config.mooncake_protocol
+--device-ids
+```
+
+`mooncake_protocol`은 `nvlink_intra`로 강제된다.
+
+`prefill.command` / `decode.command`를 Mooncake에서 지정해야 한다면
+`[<vllm-binary>, serve]` 형태만 허용되며, 실제 container command는 Chart launcher로
+override된다.
+
+이 방식은 `hostIPC`, `shareProcessNamespace`를 요구하지 않는다. 기존 engine
+`/dev/shm`은 그대로 유지한다.
+
+주의: engine container는 node GPU device가 inject될 수 있으므로 Linux `/dev` 수준의
+hard isolation은 아니다. CUDA runtime에서는 reservation UUID만 CVD로 노출한다.
+
+또한 vLLM `--device-ids`는 Ray executor에서 효과가 없으므로 이 contract는
+native multiprocessing 기준이다.
+
+---
+
 ## NIXL 전용 env
 
 NIXL connector일 때:
@@ -316,7 +391,7 @@ OPENAI_API_KEY
 | field | 기본값 | 설명 |
 |---|---|---|
 | `count` | 필수 | phase container 수 |
-| `requestGPU` | 필수 | container GPU reservation |
+| `requestGPU` | 필수 | engine local GPU worker 수. Mooncake에서는 reservation sidecar 합계/자동 device index 계산 기준 |
 | `profile` | 필수 | vLLM `--config` path |
 | `portBase` | P 8101 / D 8201 | HTTP base |
 | `internalPortMode` | `vllm` | `vllm\|dp\|auto` |
@@ -324,7 +399,7 @@ OPENAI_API_KEY
 | `internalPortStride` | `100` | index stride |
 | `dpMasterPortBase` | P 24000 / D 34000 | DP master |
 | `sideChannelPortBase` | P 5600 / D 5700 | NIXL side channel |
-| `command` | `[vllm, serve]` 계열 | engine command override |
+| `command` | `[vllm, serve]` 계열 | engine command override. Mooncake에서는 `[<binary>, serve]`만 허용 |
 | `extraArgs` | `[]` | engine extra flags |
 | `env` | `[]` | phase env |
 | `envFrom` | `[]` | phase envFrom |
@@ -333,7 +408,12 @@ OPENAI_API_KEY
 | `containerSecurityContext` | `{}` | phase security |
 | `kvTransferConfig` | `{}` | final phase KV override |
 
-CPU/memory resources는 기존 chart `chart.resources` helper를 사용한다.
+NIXL/기타 connector의 resource behavior는 기존 `chart.resources` helper를 그대로
+사용한다.
+
+MooncakeConnector는 `requestGPU`에 비례한 CPU/memory sizing은 유지하지만 engine
+container의 GPU extended resource를 제거하고, 모든 P/D GPU 합계를
+`gpu-reservation` container에 한 번만 요청한다.
 
 ---
 
@@ -432,8 +512,8 @@ pdCellSpec:
         bootstrapPortBase: 9001
         config:
           kv_load_failure_policy: fail
-          kv_connector_extra_config:
-            mooncake_protocol: nvlink_intra
+          # mooncake_protocol is chart-managed
+          kv_connector_extra_config: {}
       prefill:
         count: 1
         requestGPU: 4
