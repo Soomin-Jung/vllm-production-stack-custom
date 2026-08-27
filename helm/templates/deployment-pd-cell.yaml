@@ -144,8 +144,56 @@
 
     {{- $kv := deepCopy ($modelSpec.kvTransfer | default dict) -}}
     {{- $kvConnector := required (printf "pdCellSpec model %s: models[].kvTransfer.connector is required" $name) $kv.connector -}}
+    {{- $isMooncakeConnector := eq $kvConnector "MooncakeConnector" -}}
     {{- $kvBaseConfig := deepCopy ($kv.config | default dict) -}}
     {{- $bootstrapPortBase := int (default 9001 $kv.bootstrapPortBase) -}}
+
+    {{- $pGpuCount := int (required (printf "pdCellSpec model %s: prefill.requestGPU is required" $name) $prefill.requestGPU) -}}
+    {{- $dGpuCount := int (required (printf "pdCellSpec model %s: decode.requestGPU is required" $name) $decode.requestGPU) -}}
+    {{- $gpuReservationTotal := 0 -}}
+    {{- $gpuResourceType := default "nvidia.com/gpu" $prefill.requestGPUType -}}
+    {{- $prefillVllmBin := ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") -}}
+    {{- $decodeVllmBin := $prefillVllmBin -}}
+
+    {{- if $isMooncakeConnector -}}
+      {{- if lt $pGpuCount 1 -}}
+        {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill.requestGPU must be >= 1" $name) -}}
+      {{- end -}}
+      {{- if lt $dGpuCount 1 -}}
+        {{- fail (printf "pdCellSpec model %s: MooncakeConnector decode.requestGPU must be >= 1" $name) -}}
+      {{- end -}}
+      {{- $decodeGpuResourceType := default "nvidia.com/gpu" $decode.requestGPUType -}}
+      {{- if ne $gpuResourceType $decodeGpuResourceType -}}
+        {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill/decode requestGPUType must match because one pod-local reservation owns the full GPU set" $name) -}}
+      {{- end -}}
+      {{- $gpuReservationTotal = add (mul $pCount $pGpuCount) (mul $dCount $dGpuCount) -}}
+
+      {{- range $arg := ($prefill.extraArgs | default (list)) -}}
+        {{- $argString := printf "%v" $arg -}}
+        {{- if or (eq $argString "--device-ids") (hasPrefix "--device-ids=" $argString) -}}
+          {{- fail (printf "pdCellSpec model %s: prefill --device-ids is chart-managed for MooncakeConnector" $name) -}}
+        {{- end -}}
+      {{- end -}}
+      {{- range $arg := ($decode.extraArgs | default (list)) -}}
+        {{- $argString := printf "%v" $arg -}}
+        {{- if or (eq $argString "--device-ids") (hasPrefix "--device-ids=" $argString) -}}
+          {{- fail (printf "pdCellSpec model %s: decode --device-ids is chart-managed for MooncakeConnector" $name) -}}
+        {{- end -}}
+      {{- end -}}
+
+      {{- if $prefill.command -}}
+        {{- if or (not (kindIs "slice" $prefill.command)) (ne (len $prefill.command) 2) (ne (printf "%v" (index $prefill.command 1)) "serve") -}}
+          {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
+        {{- end -}}
+        {{- $prefillVllmBin = printf "%v" (index $prefill.command 0) -}}
+      {{- end -}}
+      {{- if $decode.command -}}
+        {{- if or (not (kindIs "slice" $decode.command)) (ne (len $decode.command) 2) (ne (printf "%v" (index $decode.command 1)) "serve") -}}
+          {{- fail (printf "pdCellSpec model %s: MooncakeConnector decode.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
+        {{- end -}}
+        {{- $decodeVllmBin = printf "%v" (index $decode.command 0) -}}
+      {{- end -}}
+    {{- end -}}
     {{- $abortTimeout := int (default 600 $kv.abortRequestTimeout) -}}
     {{- $nixlSideChannelEnabled := has $kvConnector (list "NixlConnector" "NixlPullConnector" "NixlPushConnector") -}}
     {{- if hasKey $kv "nixlSideChannelEnabled" -}}
