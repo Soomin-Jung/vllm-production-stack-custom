@@ -1,5 +1,6 @@
 suite: test node-local P/D Cell rendering
 templates:
+  - configmap-pd-cell-gpu-launcher.yaml
   - deployment-pd-cell.yaml
   - service-pd-cell.yaml
 
@@ -114,7 +115,7 @@ tests:
           path: spec.ports[0].targetPort
           value: pd-router
 
-  - it: should render Mooncake bootstrap contract for vllm-router P1D2
+  - it: should render Mooncake pod-local GPU reservation and forced nvlink_intra for P1D2
     set:
       pdCellSpec:
         enabled: true
@@ -135,7 +136,7 @@ tests:
               config:
                 kv_load_failure_policy: fail
                 kv_connector_extra_config:
-                  mooncake_protocol: nvlink_intra
+                  num_workers: 16
             prefill:
               count: 1
               requestGPU: 4
@@ -147,66 +148,108 @@ tests:
               portBase: 8201
               profile: /profiles/decode-tp2.yaml
     asserts:
+      - template: configmap-pd-cell-gpu-launcher.yaml
+        isKind:
+          of: ConfigMap
       - template: deployment-pd-cell.yaml
         equal:
           path: spec.template.metadata.annotations.pd-kv-connector
           value: mooncake
       - template: deployment-pd-cell.yaml
         equal:
-          path: spec.template.spec.containers[0].command[0]
+          path: spec.template.spec.containers[0].name
+          value: gpu-reservation
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[0].resources.requests["nvidia.com/gpu"]
+          value: "8"
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[1].name
+          value: pd-router
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[1].command[0]
           value: vllm-router
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: mooncake
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: http://127.0.0.1:8101
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: "9001"
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: http://127.0.0.1:8201
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: http://127.0.0.1:8202
       - template: deployment-pd-cell.yaml
         equal:
-          path: spec.template.spec.containers[0].startupProbe.failureThreshold
+          path: spec.template.spec.containers[1].startupProbe.failureThreshold
           value: 180
       - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[2].name
+          value: prefill-0
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[2].command[1]
+          value: /opt/pd-cell-gpu/launch-vllm.sh
+      - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[1].env
+          path: spec.template.spec.containers[2].env
+          content:
+            name: NVIDIA_VISIBLE_DEVICES
+            value: all
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
+          content:
+            name: CNTR_GPU_IDX
+            value: "0,1,2,3"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
           content:
             name: VLLM_MOONCAKE_BOOTSTRAP_PORT
             value: "9001"
       - template: deployment-pd-cell.yaml
-        contains:
-          path: spec.template.spec.containers[1].env
-          content:
-            name: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT
-            value: "600"
-      - template: deployment-pd-cell.yaml
-        contains:
-          path: spec.template.spec.containers[1].args
-          content: --kv-transfer-config
-      - template: deployment-pd-cell.yaml
-        contains:
-          path: spec.template.spec.containers[2].args
-          content: --kv-transfer-config
-      - template: deployment-pd-cell.yaml
-        equal:
-          path: spec.template.spec.containers[1].resources.requests["nvidia.com/gpu"]
-          value: "4"
-      - template: deployment-pd-cell.yaml
-        equal:
+        notExists:
           path: spec.template.spec.containers[2].resources.requests["nvidia.com/gpu"]
-          value: "2"
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[3].name
+          value: decode-0
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[3].env
+          content:
+            name: CNTR_GPU_IDX
+            value: "4,5"
+      - template: deployment-pd-cell.yaml
+        notExists:
+          path: spec.template.spec.containers[3].resources.requests["nvidia.com/gpu"]
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[4].name
+          value: decode-1
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[4].env
+          content:
+            name: CNTR_GPU_IDX
+            value: "6,7"
+      - template: deployment-pd-cell.yaml
+        notExists:
+          path: spec.template.spec.containers[4].resources.requests["nvidia.com/gpu"]
 
   - it: should propagate engine API key to vllm-router as OPENAI_API_KEY
     set:
@@ -234,7 +277,7 @@ tests:
     asserts:
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].env
+          path: spec.template.spec.containers[1].env
           content:
             name: OPENAI_API_KEY
             valueFrom:
@@ -243,7 +286,7 @@ tests:
                 key: vllmApiKey
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].env
+          path: spec.template.spec.containers[1].env
           content:
             name: VLLM_API_KEY
             valueFrom:
