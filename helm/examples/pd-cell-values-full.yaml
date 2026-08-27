@@ -6,20 +6,20 @@
 #
 # 기본 아키텍처:
 #
-#   Client / LiteLLM
+#   클라이언트 / LiteLLM
 #          |
 #          v
-#   Global LMStack Router
+#   전역 LMStack Router
 #          |
 #          v
-#   P/D Cell Service
+#   P/D Cell 서비스
 #          |
 #          v
-#   Cell-local vLLM Router
+#   Cell 내부 vLLM Router
 #          |
 #      +---+---+
 #      |       |
-#   Prefill  Decode
+#   Prefill  Decode 엔진
 #
 # 핵심 규칙:
 #
@@ -70,7 +70,7 @@ servingEngineSpec:
   # pdCellSpec.imagePullPolicy 또는 models[].imagePullPolicy로 override 가능.
   imagePullPolicy: Always
 
-  # GPU container runtime.
+  # GPU container runtime 지정.
   # pdCellSpec.runtimeClassName 또는 models[].runtimeClassName으로 override 가능.
   runtimeClassName: nvidia
 
@@ -196,26 +196,26 @@ pdCellSpec:
   # false면 P/D Cell Deployment/Service/launcher ConfigMap을 생성하지 않는다.
   enabled: true
 
-  # P/D engine image pull policy.
+  # P/D engine image pull policy 설정.
   # model 단위에서 다시 override 가능.
   imagePullPolicy: Always
 
-  # P/D Cell Pod RuntimeClass.
+  # P/D Cell Pod RuntimeClass 지정.
   runtimeClassName: nvidia
 
-  # P/D Cell Pod scheduler.
+  # P/D Cell Pod scheduler 지정.
   schedulerName: gpu-binpack-scheduler
 
   # private registry를 사용할 때 Pod imagePullSecrets에 추가한다.
   imagePullSecret: private-registry
 
-  # Pod ServiceAccount.
+  # Pod ServiceAccount 지정.
   serviceAccountName: pd-cell
 
-  # Pod PriorityClass.
+  # Pod PriorityClass 지정.
   priorityClassName: high-priority
 
-  # Deployment rollout deadline.
+  # Deployment rollout 제한 시간.
   progressDeadlineSeconds: 1800
 
   # Pod 종료 유예 시간.
@@ -310,7 +310,7 @@ pdCellSpec:
     example.com/service-scope: pd-cell
 
   # ---------------------------------------------------------------------------
-  # 4-3. Cell-local vLLM Router
+  # 4-3. Cell 내부 vLLM Router
   # ---------------------------------------------------------------------------
 
   # P/D Cell 내부 orchestrator는 항상 vllm-project/router다.
@@ -328,19 +328,19 @@ pdCellSpec:
     tag: v0.1.15
     imagePullPolicy: IfNotPresent
 
-    # Cell Router API port.
+    # Cell Router API port 설정.
     port: 8000
 
-    # Kubernetes probe path.
+    # Kubernetes probe 경로.
     healthPath: /health
 
     # vllm-router backend health check 주기.
     healthCheckInterval: 30
 
-    # vllm-router backend health check timeout.
+    # vllm-router backend health check timeout 값.
     healthCheckTimeout: 5
 
-    # Router startupProbe.
+    # Router startupProbe 설정.
     startupProbeInitialDelaySeconds: 5
     startupProbePeriodSeconds: 5
 
@@ -348,11 +348,11 @@ pdCellSpec:
     # 180 * 5초 = 약 15분.
     startupProbeFailureThreshold: 180
 
-    # Router livenessProbe.
+    # Router livenessProbe 설정.
     livenessProbePeriodSeconds: 10
     livenessProbeFailureThreshold: 3
 
-    # Router readinessProbe.
+    # Router readinessProbe 설정.
     readinessProbePeriodSeconds: 5
     readinessProbeFailureThreshold: 3
 
@@ -364,7 +364,7 @@ pdCellSpec:
     # 0이면 별도 Router metrics port를 렌더하지 않는다.
     prometheusPort: 29000
 
-    # Router container resource.
+    # Router container resource 설정.
     resources:
       requests:
         cpu: 1000m
@@ -378,7 +378,7 @@ pdCellSpec:
     containerSecurityContext:
       allowPrivilegeEscalation: false
 
-    # Router env.
+    # Router 환경변수.
     # PYTHONHASHSEED를 직접 주지 않으면 Chart가 123을 자동 주입한다.
     env:
       - name: ROUTER_ONLY_ENV
@@ -386,7 +386,7 @@ pdCellSpec:
       - name: PYTHONHASHSEED
         value: "123"
 
-    # Router envFrom.
+    # Router envFrom 설정.
     envFrom:
       - secretRef:
           name: router-secret
@@ -438,7 +438,7 @@ pdCellSpec:
       #
       # servedModelName: Qwen3.6-27B-PD
 
-      # P/D vLLM engine image.
+      # P/D vLLM engine image 지정.
       repository: vllm/vllm-openai
       tag: v0.26.0-cu129
 
@@ -450,13 +450,13 @@ pdCellSpec:
       # 5-1. model 단위 공통 override
       # -----------------------------------------------------------------------
 
-      # pdCellSpec.imagePullPolicy override.
+      # pdCellSpec.imagePullPolicy를 model 단위로 override.
       imagePullPolicy: Always
 
-      # pdCellSpec.runtimeClassName override.
+      # pdCellSpec.runtimeClassName을 model 단위로 override.
       runtimeClassName: nvidia
 
-      # pdCellSpec.schedulerName override.
+      # pdCellSpec.schedulerName을 model 단위로 override.
       schedulerName: gpu-binpack-scheduler
 
       # model 단위 imagePullSecret override.
@@ -481,7 +481,7 @@ pdCellSpec:
           maxSurge: 0
           maxUnavailable: 1
 
-      # model Pod annotation.
+      # model Pod annotation 설정.
       podAnnotations:
         example.com/model: qwen-p1d2
 
@@ -491,7 +491,7 @@ pdCellSpec:
       serviceAnnotations:
         example.com/model-service: qwen-p1d2
 
-      # model Pod securityContext.
+      # model Pod securityContext 설정.
       # servingEngineSpec -> pdCellSpec -> model 순으로 merge된다.
       securityContext:
         fsGroupChangePolicy: OnRootMismatch
@@ -628,7 +628,7 @@ pdCellSpec:
           - info
 
       # -----------------------------------------------------------------------
-      # 5-4. KV transfer backend
+      # 5-4. KV transfer backend 설정
       # -----------------------------------------------------------------------
 
       kvTransfer:
@@ -639,7 +639,7 @@ pdCellSpec:
         # P0=9001, P1=9002 식으로 증가한다.
         bootstrapPortBase: 9001
 
-        # Mooncake transfer abort timeout.
+        # Mooncake transfer abort timeout 값.
         abortRequestTimeout: 600
 
         # NIXL connector는 자동으로 side-channel env를 활성화한다.
@@ -677,7 +677,7 @@ pdCellSpec:
             num_workers: 16
 
       # -----------------------------------------------------------------------
-      # 5-5. Prefill topology
+      # 5-5. Prefill topology 설정
       # -----------------------------------------------------------------------
 
       prefill:
@@ -702,12 +702,12 @@ pdCellSpec:
         # vLLM --config 경로.
         profile: /profiles/qwen/prefill-tp4.yaml
 
-        # CPU/memory request.
+        # CPU/memory request 값.
         # 생략하면 requestGPU 1개당 CPU 4000m / memory 10Gi가 기본값.
         requestCPU: "16000m"
         requestMemory: 40Gi
 
-        # CPU/memory limit.
+        # CPU/memory limit 값.
         limitCPU: "20"
         limitMemory: 48Gi
 
@@ -722,7 +722,7 @@ pdCellSpec:
         # limitGPUMemPercentage: "100"
         # limitGPUCores: "100"
 
-        # Prefill HTTP port base.
+        # Prefill HTTP port base 값.
         # count가 2면 8101, 8102.
         portBase: 8101
 
@@ -742,7 +742,7 @@ pdCellSpec:
         # internalPortMode=dp일 때 VLLM_DP_MASTER_PORT base.
         dpMasterPortBase: 24000
 
-        # NIXL side channel base.
+        # NIXL side channel base port.
         # NIXL 계열 connector 또는 nixlSideChannelEnabled=true일 때 사용.
         sideChannelPortBase: 5600
 
@@ -798,7 +798,7 @@ pdCellSpec:
             num_workers: 16
 
       # -----------------------------------------------------------------------
-      # 5-6. Decode topology
+      # 5-6. Decode topology 설정
       # -----------------------------------------------------------------------
 
       decode:
@@ -815,11 +815,11 @@ pdCellSpec:
         # vLLM --config 경로.
         profile: /profiles/qwen/decode-tp2.yaml
 
-        # CPU/memory request.
+        # CPU/memory request 값.
         requestCPU: "8000m"
         requestMemory: 20Gi
 
-        # CPU/memory limit.
+        # CPU/memory limit 값.
         limitCPU: "10"
         limitMemory: 24Gi
 
@@ -832,14 +832,14 @@ pdCellSpec:
         # limitGPUMemPercentage: "100"
         # limitGPUCores: "100"
 
-        # Decode HTTP port base.
+        # Decode HTTP port base 값.
         # count=2이면 8201, 8202.
         portBase: 8201
 
-        # vllm / dp / auto.
+        # 허용 값은 vllm / dp / auto.
         internalPortMode: vllm
 
-        # VLLM_PORT base.
+        # VLLM_PORT base 값.
         internalPortBase: 30000
 
         # 여러 Decode container의 internal port 간격.
@@ -848,7 +848,7 @@ pdCellSpec:
         # internalPortMode=dp일 때 VLLM_DP_MASTER_PORT base.
         dpMasterPortBase: 34000
 
-        # NIXL side channel base.
+        # NIXL side channel base port.
         sideChannelPortBase: 5700
 
         # Mooncake command override 규칙은 Prefill과 동일.
