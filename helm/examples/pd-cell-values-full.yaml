@@ -223,10 +223,11 @@ pdCellSpec:
         connector: MooncakeConnector
         bootstrapPortBase: 9001
         abortRequestTimeout: 600
+        # Mooncake protocol is chart-owned and forced to nvlink_intra for
+        # this node-local P/D Cell. Other Mooncake options remain configurable.
         config:
           kv_load_failure_policy: fail
           kv_connector_extra_config:
-            mooncake_protocol: nvlink_intra
             num_workers: 16
         # Optional phase-specific connector config merges.
         prefillConfig: {}
@@ -247,7 +248,9 @@ pdCellSpec:
         internalPortStride: 100
         dpMasterPortBase: 24000
         sideChannelPortBase: 5600
-        command: [vllm, serve]
+        # MooncakeConnector is launched through the chart-owned GPU wrapper.
+        # Optional command override is limited to [<vllm-binary>, serve].
+        # command: [vllm, serve]
         extraArgs:
           - --disable-log-requests
         env:
@@ -281,7 +284,9 @@ pdCellSpec:
         internalPortStride: 100
         dpMasterPortBase: 34000
         sideChannelPortBase: 5700
-        command: [vllm, serve]
+        # MooncakeConnector is launched through the chart-owned GPU wrapper.
+        # Optional command override is limited to [<vllm-binary>, serve].
+        # command: [vllm, serve]
         extraArgs:
           - --disable-log-requests
         env:
