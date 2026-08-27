@@ -13,7 +13,8 @@
 - vLLM Router가 connector에 맞는 P/D control-plane metadata를 생성
 - 고객사 우선 검증 backend는 **MooncakeConnector**
 - 현재 검증 baseline은 vLLM `0.26.0-cu129` + source-built `mooncake-transfer-engine 0.3.10-post2`
-- Mooncake same-node transport는 우선 `nvlink_intra`를 검증
+- P/D Cell은 **단일 Pod/단일 노드 배치**를 contract로 하므로 exact `MooncakeConnector`는 Chart가 `mooncake_protocol=nvlink_intra`를 강제로 주입
+- Mooncake P/D engine은 container별 Device Plugin GPU 격리를 사용하지 않고 **Pod-local GPU reservation + 공통 CUDA namespace + vLLM `--device-ids` 분할**을 사용
 
 이 문서의 목표는 Helm이 단순히 Pod를 띄우는 수준이 아니라, **Router ↔ Prefill ↔ Decode ↔ KV connector 사이의 실제 protocol contract까지 일치시키는 것**이다.
 
@@ -36,6 +37,11 @@ Client / LiteLLM
 | P/D Cell Pod                                         |
 |                                                      |
 |  +----------------------+                            |
+|  | gpu-reservation      |  total GPU resource owner |
+|  | writes sorted UUIDs  |  -> shared emptyDir       |
+|  +----------------------+                            |
+|                                                      |
+|  +----------------------+                            |
 |  | vllm-project/router  |  :8000                    |
 |  | P/D orchestrator     |  metrics :29000           |
 |  +----------+-----------+                            |
@@ -44,9 +50,10 @@ Client / LiteLLM
 |       |                            |                 |
 |       v                            v                 |
 |  Prefill :8101              Decode :8201/8202       |
-|  kv_producer                kv_consumer             |
+|  same Cell CVD              same Cell CVD           |
+|  --device-ids subset        --device-ids subset     |
 |       |                            ^                 |
-|       +----- KV transfer ----------+                |
+|       +--- Mooncake nvlink_intra --+                |
 |                                                      |
 +------------------------------------------------------+
 ```
@@ -357,47 +364,152 @@ Missing transfer_id in kv_transfer_params from router!
 
 ---
 
-## 9. Mooncake transport
+## 9. Mooncake transport와 GPU namespace contract
 
-현재 source-built image:
+현재 source-built image baseline:
 
 ```text
 vLLM          0.26.0 CUDA 12.9
 Mooncake      0.3.10-post2
 ```
 
-Mooncake source build에서 CUDA stub link를 위해 다음 경로를 `LIBRARY_PATH`에 추가해야 정상 build된 환경이 확인됐다.
+Mooncake `nvlink_intra`의 실제 data plane은 Mooncake Transfer Engine의
+`IntraNodeNvlinkTransport`다.
 
 ```text
-/usr/local/cuda/lib64/stubs
+Decode KV allocation
+  -> cudaIpcGetMemHandle()
+  -> serialized cudaIpcMemHandle_t
+  -> Mooncake metadata
+  -> Prefill cudaIpcOpenMemHandle()
+  -> mapped remote VA
+  -> cudaMemcpy / NVLink
 ```
 
-현재 image sanity에서는 다음이 확인됐다.
+따라서 Linux `/dev/shm` 파일 공유나 Pod PID namespace와 동일한 개념이 아니다.
+실제 장애 분석에서 `hostIPC=true`, `shareProcessNamespace=true`, 공용
+`/dev/shm`을 모두 적용해도 `cudaIpcOpenMemHandle`의
+`invalid argument` / `invalid device context`는 해소되지 않았다.
 
-- Mooncake import 성공
-- missing `.so` 없음
-- undefined symbol 없음
-- CUDA runtime ABI error 없음
-- Mooncake init segfault 없음
-- `nvlink_intra` initialization 성공
+### 9.1 왜 기존 container별 GPU request를 제거했는가
 
-하지만 initialization 성공은 실제 KV transfer 성공을 의미하지 않는다.
+NVIDIA Device Plugin의 legacy allocation은 container 단위다.
 
-실제 transport 검증은 control-plane metadata가 정상인 상태에서 별도로 확인한다.
-
-### same-node 권장 검증 순서
+예를 들어 P2/D2를 각각 직접 요청하면:
 
 ```text
-1. tcp 기능 smoke
-2. nvlink_intra 기능 smoke
-3. 실제 producer transfer 성공 metrics/log
-4. Decode remote KV receive 완료 확인
-5. 성능 비교
+Prefill container
+  physical GPU A,B
+  local CUDA ordinal 0,1
+
+Decode container
+  physical GPU C,D
+  local CUDA ordinal 0,1
 ```
 
-현재 고객사 목표에서는 `nvlink_intra`를 우선 사용하되, 실패 시 control-plane과 transport 문제를 분리하기 위해 `tcp` smoke도 활용할 수 있다.
+처럼 서로 다른 physical GPU가 각 container에서 동일 local ordinal로 재매핑될 수
+있다. Mooncake 0.3.10 `nvlink_intra`의 CUDA IPC 경로에서 이 분리된 device
+namespace가 실제 runtime blocker로 관찰되었다.
 
----
+MooncakeConnector P/D Cell에서는 이 문제를 피하기 위해 다음 contract를 사용한다.
+
+```text
+requestGPU topology
+  P0: 2
+  P1: 2
+  D0: 4
+       |
+       v
+Chart total = 8
+       |
+       v
+gpu-reservation container
+  nvidia.com/gpu: 8
+       |
+       +--> allocated GPU UUIDs sorted by PCI bus
+       +--> /var/run/pd-gpu/gpus
+                    |
+        +-----------+-----------+
+        |           |           |
+       P0          P1          D0
+ NVD=all      NVD=all      NVD=all
+ CVD=A..H     CVD=A..H     CVD=A..H
+ ids=0,1     ids=2,3      ids=4,5,6,7
+```
+
+운영자는 GPU index/range를 values에 적지 않는다. Chart가 기존
+`count * requestGPU`만으로 자동 계산한다.
+
+### 9.2 runtime 변수 역할
+
+Engine manifest에는 다음을 명시한다.
+
+```text
+NVIDIA_VISIBLE_DEVICES=all
+```
+
+이는 container 생성 시 NVIDIA runtime이 peer GPU device를 inject할 수 있게 한다.
+
+Chart-owned launcher는 reservation file을 읽은 다음 **모든 P/D engine에서 동일하게**:
+
+```bash
+CUDA_VISIBLE_DEVICES=<reservation 전체 UUID 목록>
+```
+
+을 설정한다. 이후 engine별 자동 index를:
+
+```bash
+vllm serve --device-ids <CNTR_GPU_IDX> ...
+```
+
+로 전달한다.
+
+vLLM 0.26.0은 `CUDA_VISIBLE_DEVICES`가 있을 때 integer `--device-ids`를
+그 visible list의 index로 resolve하고, UUID CVD도 NVML physical ID로 변환한다.
+따라서 모든 engine은 동일 CUDA ordinal namespace를 유지하면서 실제 compute GPU는
+서로 겹치지 않게 고정된다.
+
+### 9.3 isolation trade-off
+
+이 방식은 Kubernetes scheduler accounting은 유지한다. 실제 GPU extended resource는
+`gpu-reservation` container가 Cell 전체 합계를 독점하므로 다른 정상 workload가 그
+GPU를 재할당받지 않는다.
+
+다만 P/D engine container는 `NVIDIA_VISIBLE_DEVICES=all`이므로 Linux device-level
+hard isolation은 아니다. Chart-owned launcher가 CVD를 reservation UUID로 좁혀
+정상 CUDA application의 runtime visibility를 제한한다.
+
+```text
+Scheduler GPU accounting                 YES
+Cell 내부 compute partition              YES
+CUDA runtime에서 다른 workload GPU 숨김  YES
+/dev/nvidia* hard security boundary       NO
+```
+
+driver/device-plugin을 DRA로 전환할 수 없는 현재 환경의 bridge contract이며,
+strict device security boundary가 필요하면 향후 DRA/NRI 계층으로 재설계한다.
+
+### 9.4 강제 protocol
+
+P/D Cell은 동일 Pod이므로 exact `MooncakeConnector`에서는 Chart가 최종
+KVTransferConfig에 다음을 강제한다.
+
+```json
+{
+  "kv_connector_extra_config": {
+    "mooncake_protocol": "nvlink_intra"
+  }
+}
+```
+
+values의 공통/Prefill/Decode 어느 merge layer에서든 사용자가
+`mooncake_protocol`을 지정하면 Helm render를 fail한다.
+
+Mooncake Transfer Engine binary가 `nvlink_intra` support 없이 build되었다면
+runtime startup/transfer가 실패하는 것이 의도된 fail-fast 동작이다.
+
+`hostIPC`, `shareProcessNamespace`는 이 contract의 요구사항이 아니다.
+Engine의 기존 `/dev/shm` mount는 vLLM/NCCL/multiprocessing 용도로 유지한다.
 
 ## 10. KVTransferConfig
 
@@ -411,8 +523,10 @@ kvTransfer:
   config:
     kv_load_failure_policy: fail
     kv_connector_extra_config:
-      mooncake_protocol: nvlink_intra
       num_workers: 16
+
+# mooncake_protocol은 values에 쓰지 않는다.
+# Chart가 exact MooncakeConnector에 nvlink_intra를 강제한다.
 ```
 
 Helm은 phase별로 최종 설정을 merge한 뒤 다음 필드를 강제로 설정한다.
@@ -629,7 +743,11 @@ decode:
   requestGPU: 2
 ```
 
-단, `requestGPU`는 단순 resource reservation이고 실제 vLLM TP/PP/DP는 profile과 반드시 일치해야 한다.
+`requestGPU`는 Mooncake P/D에서 **topology sizing source-of-truth**다. 실제 GPU
+extended resource는 engine container가 아니라 reservation sidecar에 합산된다.
+
+또한 각 engine의 `requestGPU`는 profile이 생성하는 **local GPU worker 수**와 반드시
+일치해야 한다. 예를 들어 TP4 단일 local engine이면 requestGPU=4여야 한다.
 
 heterogeneous TP의 KV connector 지원 여부는 vLLM/Mooncake 버전과 model architecture에 종속되므로 별도 runtime 검증 대상이다.
 
@@ -646,7 +764,7 @@ heterogeneous TP의 KV connector 지원 여부는 vLLM/Mooncake 버전과 model 
 - CUDA ABI
 - Mooncake init
 
-### Gate 2 — Helm
+### Gate 2 — Helm / GPU contract
 
 - Cell Router image가 vllm-router인지
 - command가 `vllm-router`인지
@@ -655,10 +773,26 @@ heterogeneous TP의 KV connector 지원 여부는 vLLM/Mooncake 버전과 model 
 - `--prefill URL BOOTSTRAP_PORT`
 - `--decode URL`
 - `kv_producer` / `kv_consumer`
+- `gpu-reservation`만 `nvidia.com/gpu = total`을 갖는지
+- P/D engine resource에는 `nvidia.com/gpu`가 없는지
+- P/D engine에 `NVIDIA_VISIBLE_DEVICES=all`이 있는지
+- 자동 `CNTR_GPU_IDX`가 중복 없이 전체 reservation range를 정확히 분할하는지
+- 최종 KV JSON에 `mooncake_protocol=nvlink_intra`가 주입되는지
 
-### Gate 3 — startup
+### Gate 3 — startup / device namespace
 
-Router log에서:
+각 P/D engine에서:
+
+```text
+reservation UUID list 동일
+CUDA_VISIBLE_DEVICES 동일
+selected CNTR_GPU_IDX는 engine별 비중복
+selected UUID가 기대 topology와 일치
+```
+
+를 먼저 확인한다.
+
+그 다음 Router log에서:
 
 ```text
 Querying Mooncake bootstrap
