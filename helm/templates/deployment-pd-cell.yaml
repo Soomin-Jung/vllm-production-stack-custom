@@ -331,6 +331,20 @@
       {{- $_ := set $podVolumeMap $e.name $e -}}
     {{- end -}}
 
+    {{- if $isMooncakeConnector -}}
+      {{- range $reservedName := (list "pd-mooncake-gpu-map" "pd-mooncake-gpu-launcher") -}}
+        {{- if hasKey $podVolumeMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: volume name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
+        {{- end -}}
+        {{- if hasKey $prefillMountMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: prefill volumeMount name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
+        {{- end -}}
+        {{- if hasKey $decodeMountMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: decode volumeMount name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+
     {{- $podSecurityContext := mergeOverwrite (deepCopy ($root.Values.servingEngineSpec.securityContext | default dict)) ($pdCellSpec.securityContext | default dict) -}}
     {{- $podSecurityContext = mergeOverwrite $podSecurityContext ($modelSpec.securityContext | default dict) -}}
     {{- $engineSecurityContext := mergeOverwrite (deepCopy ($root.Values.servingEngineSpec.containerSecurityContext | default dict)) ($pdCellSpec.containerSecurityContext | default dict) -}}
@@ -446,6 +460,65 @@ spec:
       terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
 
       containers:
+        {{- if $isMooncakeConnector }}
+        - name: gpu-reservation
+          image: "{{ $repository }}:{{ $tag }}"
+          imagePullPolicy: {{ $engineImagePullPolicy | quote }}
+          command:
+            - "/bin/bash"
+            - "-ceu"
+            - |
+              GPU_DIR=/var/run/pd-gpu
+              TMP_FILE="${GPU_DIR}/gpus.tmp"
+              FINAL_FILE="${GPU_DIR}/gpus"
+              mkdir -p "${GPU_DIR}"
+              trap 'rm -f "${TMP_FILE}"' EXIT
+
+              nvidia-smi --query-gpu=pci.bus_id,uuid --format=csv,noheader,nounits |
+                awk -F',' '{
+                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1);
+                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2);
+                  print $1 "," $2
+                }' |
+                sort -t',' -k1,1 |
+                cut -d',' -f2 > "${TMP_FILE}"
+
+              ACTUAL_COUNT="$(grep -cve '^[[:space:]]*$' "${TMP_FILE}" || true)"
+              if [[ "${ACTUAL_COUNT}" != "${PD_GPU_TOTAL}" ]]; then
+                echo "[pd-gpu] reservation mismatch: expected=${PD_GPU_TOTAL} visible=${ACTUAL_COUNT}" >&2
+                cat "${TMP_FILE}" >&2 || true
+                exit 1
+              fi
+
+              mv -f "${TMP_FILE}" "${FINAL_FILE}"
+              trap - EXIT
+              echo "[pd-gpu] reservation ready: $(paste -sd, "${FINAL_FILE}")"
+              exec sleep infinity
+          env:
+            - name: PD_GPU_TOTAL
+              value: {{ $gpuReservationTotal | quote }}
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "64Mi"
+              {{ $gpuResourceType }}: {{ $gpuReservationTotal | quote }}
+            limits:
+              cpu: "100m"
+              memory: "256Mi"
+              {{ $gpuResourceType }}: {{ $gpuReservationTotal | quote }}
+          readinessProbe:
+            exec:
+              command:
+                - "/bin/bash"
+                - "-c"
+                - "test -s /var/run/pd-gpu/gpus"
+            periodSeconds: 2
+            failureThreshold: 150
+          volumeMounts:
+            - name: pd-mooncake-gpu-map
+              mountPath: /var/run/pd-gpu
+        {{- end }}
+
         - name: pd-router
           image: "{{ $routerRepository }}:{{ $routerTag }}"
           imagePullPolicy: {{ $routerImagePullPolicy | quote }}
