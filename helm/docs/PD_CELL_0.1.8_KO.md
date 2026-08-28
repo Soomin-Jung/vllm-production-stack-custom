@@ -736,28 +736,86 @@ Decode remote KV receive/load                PASS
 ```
 
 중요: 이 검증은 **cold-start 정상 topology**에 대한 것이다.
-Prefill/Decode container 단독 restart resilience는 별도 lifecycle 문제이며 아래
-Failure/restart 항목에서 계속 blocker로 관리한다.
+Partial engine restart는 현재 지원 목표가 아니며, P/D Cell 전체를 하나의 failure
+domain으로 recycle하는 운영 정책을 사용한다.
 
 ---
 
-## 16. Failure / restart 주의사항
+## 16. Failure domain / automatic whole-cell recycle
 
-Mooncake Router는 direct URL startup에서 Prefill bootstrap을 조회하고 `engine_id`를 저장한다.
+P/D Cell은 **Pod 전체를 하나의 failure domain**으로 취급한다.
 
-Prefill process가 재시작되면서 `engine_id`가 바뀌었는데 Router process가 그대로 살아 있으면 stale metadata로 Decode가 remote KV를 기다릴 위험이 있다.
+이 결정의 배경:
 
-Kubernetes에서 같은 Pod의 한 container가 재시작된다고 sibling container가 자동으로 같이 재시작되는 것은 아니다.
+- Prefill-only restart에서 vllm-router의 stale Prefill `engine_id` 가능성이 확인됨
+- Mooncake 0.3.10 `nvlink_intra`에서 partial restart 후 CUDA IPC context lifecycle
+  문제가 실제 재현됨
+- 고객 운영 요구사항은 단일 노드 P/D Cell 전체 재기동으로 복구되면 충분함
 
-따라서 runtime certification에서는 다음 failure case를 별도 blocker로 본다.
+따라서 partial engine restart를 복구하려고 Router/Mooncake state를 억지로 이어가지 않는다.
+
+### 16.1 `pd-cell-guardian`
+
+Chart는 기본적으로 각 P/D Cell Pod에 `pd-cell-guardian` sidecar를 추가한다.
+
+감시 대상:
 
 ```text
-1. Prefill container restart
-2. Router가 새로운 engine_id를 다시 얻는지 확인
-3. 그렇지 않으면 Cell 전체 restart 정책 또는 Router refresh 기능 필요
+pd-router
+gpu-reservation    # MooncakeConnector인 경우
+prefill-*
+decode-*
 ```
 
-단기 baseline에서 자동 refresh가 검증되지 않으면 **P/D engine restart 시 Cell Pod 전체 재생성**을 운영 정책으로 두는 것이 안전하다.
+동작:
+
+```text
+1. Pod 시작
+2. 모든 감시 대상 container가 Ready가 될 때까지 대기
+3. 각 container restartCount를 baseline으로 저장
+4. ARMED
+5. 이후 어느 하나라도 restartCount 증가
+6. guardian이 자기 Pod를 UID precondition으로 DELETE
+7. Deployment가 fresh Pod 생성
+8. reservation / Router / P / D / Mooncake state가 모두 새 generation으로 시작
+```
+
+초기 startup 중 restart는 baseline에 포함될 수 있으므로 guardian은 모든 대상이 최초
+Ready가 된 뒤에만 armed된다. 이는 잘못된 profile/image 때문에 startup 자체가 실패하는
+상황에서 무한 Pod delete loop를 피하기 위한 것이다.
+
+### 16.2 Kubernetes API / RBAC
+
+guardian은 자기 Pod status를 `GET`하고 자기 Pod를 `DELETE`할 수 있어야 한다.
+
+Chart는:
+
+- release 전용 ServiceAccount
+- namespace Role: `pods/get, pods/delete`
+- RoleBinding
+- projected ServiceAccount token
+
+을 생성한다.
+
+사용자가 기존 `serviceAccountName`을 지정하면 해당 SA에도 RoleBinding을 추가한다.
+
+보안상 Pod의 기본 ServiceAccount token 자동 mount는 끄고, delete credential은
+guardian container에만 projected volume으로 mount한다.
+
+### 16.3 현재 acceptance
+
+partial restart는 known limitation이며 현 고객 요구사항의 blocker가 아니다.
+
+production acceptance는:
+
+```text
+engine/router failure
+  -> whole Cell recycle
+  -> fresh startup
+  -> actual Mooncake KV transfer 다시 PASS
+```
+
+를 P1D1/P1D2에서 검증하는 것이다.
 
 ---
 
@@ -911,11 +969,12 @@ D remote_bootstrap_addr present
 
 ### Gate 7 — resilience
 
-- P restart
-- D restart
-- Router restart
-- stale Mooncake engine_id 여부
-- Cell whole-restart policy 검증
+- 정상 Ready 상태에서 Prefill restartCount 증가 감지
+- guardian whole-Pod DELETE
+- fresh reservation/Router/P/D generation 확인
+- whole-cell restart 후 actual KV transfer 재검증
+- P1D1 반복 recycle soak
+- P1D2 whole-cell recycle
 
 ### Gate 8 — metrics/performance
 
