@@ -273,3 +273,11 @@ limits:
 {{- define "cacheserver.formatRemoteUrl" -}}
 lm://{{ .service_name }}:{{ .port }}
 {{- end -}}
+
+
+{{/*
+Name used by the P/D Cell guardian ServiceAccount, Role and ConfigMap.
+*/}}
+{{- define "chart.pdCellGuardianName" -}}
+{{- printf "%s-pd-cell-guardian" .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
