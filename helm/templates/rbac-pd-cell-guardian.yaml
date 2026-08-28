@@ -1,0 +1,79 @@
+{{- $root := . -}}
+{{- $pdCellSpec := $root.Values.pdCellSpec | default dict -}}
+{{- $guardian := $pdCellSpec.guardian | default dict -}}
+{{- $guardianEnabled := true -}}
+{{- if hasKey $guardian "enabled" -}}
+  {{- $guardianEnabled = $guardian.enabled -}}
+{{- end -}}
+{{- if and ($pdCellSpec.enabled | default false) $guardianEnabled }}
+{{- $guardianName := include "chart.pdCellGuardianName" $root -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $guardianName }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    helm-release-name: {{ $root.Release.Name | quote }}
+    pd-cell: "true"
+    pd-cell-component: guardian
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $guardianName }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    helm-release-name: {{ $root.Release.Name | quote }}
+    pd-cell: "true"
+    pd-cell-component: guardian
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $guardianName }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    helm-release-name: {{ $root.Release.Name | quote }}
+    pd-cell: "true"
+    pd-cell-component: guardian
+subjects:
+  - kind: ServiceAccount
+    name: {{ $guardianName }}
+    namespace: {{ $root.Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $guardianName }}
+{{- range $modelSpec := ($pdCellSpec.models | default (list)) }}
+  {{- $modelName := required "pdCellSpec.models[].name is required" $modelSpec.name -}}
+  {{- $customSA := default "" $pdCellSpec.serviceAccountName -}}
+  {{- if hasKey $modelSpec "serviceAccountName" -}}
+    {{- $customSA = $modelSpec.serviceAccountName -}}
+  {{- end -}}
+  {{- if and $customSA (ne $customSA $guardianName) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-%s" $guardianName $modelName | trunc 63 | trimSuffix "-" }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    helm-release-name: {{ $root.Release.Name | quote }}
+    pd-cell: "true"
+    pd-cell-component: guardian
+subjects:
+  - kind: ServiceAccount
+    name: {{ $customSA }}
+    namespace: {{ $root.Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $guardianName }}
+  {{- end }}
+{{- end }}
+{{- end }}
