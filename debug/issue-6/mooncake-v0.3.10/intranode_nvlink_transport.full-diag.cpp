@@ -150,6 +150,15 @@ static void logCudaContext(const char *where, const void *ptr = nullptr,
         ctx_device_rc = cuCtxGetDevice(&ctx_device);
     }
 
+    unsigned int primary_flags = 0;
+    int primary_active = -1;
+    CUresult primary_state_rc = CUDA_ERROR_INVALID_DEVICE;
+    if (ctx_device >= 0) {
+        primary_state_rc =
+            cuDevicePrimaryCtxGetState(ctx_device, &primary_flags,
+                                       &primary_active);
+    }
+
     int runtime_device = -1;
     cudaError_t runtime_device_rc = cudaGetDevice(&runtime_device);
 
@@ -162,6 +171,10 @@ static void logCudaContext(const char *where, const void *ptr = nullptr,
               << " cu_ctx_rc=" << cuResultToString(ctx_rc)
               << " cu_ctx_device=" << ctx_device
               << " cu_ctx_device_rc=" << cuResultToString(ctx_device_rc)
+              << " primary_ctx_active=" << primary_active
+              << " primary_ctx_flags=" << primary_flags
+              << " primary_ctx_state_rc="
+              << cuResultToString(primary_state_rc)
               << " runtime_device=" << runtime_device
               << " runtime_device_rc=" << static_cast<int>(runtime_device_rc)
               << "/" << cudaGetErrorString(runtime_device_rc)
@@ -833,8 +846,7 @@ int IntraNodeNvlinkTransport::relocateSharedMemoryAddress(
               << " target_id=" << target_id
               << " requested_dest=0x" << std::hex << requested_dest
               << std::dec
-              << " length=" << length
-              << " remap_entries=" << remap_entries_.size();
+              << " length=" << length;
     logCudaContext("relocateSharedMemoryAddress:begin", nullptr, seq);
 
     auto desc = metadata_->getSegmentDescByID(target_id);
@@ -907,8 +919,7 @@ int IntraNodeNvlinkTransport::relocateSharedMemoryAddress(
                       << " seq=" << seq
                       << " target_id=" << target_id
                       << " remote_base=0x" << std::hex << entry.addr
-                      << std::dec
-                      << " remap_entries_before=" << remap_entries_.size();
+                      << std::dec;
 
             RWSpinlock::WriteGuard lock_guard(remap_lock_);
             if (!remap_entries_.count(key)) {
