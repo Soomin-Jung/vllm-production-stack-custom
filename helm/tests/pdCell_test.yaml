@@ -1,6 +1,7 @@
 suite: test node-local P/D Cell rendering
 templates:
   - configmap-pd-cell-gpu-launcher.yaml
+  - configmap-pd-cell-guardian.yaml
   - deployment-pd-cell.yaml
   - service-pd-cell.yaml
 
@@ -263,6 +264,29 @@ tests:
       - template: deployment-pd-cell.yaml
         notExists:
           path: spec.template.spec.containers[4].resources.requests["nvidia.com/gpu"]
+      - template: configmap-pd-cell-guardian.yaml
+        isKind:
+          of: ConfigMap
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[5].name
+          value: pd-cell-guardian
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[5].env
+          content:
+            name: NVIDIA_VISIBLE_DEVICES
+            value: void
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[5].env
+          content:
+            name: PD_GUARDIAN_TARGETS
+            value: pd-router,gpu-reservation,prefill-0,decode-0,decode-1
 
   - it: should propagate engine API key to vllm-router as OPENAI_API_KEY
     set:
