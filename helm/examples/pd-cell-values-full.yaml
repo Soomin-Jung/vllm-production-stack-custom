@@ -67,8 +67,9 @@ servingEngineSpec:
     release: pd-cell
 
   # P/D engine imagePullPolicy의 최상위 기본값.
+  # P/D Cell template 자체 fallback도 IfNotPresent다.
   # pdCellSpec.imagePullPolicy 또는 models[].imagePullPolicy로 override 가능.
-  imagePullPolicy: Always
+  imagePullPolicy: IfNotPresent
 
   # GPU container runtime 지정.
   # pdCellSpec.runtimeClassName 또는 models[].runtimeClassName으로 override 가능.
@@ -198,7 +199,7 @@ pdCellSpec:
 
   # P/D engine image pull policy 설정.
   # model 단위에서 다시 override 가능.
-  imagePullPolicy: Always
+  imagePullPolicy: IfNotPresent
 
   # P/D Cell Pod RuntimeClass 지정.
   runtimeClassName: nvidia
@@ -427,14 +428,19 @@ pdCellSpec:
       # 하나의 Helm release 안에서 반드시 unique해야 한다.
       name: qwen-p1d2
 
-      # 공개 model name 목록.
-      # 첫 번째 값이 primary name이며 나머지는 alias다.
-      # 중복 값은 Chart가 제거한다.
-      servedModelNames:
-        - Qwen3.6-27B-PD
-        - test-alias
-
-      # 구 values 호환용 단일 이름 field도 지원하지만 새 설정에서는 servedModelNames 권장.
+      # 기본 동작에서는 served model name을 Chart가 건드리지 않는다.
+      # Prefill/Decode 모두 profile(--config)에 정의한 served_model_name을 그대로 사용하고,
+      # Cell vLLM Router /v1/models는 첫 Prefill의 /v1/models를 그대로 proxy한다.
+      #
+      # Chart 수준에서 이름/alias를 명시적으로 override해야 할 때만 아래 선택 옵션을 사용한다.
+      # 설정하면 Prefill/Decode 양쪽에 --served-model-name이 주입된다.
+      #
+      # servedModelNames:
+      #   - Qwen3.6-27B-PD
+      #   - test-alias
+      #
+      # 단일 이름 legacy override도 호환을 위해 유지한다.
+      # 새 설정에서는 여러 alias가 필요한 경우 servedModelNames를 사용한다.
       #
       # servedModelName: Qwen3.6-27B-PD
 
@@ -451,7 +457,7 @@ pdCellSpec:
       # -----------------------------------------------------------------------
 
       # pdCellSpec.imagePullPolicy를 model 단위로 override.
-      imagePullPolicy: Always
+      imagePullPolicy: IfNotPresent
 
       # pdCellSpec.runtimeClassName을 model 단위로 override.
       runtimeClassName: nvidia
