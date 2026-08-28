@@ -11,6 +11,9 @@
   {{- $guardianName := include "chart.pdCellGuardianName" $root -}}
   {{- $guardianPollSeconds := int (default 2 $guardian.pollIntervalSeconds) -}}
   {{- $guardianDeleteGraceSeconds := int (default 5 $guardian.deleteGracePeriodSeconds) -}}
+  {{- $guardianResources := $guardian.resources | default dict -}}
+  {{- $guardianRequests := $guardianResources.requests | default dict -}}
+  {{- $guardianLimits := $guardianResources.limits | default dict -}}
 
   {{- $globalEnvMap := dict -}}
   {{- range $e := ($global.env | default (list)) -}}
@@ -1031,11 +1034,11 @@ spec:
               value: {{ $guardianDeleteGraceSeconds | quote }}
           resources:
             requests:
-              cpu: {{ default "20m" (($guardian.resources | default dict).requests | default dict).cpu | quote }}
-              memory: {{ default "64Mi" (($guardian.resources | default dict).requests | default dict).memory | quote }}
+              cpu: {{ default "20m" $guardianRequests.cpu | quote }}
+              memory: {{ default "64Mi" $guardianRequests.memory | quote }}
             limits:
-              cpu: {{ default "100m" (($guardian.resources | default dict).limits | default dict).cpu | quote }}
-              memory: {{ default "128Mi" (($guardian.resources | default dict).limits | default dict).memory | quote }}
+              cpu: {{ default "100m" $guardianLimits.cpu | quote }}
+              memory: {{ default "128Mi" $guardianLimits.memory | quote }}
           volumeMounts:
             - name: pd-cell-guardian-script
               mountPath: /opt/pd-cell-guardian
