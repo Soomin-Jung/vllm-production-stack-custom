@@ -44,31 +44,30 @@
     {{- $_ := set $seenNames $name true -}}
 
     {{- $servedModelNames := list -}}
-    {{- $servedModelNamesRaw := $name -}}
-    {{- if hasKey $modelSpec "servedModelName" -}}
-      {{- $servedModelNamesRaw = $modelSpec.servedModelName -}}
-    {{- end -}}
-    {{- if hasKey $modelSpec "servedModelNames" -}}
-      {{- $servedModelNamesRaw = $modelSpec.servedModelNames -}}
-    {{- end -}}
-    {{- if kindIs "slice" $servedModelNamesRaw -}}
-      {{- range $servedName := $servedModelNamesRaw -}}
-        {{- if empty $servedName -}}
-          {{- fail (printf "pdCellSpec model %s: servedModelNames must not contain an empty name" $name) -}}
+    {{- $hasServedModelOverride := or (hasKey $modelSpec "servedModelName") (hasKey $modelSpec "servedModelNames") -}}
+    {{- if $hasServedModelOverride -}}
+      {{- $servedModelNamesRaw := $modelSpec.servedModelName | default "" -}}
+      {{- if hasKey $modelSpec "servedModelNames" -}}
+        {{- $servedModelNamesRaw = $modelSpec.servedModelNames -}}
+      {{- end -}}
+      {{- if kindIs "slice" $servedModelNamesRaw -}}
+        {{- range $servedName := $servedModelNamesRaw -}}
+          {{- if empty $servedName -}}
+            {{- fail (printf "pdCellSpec model %s: servedModelNames must not contain an empty name" $name) -}}
+          {{- end -}}
+          {{- $servedModelNames = append $servedModelNames (printf "%v" $servedName) -}}
         {{- end -}}
-        {{- $servedModelNames = append $servedModelNames (printf "%v" $servedName) -}}
+      {{- else -}}
+        {{- if empty $servedModelNamesRaw -}}
+          {{- fail (printf "pdCellSpec model %s: servedModelName must not be empty when explicitly configured" $name) -}}
+        {{- end -}}
+        {{- $servedModelNames = append $servedModelNames (printf "%v" $servedModelNamesRaw) -}}
       {{- end -}}
-    {{- else -}}
-      {{- if empty $servedModelNamesRaw -}}
-        {{- fail (printf "pdCellSpec model %s: servedModelName must not be empty" $name) -}}
+      {{- $servedModelNames = uniq $servedModelNames -}}
+      {{- if empty $servedModelNames -}}
+        {{- fail (printf "pdCellSpec model %s: servedModelNames must contain at least one name when explicitly configured" $name) -}}
       {{- end -}}
-      {{- $servedModelNames = append $servedModelNames (printf "%v" $servedModelNamesRaw) -}}
     {{- end -}}
-    {{- $servedModelNames = uniq $servedModelNames -}}
-    {{- if empty $servedModelNames -}}
-      {{- fail (printf "pdCellSpec model %s: at least one served model name is required" $name) -}}
-    {{- end -}}
-    {{- $servedModelName := first $servedModelNames -}}
 
     {{- $repository := required (printf "pdCellSpec model %s: repository is required" $name) $modelSpec.repository -}}
     {{- $tag := required (printf "pdCellSpec model %s: tag is required" $name) $modelSpec.tag -}}
@@ -214,7 +213,7 @@
       {{- fail (printf "pdCellSpec model %s: connector %s is not supported by the fixed vllm-router P/D contract; supported router backends are nixl, mooncake, and moriio (engine-version compatibility still applies)" $name $kvConnector) -}}
     {{- end -}}
 
-    {{- $engineImagePullPolicy := default "Always" $root.Values.servingEngineSpec.imagePullPolicy -}}
+    {{- $engineImagePullPolicy := default "IfNotPresent" $root.Values.servingEngineSpec.imagePullPolicy -}}
     {{- if hasKey $pdCellSpec "imagePullPolicy" -}}
       {{- $engineImagePullPolicy = $pdCellSpec.imagePullPolicy -}}
     {{- end -}}
@@ -431,8 +430,10 @@ spec:
         pd-deployment: {{ $name | quote }}
         {{- include "chart.engineLabels" $root | nindent 8 }}
       annotations:
-        pd-served-model: {{ $servedModelName | quote }}
+        {{- if $hasServedModelOverride }}
+        pd-served-model: {{ first $servedModelNames | quote }}
         pd-served-models: {{ toJson $servedModelNames | quote }}
+        {{- end }}
         pd-orchestrator: "vllm-router"
         pd-kv-connector: {{ $routerKvConnector | quote }}
         {{- with $podAnnotations }}
@@ -709,9 +710,11 @@ spec:
             - {{ $enginePort | quote }}
             - "--config"
             - {{ $pProfile | quote }}
+            {{- if $hasServedModelOverride }}
             - "--served-model-name"
             {{- range $servedName := $servedModelNames }}
             - {{ $servedName | quote }}
+            {{- end }}
             {{- end }}
             - "--kv-transfer-config"
             - {{ toJson $kvConfig | quote }}
@@ -864,9 +867,11 @@ spec:
             - {{ $enginePort | quote }}
             - "--config"
             - {{ $dProfile | quote }}
+            {{- if $hasServedModelOverride }}
             - "--served-model-name"
             {{- range $servedName := $servedModelNames }}
             - {{ $servedName | quote }}
+            {{- end }}
             {{- end }}
             - "--kv-transfer-config"
             - {{ toJson $kvConfig | quote }}
