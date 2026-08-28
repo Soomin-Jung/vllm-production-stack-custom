@@ -45,7 +45,7 @@ pdCellSpec:
 | `runtimeClassName` | `servingEngineSpec.runtimeClassName` | Pod RuntimeClass |
 | `schedulerName` | `servingEngineSpec.schedulerName` | Kubernetes scheduler |
 | `imagePullSecret` | empty | image pull secret |
-| `serviceAccountName` | empty | ServiceAccount |
+| `serviceAccountName` | guardian 활성 시 Chart 전용 SA | ServiceAccount. 명시하면 guardian RoleBinding도 해당 SA에 연결 |
 | `priorityClassName` | empty | PriorityClass |
 | `progressDeadlineSeconds` | `1800` | Deployment progress deadline |
 | `terminationGracePeriodSeconds` | `60` | Pod termination grace |
@@ -64,6 +64,51 @@ pdCellSpec:
 | `serviceType` | `ClusterIP` | Cell service type |
 | `servicePort` | `servingEngineSpec.servicePort` | Cell service port |
 | `serviceAnnotations` | `{}` | Cell service annotations |
+
+### `pdCellSpec.guardian`
+
+P/D Cell은 기본적으로 하나의 failure domain으로 동작한다.
+
+```yaml
+pdCellSpec:
+  guardian:
+    enabled: true
+    pollIntervalSeconds: 2
+    deleteGracePeriodSeconds: 5
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+```
+
+| field | 기본값 | 설명 |
+|---|---:|---|
+| `enabled` | `true` | whole-cell guardian 활성화 |
+| `pollIntervalSeconds` | `2` | 자기 Pod status 조회 주기 |
+| `deleteGracePeriodSeconds` | `5` | failure 감지 후 Pod DELETE grace period |
+| `resources` | 20m/64Mi request, 100m/128Mi limit | guardian sidecar resource |
+
+동작:
+
+```text
+P/D/Router/(Mooncake gpu-reservation) 모두 Ready
+  -> restartCount baseline 저장
+  -> ARMED
+
+이후 대상 container 중 하나 restartCount 증가
+  -> guardian이 자기 Pod UID를 precondition으로 DELETE
+  -> Deployment가 fresh P/D Cell Pod 생성
+```
+
+guardian은 Kubernetes API를 호출할 수 있는 projected ServiceAccount token만 자기
+container에 mount한다. Engine/Router에는 Pod delete token을 자동 mount하지 않도록
+`automountServiceAccountToken: false`를 적용한다.
+
+`serviceAccountName`을 생략하면 Chart가 release 전용 guardian ServiceAccount를 만들고,
+명시한 경우 해당 ServiceAccount에 Pod `get/delete` RoleBinding을 추가한다.
 
 상속 우선순위는 일반적으로:
 
@@ -503,9 +548,9 @@ Cell 내부 LMStack orchestrator는 Mooncake contract mismatch 때문에 제거�
 
 ### 주의
 
-Mooncake direct URL Router는 Prefill bootstrap에서 얻은 `engine_id`를 사용한다. Prefill만 container restart되어 engine_id가 변경되면 Router metadata refresh 여부를 확인해야 한다.
+Mooncake direct URL Router와 Mooncake CUDA IPC state는 partial engine restart에서 stale generation 문제가 발생할 수 있다.
 
-자동 refresh가 검증되지 않은 단기 운영에서는 P/D process failure 시 Cell Pod 전체 재생성을 권장한다.
+현재 운영 contract는 partial restart 복구가 아니라 **P/D Cell 전체를 하나의 failure domain으로 취급**하는 것이다. Chart guardian이 정상 Ready 이후 P/D/Router/gpu-reservation의 restartCount 증가를 감지하면 자기 Pod 전체를 recycle한다.
 
 ---
 
