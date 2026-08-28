@@ -671,6 +671,76 @@ healthCheckTimeout  -> --health-check-timeout-secs
 
 ---
 
+## 15.1 Mooncake GPU reservation runtime 검증 완료 — 2026-08-28
+
+PR #4의 node-local Mooncake GPU reservation 구조는 실제 GPU node에서 성공 검증했다.
+
+검증 topology:
+
+```text
+P1D1
+Prefill TP2 = 2 GPU
+Decode  TP2 = 2 GPU
+Cell total  = 4 GPU
+```
+
+관측 결과:
+
+```text
+gpu-reservation
+  -> Chart 계산대로 nvidia.com/gpu 4개 요청
+  -> 할당 GPU UUID 파일 생성 성공
+
+Prefill / Decode container
+  -> nvidia-smi에서 node GPU 8개 전체 접근 가능
+  -> vLLM PID1 environment의 CUDA_VISIBLE_DEVICES는
+     reservation container가 확보한 GPU UUID 4개로 제한
+  -> Chart가 계산한 --device-ids가 P/D에 비중복으로 주입
+  -> 실제 engine 초기화/메모리 점유도 지정 GPU에서만 발생
+  -> "Using Intra-Node NVLink transport" 확인
+```
+
+실제 추론에서 Prefill Mooncake Transfer Engine:
+
+```text
+[REQUEST] submitTransferTask
+[CTX] relocateSharedMemoryAddress:before-ipc-open
+[IMPORT_SUCCESS]
+...
+KV Transfer metrics:
+  Num successful transfers = 4
+  Num failed transfers     = 0
+  Avg xfer time            ~= 0.77 ms
+  Avg MB per transfer      ~= 122.5 MB
+  Throughput               ~= 159 GB/s
+  Avg descriptors          ~= 112
+```
+
+Decode engine은 INFO level에서 transfer metric이 동일하게 보이지 않았지만,
+`VLLM_LOGGING_LEVEL=DEBUG`로 검증했을 때 Prefill producer TP rank별 remote KV
+receive/load가 실제 수행되는 것을 확인했다.
+
+따라서 다음 항목은 runtime validated 상태다.
+
+```text
+Pod-local aggregate GPU reservation          PASS
+reservation UUID discovery                   PASS
+all-GPU device injection                     PASS
+Cell-wide common CUDA namespace              PASS
+automatic non-overlapping --device-ids       PASS
+vLLM compute GPU partition                   PASS
+Mooncake nvlink_intra initialization         PASS
+cudaIpcOpenMemHandle                         PASS (cold start)
+actual KV transfer                           PASS
+Decode remote KV receive/load                PASS
+```
+
+중요: 이 검증은 **cold-start 정상 topology**에 대한 것이다.
+Prefill/Decode container 단독 restart resilience는 별도 lifecycle 문제이며 아래
+Failure/restart 항목에서 계속 blocker로 관리한다.
+
+---
+
 ## 16. Failure / restart 주의사항
 
 Mooncake Router는 direct URL startup에서 Prefill bootstrap을 조회하고 `engine_id`를 저장한다.
@@ -807,7 +877,8 @@ Got Mooncake engine_ids
 - P/D `/health`
 - P/D `/v1/models`
 - Cell Router `/v1/models`
-- primary + alias 노출
+- 기본 contract에서는 profile에 정의한 model name/alias가 노출되는지 확인
+- `servedModelNames`를 명시한 경우에만 Chart CLI override 결과 확인
 
 ### Gate 5 — actual P/D
 
