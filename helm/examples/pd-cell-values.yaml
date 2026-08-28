@@ -20,9 +20,12 @@ pdCellSpec:
 
   models:
     - name: example-pd-p1d1
-      servedModelNames:
-        - example-model
-        - example-alias
+      # 기본적으로 served model name은 각 vLLM profile(--config)에서 관리한다.
+      # Chart에서 명시적으로 덮어써야 할 때만 servedModelNames를 사용한다.
+      #
+      # servedModelNames:
+      #   - example-model
+      #   - example-alias
       repository: vllm/vllm-openai
       tag: v0.26.0-cu129
       replicaCount: 1
