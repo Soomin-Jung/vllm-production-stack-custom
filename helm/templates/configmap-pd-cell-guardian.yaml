@@ -1,0 +1,168 @@
+{{- $pdCellSpec := .Values.pdCellSpec | default dict -}}
+{{- $guardian := $pdCellSpec.guardian | default dict -}}
+{{- $guardianEnabled := true -}}
+{{- if hasKey $guardian "enabled" -}}
+  {{- $guardianEnabled = $guardian.enabled -}}
+{{- end -}}
+{{- if and ($pdCellSpec.enabled | default false) $guardianEnabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "chart.pdCellGuardianName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    helm-release-name: {{ .Release.Name | quote }}
+    pd-cell: "true"
+    pd-cell-component: guardian
+data:
+  guardian.py: |
+    import json
+    import os
+    import ssl
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+
+    POD_NAME = os.environ["POD_NAME"]
+    POD_NAMESPACE = os.environ["POD_NAMESPACE"]
+    POD_UID = os.environ["POD_UID"]
+    TARGETS = {x for x in os.environ["PD_GUARDIAN_TARGETS"].split(",") if x}
+    POLL_SECONDS = float(os.environ.get("PD_GUARDIAN_POLL_SECONDS", "2"))
+    DELETE_GRACE_SECONDS = int(os.environ.get("PD_GUARDIAN_DELETE_GRACE_SECONDS", "5"))
+
+    TOKEN_FILE = "/var/run/secrets/pd-cell-guardian/token"
+    CA_FILE = "/var/run/secrets/pd-cell-guardian/ca.crt"
+
+    host = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+    port = os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS", "443")
+    POD_URL = (
+        f"https://{host}:{port}/api/v1/namespaces/"
+        f"{POD_NAMESPACE}/pods/{POD_NAME}"
+    )
+    SSL_CONTEXT = ssl.create_default_context(cafile=CA_FILE)
+
+    def log(message):
+        print(f"[pd-cell-guardian] {message}", flush=True)
+
+    def token():
+        with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+
+    def request(method, payload=None):
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            POD_URL,
+            method=method,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {token()}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, context=SSL_CONTEXT, timeout=5) as resp:
+            body = resp.read()
+            return json.loads(body) if body else {}
+
+    def get_pod():
+        return request("GET")
+
+    def delete_self(reason):
+        log(f"whole-cell recycle requested: {reason}")
+        payload = {
+            "apiVersion": "v1",
+            "kind": "DeleteOptions",
+            "gracePeriodSeconds": DELETE_GRACE_SECONDS,
+            "preconditions": {"uid": POD_UID},
+        }
+        try:
+            request("DELETE", payload)
+            log(
+                "Pod DELETE accepted; waiting for Kubernetes to terminate "
+                f"{POD_NAMESPACE}/{POD_NAME}"
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                log("Pod already deleting/deleted")
+            else:
+                raise
+        # Do not exit immediately and let kubelet restart only the guardian.
+        while True:
+            time.sleep(3600)
+
+    def statuses(pod):
+        return {
+            s.get("name"): s
+            for s in pod.get("status", {}).get("containerStatuses", [])
+        }
+
+    if not TARGETS:
+        log("no target containers configured; exiting")
+        sys.exit(1)
+
+    log(f"watching Pod {POD_NAMESPACE}/{POD_NAME} uid={POD_UID}")
+    log(f"targets={','.join(sorted(TARGETS))}")
+
+    baseline = None
+
+    while True:
+        try:
+            pod = get_pod()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                log("Pod no longer exists; exiting")
+                sys.exit(0)
+            log(f"GET Pod failed with HTTP {exc.code}; retrying")
+            time.sleep(POLL_SECONDS)
+            continue
+        except Exception as exc:
+            log(f"GET Pod failed: {exc!r}; retrying")
+            time.sleep(POLL_SECONDS)
+            continue
+
+        if pod.get("metadata", {}).get("uid") != POD_UID:
+            log("Pod UID changed; exiting without touching the replacement Pod")
+            sys.exit(0)
+
+        current = statuses(pod)
+
+        if baseline is None:
+            missing = sorted(TARGETS - set(current))
+            if missing:
+                log(f"waiting for target statuses: {','.join(missing)}")
+                time.sleep(POLL_SECONDS)
+                continue
+
+            not_ready = sorted(
+                name for name in TARGETS if not current[name].get("ready", False)
+            )
+            if not_ready:
+                time.sleep(POLL_SECONDS)
+                continue
+
+            baseline = {
+                name: int(current[name].get("restartCount", 0))
+                for name in TARGETS
+            }
+            log(
+                "armed after all targets became Ready; restart baseline="
+                + json.dumps(baseline, sort_keys=True)
+            )
+            time.sleep(POLL_SECONDS)
+            continue
+
+        missing = sorted(TARGETS - set(current))
+        if missing:
+            delete_self("target status disappeared: " + ",".join(missing))
+
+        for name in sorted(TARGETS):
+            restart_count = int(current[name].get("restartCount", 0))
+            if restart_count > baseline[name]:
+                delete_self(
+                    f"{name} restartCount changed "
+                    f"{baseline[name]} -> {restart_count}"
+                )
+
+        time.sleep(POLL_SECONDS)
+{{- end }}
