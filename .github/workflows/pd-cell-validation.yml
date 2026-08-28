@@ -269,10 +269,14 @@ jobs:
             echo 'NIXL render must not contain Mooncake GPU launcher'
             exit 1
           fi
-          if grep -Fq -- 'name: NVIDIA_VISIBLE_DEVICES' /tmp/pd-nixl.yaml; then
-            echo 'NIXL render must keep its existing device-plugin visibility contract'
+          # Guardian is connector-independent and intentionally renders
+          # NVIDIA_VISIBLE_DEVICES=void. What must not leak into NIXL engines is
+          # the Mooncake shared-GPU contract (NVIDIA_VISIBLE_DEVICES=all).
+          if grep -A1 -F -- 'name: NVIDIA_VISIBLE_DEVICES' /tmp/pd-nixl.yaml | grep -Fq -- 'value: all'; then
+            echo 'NIXL engine render must not inherit Mooncake NVIDIA_VISIBLE_DEVICES=all'
             exit 1
           fi
+          grep -A1 -F -- 'name: NVIDIA_VISIBLE_DEVICES' /tmp/pd-nixl.yaml | grep -Fq -- 'value: "void"'
 
           # P1D1 minimal example: per-engine GPU resources remain 4 + 4, each
           # rendered under requests and limits.
