@@ -190,7 +190,7 @@ jobs:
           contains 'pd-mooncake-gpu-map'
           contains 'pd-mooncake-gpu-launcher'
           contains 'name: pd-cell-guardian'
-          contains 'pd-failure-domain: whole-cell'
+          contains 'pd-failure-domain: "whole-cell"'
           contains 'automountServiceAccountToken: false'
           contains 'name: PD_GUARDIAN_TARGETS'
           contains 'pd-router,gpu-reservation,prefill-0,decode-0'
