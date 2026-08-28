@@ -297,7 +297,7 @@ jobs:
           fi
           grep -Fq -- 'mooncake_protocol is chart-managed' /tmp/pd-forbidden-protocol.err
 
-          if helm template pd-test ./helm -n inference               -f global-values.yaml               -f helm/examples/pd-cell-values.yaml               --set-string 'pdCellSpec.models[0].prefill.extraArgs[0]=--device-ids=0,1,2,3'               > /tmp/pd-forbidden-device-ids.yaml 2>/tmp/pd-forbidden-device-ids.err; then
+          if helm template pd-test ./helm -n inference               -f global-values.yaml               -f helm/examples/pd-cell-values.yaml               --set-string 'pdCellSpec.models[0].prefill.extraArgs[0]=--device-ids=0\,1\,2\,3'               > /tmp/pd-forbidden-device-ids.yaml 2>/tmp/pd-forbidden-device-ids.err; then
             echo 'Mooncake --device-ids override must be rejected'
             exit 1
           fi
