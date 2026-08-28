@@ -124,9 +124,6 @@ tests:
           tag: v0.1.15
         models:
           - name: mooncake-p1d2
-            servedModelNames:
-              - Qwen3.6-27B-PD
-              - test-alias
             repository: registry.example/vllm-openai
             tag: v0.26.0-cu129
             kvTransfer:
@@ -195,6 +192,22 @@ tests:
         equal:
           path: spec.template.spec.containers[1].startupProbe.failureThreshold
           value: 180
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[2].imagePullPolicy
+          value: IfNotPresent
+      - template: deployment-pd-cell.yaml
+        notContains:
+          path: spec.template.spec.containers[2].args
+          content: --served-model-name
+      - template: deployment-pd-cell.yaml
+        notContains:
+          path: spec.template.spec.containers[3].args
+          content: --served-model-name
       - template: deployment-pd-cell.yaml
         equal:
           path: spec.template.spec.containers[2].name
