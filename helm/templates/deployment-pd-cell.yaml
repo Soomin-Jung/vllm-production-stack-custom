@@ -3,6 +3,14 @@
 {{- if ($pdCellSpec.enabled | default false) -}}
 
   {{- $global := $root.Values.global | default dict -}}
+  {{- $guardian := $pdCellSpec.guardian | default dict -}}
+  {{- $guardianEnabled := true -}}
+  {{- if hasKey $guardian "enabled" -}}
+    {{- $guardianEnabled = $guardian.enabled -}}
+  {{- end -}}
+  {{- $guardianName := include "chart.pdCellGuardianName" $root -}}
+  {{- $guardianPollSeconds := int (default 2 $guardian.pollIntervalSeconds) -}}
+  {{- $guardianDeleteGraceSeconds := int (default 5 $guardian.deleteGracePeriodSeconds) -}}
 
   {{- $globalEnvMap := dict -}}
   {{- range $e := ($global.env | default (list)) -}}
@@ -196,6 +204,17 @@
         {{- $decodeVllmBin = printf "%v" (index $decode.command 0) -}}
       {{- end -}}
     {{- end -}}
+    {{- $guardianTargets := list "pd-router" -}}
+    {{- if $isMooncakeConnector -}}
+      {{- $guardianTargets = append $guardianTargets "gpu-reservation" -}}
+    {{- end -}}
+    {{- range $i := until $pCount -}}
+      {{- $guardianTargets = append $guardianTargets (printf "prefill-%d" $i) -}}
+    {{- end -}}
+    {{- range $i := until $dCount -}}
+      {{- $guardianTargets = append $guardianTargets (printf "decode-%d" $i) -}}
+    {{- end -}}
+
     {{- $abortTimeout := int (default 600 $kv.abortRequestTimeout) -}}
     {{- $nixlSideChannelEnabled := has $kvConnector (list "NixlConnector" "NixlPullConnector" "NixlPushConnector") -}}
     {{- if hasKey $kv "nixlSideChannelEnabled" -}}
@@ -257,6 +276,9 @@
     {{- $serviceAccountName := default "" $pdCellSpec.serviceAccountName -}}
     {{- if hasKey $modelSpec "serviceAccountName" -}}
       {{- $serviceAccountName = $modelSpec.serviceAccountName -}}
+    {{- end -}}
+    {{- if and $guardianEnabled (empty $serviceAccountName) -}}
+      {{- $serviceAccountName = $guardianName -}}
     {{- end -}}
     {{- $priorityClassName := default "" $pdCellSpec.priorityClassName -}}
     {{- if hasKey $modelSpec "priorityClassName" -}}
@@ -331,6 +353,20 @@
     {{- end -}}
     {{- range $e := ($decode.extraVolumes | default (list)) -}}
       {{- $_ := set $podVolumeMap $e.name $e -}}
+    {{- end -}}
+
+    {{- if $guardianEnabled -}}
+      {{- range $reservedName := (list "pd-cell-guardian-script" "pd-cell-guardian-token") -}}
+        {{- if hasKey $podVolumeMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: volume name %s is reserved by the P/D Cell guardian" $name $reservedName) -}}
+        {{- end -}}
+        {{- if hasKey $prefillMountMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: prefill volumeMount name %s is reserved by the P/D Cell guardian" $name $reservedName) -}}
+        {{- end -}}
+        {{- if hasKey $decodeMountMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: decode volumeMount name %s is reserved by the P/D Cell guardian" $name $reservedName) -}}
+        {{- end -}}
+      {{- end -}}
     {{- end -}}
 
     {{- if $isMooncakeConnector -}}
@@ -436,6 +472,9 @@ spec:
         {{- end }}
         pd-orchestrator: "vllm-router"
         pd-kv-connector: {{ $routerKvConnector | quote }}
+        {{- if $guardianEnabled }}
+        pd-failure-domain: "whole-cell"
+        {{- end }}
         {{- with $podAnnotations }}
           {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -447,6 +486,12 @@ spec:
 
       {{- if $serviceAccountName }}
       serviceAccountName: {{ $serviceAccountName }}
+      {{- end }}
+      {{- if $guardianEnabled }}
+      # The guardian receives an explicit projected ServiceAccount token.
+      # Disable the default token mount so router/engine containers do not
+      # inherit Pod delete credentials.
+      automountServiceAccountToken: false
       {{- end }}
 
       {{- if $priorityClassName }}
@@ -955,6 +1000,51 @@ spec:
             {{- end }}
         {{ end }}
 
+        {{- if $guardianEnabled }}
+        - name: pd-cell-guardian
+          image: "{{ $repository }}:{{ $tag }}"
+          imagePullPolicy: {{ $engineImagePullPolicy | quote }}
+          command:
+            - "python3"
+            - "/opt/pd-cell-guardian/guardian.py"
+          env:
+            # Never expose GPUs to the lifecycle guardian itself.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "void"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: PD_GUARDIAN_TARGETS
+              value: {{ join "," $guardianTargets | quote }}
+            - name: PD_GUARDIAN_POLL_SECONDS
+              value: {{ $guardianPollSeconds | quote }}
+            - name: PD_GUARDIAN_DELETE_GRACE_SECONDS
+              value: {{ $guardianDeleteGraceSeconds | quote }}
+          resources:
+            requests:
+              cpu: {{ default "20m" (($guardian.resources | default dict).requests | default dict).cpu | quote }}
+              memory: {{ default "64Mi" (($guardian.resources | default dict).requests | default dict).memory | quote }}
+            limits:
+              cpu: {{ default "100m" (($guardian.resources | default dict).limits | default dict).cpu | quote }}
+              memory: {{ default "128Mi" (($guardian.resources | default dict).limits | default dict).memory | quote }}
+          volumeMounts:
+            - name: pd-cell-guardian-script
+              mountPath: /opt/pd-cell-guardian
+              readOnly: true
+            - name: pd-cell-guardian-token
+              mountPath: /var/run/secrets/pd-cell-guardian
+              readOnly: true
+        {{- end }}
+
       {{- with $imagePullSecret }}
       imagePullSecrets:
         - name: {{ . }}
@@ -965,6 +1055,24 @@ spec:
           hostPath:
             path: /dev/shm
             type: Directory
+        {{- if $guardianEnabled }}
+        - name: pd-cell-guardian-script
+          configMap:
+            name: {{ $guardianName }}
+            defaultMode: 0555
+        - name: pd-cell-guardian-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        {{- end }}
         {{- if $isMooncakeConnector }}
         - name: pd-mooncake-gpu-map
           emptyDir: {}
