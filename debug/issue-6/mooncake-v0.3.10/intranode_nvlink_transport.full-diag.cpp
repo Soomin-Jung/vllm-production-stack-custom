@@ -371,9 +371,11 @@ int IntraNodeNvlinkTransport::install(
     LOG(INFO) << "[INTRA_NVLINK_DIAG][INSTALL_END]"
               << " seq=" << seq
               << " local_segment_id=" << LOCAL_SEGMENT_ID
-              << " rc=" << rc;
+              << " metadata_rc=" << rc
+              << " return_rc=0"
+              << " note=preserve-upstream-install-semantics";
     logCudaContext("install:end");
-    return rc;
+    return 0;
 }
 
 Status IntraNodeNvlinkTransport::submitTransfer(
@@ -678,6 +680,13 @@ int IntraNodeNvlinkTransport::registerLocalMemory(
               << " device=" << (err == cudaSuccess ? attr.device : -1)
               << " device_ptr=" << (err == cudaSuccess ? attr.devicePointer : nullptr)
               << " host_ptr=" << (err == cudaSuccess ? attr.hostPointer : nullptr);
+    LOG(INFO) << "[INTRA_NVLINK_DIAG][EXPORT_PTR]"
+              << " seq=" << seq
+              << " addr=" << addr
+              << " length=" << length
+              << " ptr_type="
+              << (err == cudaSuccess ? static_cast<int>(attr.type) : -1)
+              << " ptr_device=" << (err == cudaSuccess ? attr.device : -1);
     if (err != cudaSuccess) {
         LOG(ERROR) << "[INTRA_NVLINK_DIAG][REGISTER_FAIL]"
                    << " seq=" << seq
