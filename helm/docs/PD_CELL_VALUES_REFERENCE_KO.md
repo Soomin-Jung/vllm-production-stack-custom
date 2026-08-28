@@ -41,7 +41,7 @@ pdCellSpec:
 | field | 기본값 | 설명 |
 |---|---|---|
 | `enabled` | `false` | P/D Cell 리소스 생성 여부 |
-| `imagePullPolicy` | `servingEngineSpec.imagePullPolicy` | P/D engine image pull policy |
+| `imagePullPolicy` | `servingEngineSpec.imagePullPolicy` → 최종 fallback `IfNotPresent` | P/D engine image pull policy |
 | `runtimeClassName` | `servingEngineSpec.runtimeClassName` | Pod RuntimeClass |
 | `schedulerName` | `servingEngineSpec.schedulerName` | Kubernetes scheduler |
 | `imagePullSecret` | empty | image pull secret |
@@ -179,8 +179,8 @@ NIXL에서는 bootstrap port를 `--prefill` 뒤에 붙이지 않는다.
 | `name` | O | Kubernetes resource identity. release 안에서 unique |
 | `repository` | O | P/D vLLM image |
 | `tag` | O | P/D image tag |
-| `servedModelNames` | X | `[primary, alias...]`; 생략하면 `name` 사용 |
-| `servedModelName` | X | 구 values 호환. 새 values는 `servedModelNames` 권장 |
+| `servedModelNames` | X | 선택적 CLI override. 설정할 때만 P/D에 `--served-model-name` 주입 |
+| `servedModelName` | X | 구 values 호환용 단일 이름 override |
 | `replicaCount` | X | 기본 1, 0 이상 |
 | `modelType` | X | metadata용, 기본 chat |
 | `kvTransfer` | O | 모델별 KV transfer 설정 |
@@ -417,7 +417,21 @@ container의 GPU extended resource를 제거하고, 모든 P/D GPU 합계를
 
 ---
 
-## served model alias
+## served model name 소유권
+
+기본 contract에서는 Chart가 served model name을 주입하지 않는다.
+
+```text
+servedModelNames 미설정
+  -> Prefill/Decode에 --served-model-name 없음
+  -> 각 vLLM --config/profile의 served_model_name 사용
+  -> Cell vLLM Router /v1/models
+  -> 첫 Prefill worker의 /v1/models를 그대로 proxy
+```
+
+따라서 운영 baseline에서는 모델명/alias를 vLLM profile에서 관리하는 것을 권장한다.
+
+Chart 수준에서 명시적으로 덮어써야 할 때만 다음 선택 옵션을 사용한다.
 
 ```yaml
 servedModelNames:
@@ -425,11 +439,15 @@ servedModelNames:
   - test-alias
 ```
 
-P/D vLLM 모두 같은 이름 목록을 받는다.
+이 경우에만 Prefill/Decode 양쪽에 동일한:
 
-Cell vLLM Router `/v1/models`는 Prefill `/v1/models`를 proxy하므로 alias가 catalog에도 보이는 것이 기대 contract다.
+```text
+--served-model-name Qwen3.6-27B-PD test-alias
+```
 
-Global Router가 이 `/v1/models`를 discovery에 사용한다면 alias도 Global layer까지 노출되어야 한다.
+가 주입된다.
+
+구 values 호환을 위해 `servedModelName` 단일 값도 선택 override로 유지한다.
 
 ---
 
@@ -504,7 +522,7 @@ pdCellSpec:
 
   models:
     - name: qwen-p1d2
-      servedModelNames: [Qwen3.6-27B-PD, test-alias]
+      # served model name은 기본적으로 profile에서 관리
       repository: registry.internal/vllm/vllm-openai
       tag: v0.26.0-cu129-mooncake-0.3.10-post2
       kvTransfer:
