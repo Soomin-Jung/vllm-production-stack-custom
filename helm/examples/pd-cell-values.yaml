@@ -11,6 +11,11 @@
 pdCellSpec:
   enabled: true
 
+  # CUDA IPC across Prefill/Decode containers may require the host PID/IPC
+  # namespaces. Keep these explicit because they weaken container isolation.
+  hostPID: true
+  hostIPC: true
+
   router:
     repository: internal-registry/vllm/vllm-router
     tag: v0.1.15
