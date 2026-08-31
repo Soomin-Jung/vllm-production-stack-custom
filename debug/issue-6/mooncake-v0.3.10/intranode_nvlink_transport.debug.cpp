@@ -64,6 +64,40 @@ namespace mooncake {
 
 static long nvdbgTid() { return static_cast<long>(syscall(SYS_gettid)); }
 
+// Per-worker-thread state for the Issue #6 Runtime binding A/B experiment.
+// submitTransferTask() resolves request.source with the Driver API, explicitly
+// binds the CUDA Runtime to that device with cudaSetDevice(), and the IPC-open
+// logs record the before/after CUcontext identity and return codes.
+struct NvdbgRuntimeBindState {
+    int source_device = -1;
+    CUresult source_device_rc = CUDA_ERROR_INVALID_VALUE;
+    cudaError_t set_device_rc = cudaErrorInvalidDevice;
+    CUcontext ctx_before = nullptr;
+    CUresult ctx_before_rc = CUDA_ERROR_INVALID_VALUE;
+    CUcontext ctx_after = nullptr;
+    CUresult ctx_after_rc = CUDA_ERROR_INVALID_VALUE;
+};
+
+static thread_local NvdbgRuntimeBindState nvdbg_runtime_bind;
+
+static std::string nvdbgRuntimeBindSummary() {
+    std::ostringstream oss;
+    oss << "bind_source_device=" << nvdbg_runtime_bind.source_device
+        << " bind_source_device_rc="
+        << static_cast<int>(nvdbg_runtime_bind.source_device_rc)
+        << " bind_set_device_rc="
+        << static_cast<int>(nvdbg_runtime_bind.set_device_rc)
+        << " bind_ctx_before="
+        << reinterpret_cast<void *>(nvdbg_runtime_bind.ctx_before)
+        << " bind_ctx_before_rc="
+        << static_cast<int>(nvdbg_runtime_bind.ctx_before_rc)
+        << " bind_ctx_after="
+        << reinterpret_cast<void *>(nvdbg_runtime_bind.ctx_after)
+        << " bind_ctx_after_rc="
+        << static_cast<int>(nvdbg_runtime_bind.ctx_after_rc);
+    return oss.str();
+}
+
 static std::string nvdbgContextSummary() {
     CUcontext ctx = nullptr;
     CUresult ctx_rc = cuCtxGetCurrent(&ctx);
@@ -343,6 +377,29 @@ Status IntraNodeNvlinkTransport::submitTransferTask(
         auto &request = *task.request;
         uint64_t dest_addr = request.target_offset;
         if (request.target_id != LOCAL_SEGMENT_ID) {
+            // A/B experiment for intermittent cudaIpcOpenMemHandle(...)=201:
+            // resolve the source device without touching the CUDA Runtime,
+            // then explicitly bind this worker host thread's Runtime state to
+            // that device before entering relocateSharedMemoryAddress().
+            //
+            // Using cuPointerGetAttribute() here is intentional: a pre-open
+            // cudaPointerGetAttributes() could itself initialize Runtime state
+            // and make the experiment harder to interpret.
+            nvdbg_runtime_bind = NvdbgRuntimeBindState{};
+            nvdbg_runtime_bind.ctx_before_rc =
+                cuCtxGetCurrent(&nvdbg_runtime_bind.ctx_before);
+            nvdbg_runtime_bind.source_device_rc = cuPointerGetAttribute(
+                &nvdbg_runtime_bind.source_device,
+                CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+                reinterpret_cast<CUdeviceptr>(request.source));
+
+            if (nvdbg_runtime_bind.source_device_rc == CUDA_SUCCESS) {
+                nvdbg_runtime_bind.set_device_rc =
+                    cudaSetDevice(nvdbg_runtime_bind.source_device);
+            }
+            nvdbg_runtime_bind.ctx_after_rc =
+                cuCtxGetCurrent(&nvdbg_runtime_bind.ctx_after);
+
             int rc = relocateSharedMemoryAddress(dest_addr, request.length,
                                                  request.target_id);
             if (rc) {
@@ -544,6 +601,7 @@ int IntraNodeNvlinkTransport::relocateSharedMemoryAddress(uint64_t &dest_addr,
                         << " request_length=" << length
                         << " handle_sig=" << handle_sig
                         << " remap_cache_size=" << remap_entries_.size()
+                        << " " << nvdbgRuntimeBindSummary()
                         << " " << nvdbgContextSummary();
 
                     cudaError_t err = cudaIpcOpenMemHandle(
@@ -561,6 +619,7 @@ int IntraNodeNvlinkTransport::relocateSharedMemoryAddress(uint64_t &dest_addr,
                             << reinterpret_cast<void *>(dest_addr)
                             << " request_length=" << length
                             << " handle_sig=" << handle_sig
+                            << " " << nvdbgRuntimeBindSummary()
                             << " " << nvdbgContextSummary();
                         return -1;
                     }
@@ -573,6 +632,7 @@ int IntraNodeNvlinkTransport::relocateSharedMemoryAddress(uint64_t &dest_addr,
                         << reinterpret_cast<void *>(entry.addr)
                         << " mapped_base=" << shm_addr
                         << " handle_sig=" << handle_sig
+                        << " " << nvdbgRuntimeBindSummary()
                         << " " << nvdbgContextSummary();
 
                     OpenedShmEntry shm_entry;
