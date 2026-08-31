@@ -121,7 +121,6 @@ tests:
       pdCellSpec:
         enabled: true
         hostPID: true
-        hostIPC: true
         router:
           repository: registry.example/vllm-router
           tag: v0.1.15
@@ -162,7 +161,7 @@ tests:
       - template: deployment-pd-cell.yaml
         equal:
           path: spec.template.spec.hostIPC
-          value: true
+          value: false
       - template: deployment-pd-cell.yaml
         equal:
           path: spec.template.spec.containers[0].name
