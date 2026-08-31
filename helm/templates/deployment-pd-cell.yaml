@@ -300,6 +300,30 @@
       {{- $terminationGracePeriodSeconds = int $modelSpec.terminationGracePeriodSeconds -}}
     {{- end -}}
 
+    {{- $hostPID := false -}}
+    {{- if hasKey $pdCellSpec "hostPID" -}}
+      {{- $hostPID = $pdCellSpec.hostPID -}}
+    {{- end -}}
+    {{- if hasKey $modelSpec "hostPID" -}}
+      {{- $hostPID = $modelSpec.hostPID -}}
+    {{- end -}}
+
+    {{- $hostIPC := false -}}
+    {{- if hasKey $pdCellSpec "hostIPC" -}}
+      {{- $hostIPC = $pdCellSpec.hostIPC -}}
+    {{- end -}}
+    {{- if hasKey $modelSpec "hostIPC" -}}
+      {{- $hostIPC = $modelSpec.hostIPC -}}
+    {{- end -}}
+
+    {{- $shareProcessNamespace := false -}}
+    {{- if hasKey $pdCellSpec "shareProcessNamespace" -}}
+      {{- $shareProcessNamespace = $pdCellSpec.shareProcessNamespace -}}
+    {{- end -}}
+    {{- if hasKey $modelSpec "shareProcessNamespace" -}}
+      {{- $shareProcessNamespace = $modelSpec.shareProcessNamespace -}}
+    {{- end -}}
+
     {{- $modelEnvMap := deepCopy $commonEnvMap -}}
     {{- range $e := ($modelSpec.env | default (list)) -}}
       {{- $_ := set $modelEnvMap $e.name $e -}}
@@ -482,6 +506,9 @@ spec:
           {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      hostPID: {{ $hostPID }}
+      hostIPC: {{ $hostIPC }}
+      shareProcessNamespace: {{ $shareProcessNamespace }}
       {{- with $podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
