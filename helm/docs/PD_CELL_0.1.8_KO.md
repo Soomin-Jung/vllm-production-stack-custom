@@ -390,10 +390,14 @@ CUDA IPC 자체는 POSIX `/dev/shm` 파일을 다시 여는 방식은 아니지�
 container runtime의 PID/device namespace 경계와는 별개의 상호작용이 존재할 수 있다.
 기존 실험의 `shareProcessNamespace=true`는 **host PID namespace 사용이 아니다**.
 
-최근 동일 계열 CUDA IPC 재현에서는 `hostPID=true`가 빠졌을 때
-`cudaIpcOpenMemHandle -> 201 (invalid device context)`가 발생했고,
-`hostIPC=true`만으로는 충분하지 않았다. 따라서 Issue #6의 다음 검증 baseline은
-`hostPID=true + hostIPC=true`로 변경한다.
+Issue #6 final A/B에서는 `hostPID=false` 상태에서 Runtime API
+`cudaIpcOpenMemHandle`와 Driver API `cuIpcOpenMemHandle` 모두 intermittent
+`201 (invalid device context)`를 재현했다.
+
+이후 **`hostPID=true`만 추가**한 상태에서 반복 Pod/engine recycle과 Helm reinstall을
+통과했고, 최종적으로 pristine Mooncake v0.3.10 Runtime API source에서도 동일하게
+정상 동작했다. 따라서 현재 deployment contract에서는 `hostPID=true`를 CUDA IPC
+runtime prerequisite로 취급한다. `hostIPC=true`는 final fix 요구사항이 아니다.
 
 ### 9.1 왜 기존 container별 GPU request를 제거했는가
 
@@ -512,18 +516,18 @@ values의 공통/Prefill/Decode 어느 merge layer에서든 사용자가
 Mooncake Transfer Engine binary가 `nvlink_intra` support 없이 build되었다면
 runtime startup/transfer가 실패하는 것이 의도된 fail-fast 동작이다.
 
-Mooncake `nvlink_intra`의 cross-container CUDA IPC 검증에서는 우선:
+Mooncake `nvlink_intra`의 현재 cross-container CUDA IPC baseline:
 
 ```yaml
 pdCellSpec:
   hostPID: true
-  hostIPC: true
 ```
 
-를 사용한다. `shareProcessNamespace`는 `hostPID`와 다른 Kubernetes 옵션이며,
-이를 켰다고 host PID namespace 조건이 충족되는 것은 아니다. 보안상 host namespace
-공유는 격리를 약화시키므로 Mooncake 검증/운영에서 필요성이 확인된 경우에만 명시적으로
-사용한다. Engine의 기존 `/dev/shm` mount는 vLLM/NCCL/multiprocessing 용도로 유지한다.
+`hostIPC`와 `shareProcessNamespace`는 Issue #6 final fix에 필요하지 않았다.
+`shareProcessNamespace`는 `hostPID`와 다른 Kubernetes 옵션이며 이를 켰다고 host
+PID namespace 조건이 충족되는 것은 아니다. 보안상 `hostPID`는 process isolation을
+약화시키므로 Mooncake profile에서 명시적으로 사용하고 일반 connector 기본값은 false로
+유지한다. Engine의 기존 `/dev/shm` mount는 vLLM/NCCL/multiprocessing 용도로 유지한다.
 
 ## 10. KVTransferConfig
 
@@ -744,7 +748,8 @@ Cell-wide common CUDA namespace              PASS
 automatic non-overlapping --device-ids       PASS
 vLLM compute GPU partition                   PASS
 Mooncake nvlink_intra initialization         PASS
-cudaIpcOpenMemHandle                         PASS (cold start)
+hostPID=true CUDA IPC baseline               PASS
+cudaIpcOpenMemHandle                         PASS (pristine v0.3.10 + recycle/reinstall)
 actual KV transfer                           PASS
 Decode remote KV receive/load                PASS
 ```
