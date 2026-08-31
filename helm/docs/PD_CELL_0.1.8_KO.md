@@ -386,10 +386,14 @@ Decode KV allocation
   -> cudaMemcpy / NVLink
 ```
 
-따라서 Linux `/dev/shm` 파일 공유나 Pod PID namespace와 동일한 개념이 아니다.
-실제 장애 분석에서 `hostIPC=true`, `shareProcessNamespace=true`, 공용
-`/dev/shm`을 모두 적용해도 `cudaIpcOpenMemHandle`의
-`invalid argument` / `invalid device context`는 해소되지 않았다.
+CUDA IPC 자체는 POSIX `/dev/shm` 파일을 다시 여는 방식은 아니지만,
+container runtime의 PID/device namespace 경계와는 별개의 상호작용이 존재할 수 있다.
+기존 실험의 `shareProcessNamespace=true`는 **host PID namespace 사용이 아니다**.
+
+최근 동일 계열 CUDA IPC 재현에서는 `hostPID=true`가 빠졌을 때
+`cudaIpcOpenMemHandle -> 201 (invalid device context)`가 발생했고,
+`hostIPC=true`만으로는 충분하지 않았다. 따라서 Issue #6의 다음 검증 baseline은
+`hostPID=true + hostIPC=true`로 변경한다.
 
 ### 9.1 왜 기존 container별 GPU request를 제거했는가
 
@@ -508,8 +512,18 @@ values의 공통/Prefill/Decode 어느 merge layer에서든 사용자가
 Mooncake Transfer Engine binary가 `nvlink_intra` support 없이 build되었다면
 runtime startup/transfer가 실패하는 것이 의도된 fail-fast 동작이다.
 
-`hostIPC`, `shareProcessNamespace`는 이 contract의 요구사항이 아니다.
-Engine의 기존 `/dev/shm` mount는 vLLM/NCCL/multiprocessing 용도로 유지한다.
+Mooncake `nvlink_intra`의 cross-container CUDA IPC 검증에서는 우선:
+
+```yaml
+pdCellSpec:
+  hostPID: true
+  hostIPC: true
+```
+
+를 사용한다. `shareProcessNamespace`는 `hostPID`와 다른 Kubernetes 옵션이며,
+이를 켰다고 host PID namespace 조건이 충족되는 것은 아니다. 보안상 host namespace
+공유는 격리를 약화시키므로 Mooncake 검증/운영에서 필요성이 확인된 경우에만 명시적으로
+사용한다. Engine의 기존 `/dev/shm` mount는 vLLM/NCCL/multiprocessing 용도로 유지한다.
 
 ## 10. KVTransferConfig
 
