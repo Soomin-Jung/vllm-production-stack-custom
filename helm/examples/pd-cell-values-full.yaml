@@ -197,14 +197,15 @@ pdCellSpec:
   # false면 P/D Cell Deployment/Service/launcher ConfigMap을 생성하지 않는다.
   enabled: true
 
-  # CUDA IPC를 Prefill/Decode container 경계에서 사용할 때의 Pod namespace 설정.
-  # hostPID=true가 없으면 cudaIpcOpenMemHandle/cuIpcOpenMemHandle이
-  # 201 (invalid device context)로 실패하는 container 환경이 보고되어 있다.
-  # hostIPC만으로는 충분하지 않을 수 있다.
+  # Mooncake nvlink_intra CUDA IPC의 검증 baseline.
+  # 현재 container topology에서는 hostPID=false일 때 intermittent
+  # cudaIpcOpenMemHandle/cuIpcOpenMemHandle 201이 재현되었고,
+  # hostPID=true 단독 적용 후 pristine Mooncake v0.3.10에서도 재현되지 않았다.
   #
-  # 보안 영향: host PID/IPC namespace를 공유하므로 기본 container isolation이 약해진다.
+  # hostIPC/shareProcessNamespace는 final fix의 요구사항으로 확인되지 않았다.
+  # 보안 영향: host PID namespace 공유는 container process isolation을 약화시킨다.
   hostPID: true
-  hostIPC: true
+  hostIPC: false
   shareProcessNamespace: false
 
   # P/D engine image pull policy 설정.
