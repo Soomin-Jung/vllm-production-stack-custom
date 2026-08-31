@@ -88,6 +88,21 @@ static std::string nvdbgPointerSummary(const void *ptr) {
     cudaPointerAttributes attr{};
     cudaError_t rc = cudaPointerGetAttributes(&attr, ptr);
 
+    // This helper is called only after the IPC-open path has already failed.
+    // Query the owning CUcontext of the source pointer so we can distinguish:
+    //
+    //   current_ctx.device == source_device
+    //
+    // from the more subtle:
+    //
+    //   current_ctx != source_ptr_ctx
+    //
+    // on the same device ordinal.
+    CUcontext source_ptr_ctx = nullptr;
+    CUresult source_ptr_ctx_rc = cuPointerGetAttribute(
+        &source_ptr_ctx, CU_POINTER_ATTRIBUTE_CONTEXT,
+        reinterpret_cast<CUdeviceptr>(ptr));
+
     std::ostringstream oss;
     oss << "source=" << ptr << " ptr_rc=" << static_cast<int>(rc);
     if (rc == cudaSuccess) {
@@ -96,6 +111,10 @@ static std::string nvdbgPointerSummary(const void *ptr) {
     } else {
         oss << " ptr_error=" << cudaGetErrorString(rc);
     }
+
+    oss << " source_ptr_ctx=" << reinterpret_cast<void *>(source_ptr_ctx)
+        << " source_ptr_ctx_rc=" << static_cast<int>(source_ptr_ctx_rc);
+
     return oss.str();
 }
 
