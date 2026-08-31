@@ -36,6 +36,9 @@ DECODE_PULL_FAIL_RE = re.compile(
     re.IGNORECASE,
 )
 GUARDIAN_RE = re.compile(r"\[pd-cell-guardian\]")
+PD_GPU_RE = re.compile(
+    r"\[pd-gpu\]\s+(?P<key>reserved-cvd|selected-indices|selected-uuids)=(?P<value>\S+)"
+)
 
 TAGS = (
     "INSTALL",
@@ -121,10 +124,16 @@ def parse_fields(msg: str) -> dict[str, str]:
     return fields
 
 
-def parse_log(lines: Iterable[str]) -> tuple[list[Event], list[tuple[int, str]], list[tuple[int, str]]]:
+def parse_log(lines: Iterable[str]) -> tuple[
+    list[Event],
+    list[tuple[int, str]],
+    list[tuple[int, str]],
+    dict[tuple[str, str], dict[str, str]],
+]:
     events: list[Event] = []
     decode_failures: list[tuple[int, str]] = []
     guardian_lines: list[tuple[int, str]] = []
+    gpu_maps: dict[tuple[str, str], dict[str, str]] = collections.defaultdict(dict)
 
     for line_no, raw_line in enumerate(lines, 1):
         raw = raw_line.rstrip("\n")
@@ -134,6 +143,10 @@ def parse_log(lines: Iterable[str]) -> tuple[list[Event], list[tuple[int, str]],
             decode_failures.append((line_no, raw))
         if GUARDIAN_RE.search(msg):
             guardian_lines.append((line_no, raw))
+
+        gm = PD_GPU_RE.search(msg)
+        if gm:
+            gpu_maps[(pod, container)][gm.group("key")] = gm.group("value")
 
         tm = TAG_RE.search(msg)
         if not tm:
@@ -151,7 +164,7 @@ def parse_log(lines: Iterable[str]) -> tuple[list[Event], list[tuple[int, str]],
             )
         )
 
-    return events, decode_failures, guardian_lines
+    return events, decode_failures, guardian_lines, dict(gpu_maps)
 
 
 def int_field(event: Optional[Event], key: str) -> Optional[int]:
@@ -541,6 +554,73 @@ def compact_raw(e: Optional[Event]) -> Optional[str]:
     return f"L{e.line_no} {e.raw}"
 
 
+def logical_to_uuid(
+    gpu_maps: dict[tuple[str, str], dict[str, str]],
+    event: Optional[Event],
+    logical_device: Optional[int],
+) -> Optional[str]:
+    if event is None or logical_device is None:
+        return None
+    mapping = gpu_maps.get((event.pod, event.container), {})
+    cvd = mapping.get("reserved-cvd")
+    if not cvd:
+        return None
+    uuids = cvd.split(",")
+    if logical_device < 0 or logical_device >= len(uuids):
+        return None
+    return uuids[logical_device]
+
+
+def print_gpu_mapping(
+    gpu_maps: dict[tuple[str, str], dict[str, str]],
+    events: list[Event],
+) -> None:
+    print("\n=== 1.5 GPU RESERVATION / PHYSICAL PAIRING ===")
+    if not gpu_maps:
+        print(
+            "[pd-gpu] reserved-cvd/selected-uuids 로그를 찾지 못했습니다. "
+            "Pod startup부터 전체 로그를 포함하면 GOOD/BAD physical GPU pair를 비교할 수 있습니다."
+        )
+        return
+
+    for (pod, container), m in sorted(gpu_maps.items()):
+        print(
+            f"- {pod}/{container}: "
+            f"reserved-cvd={m.get('reserved-cvd','?')} "
+            f"selected-indices={m.get('selected-indices','?')} "
+            f"selected-uuids={m.get('selected-uuids','?')}"
+        )
+
+    opens = [e for e in events if e.tag in {"IPC_OPEN_OK", "IPC_OPEN_FAIL"}]
+    if not opens:
+        return
+
+    print("- IPC open physical-pair correlation:")
+    shown: set[tuple[str, str, str, str, str]] = set()
+    for e in opens:
+        src_dev = int_field(e, "ctx_device")
+        src_uuid = logical_to_uuid(gpu_maps, e, src_dev)
+        exports = matching_exports(events, e)
+        peer = exports[0][0] if exports else None
+        peer_dev = int_field(peer, "device") if peer else None
+        peer_uuid = logical_to_uuid(gpu_maps, peer, peer_dev) if peer else None
+        key = (
+            e.tag,
+            e.container,
+            str(src_dev),
+            str(peer_dev),
+            f"{src_uuid}->{peer_uuid}",
+        )
+        if key in shown:
+            continue
+        shown.add(key)
+        print(
+            f"  {e.tag}: {e.container} logical={src_dev} physical={src_uuid or '?'} "
+            f"-> {(peer.container if peer else 'peer?')} logical={peer_dev} "
+            f"physical={peer_uuid or '?'}"
+        )
+
+
 def print_counts(events: list[Event], decode_failures: list[tuple[int, str]]) -> None:
     print("\n=== 1. LOG PROFILE ===")
     if not events:
@@ -561,6 +641,7 @@ def print_counts(events: list[Event], decode_failures: list[tuple[int, str]]) ->
 
 def print_failures(
     events: list[Event],
+    gpu_maps: dict[tuple[str, str], dict[str, str]],
     max_failures: int,
 ) -> None:
     fails = [e for e in events if e.tag == "IPC_OPEN_FAIL"]
@@ -578,12 +659,15 @@ def print_failures(
         findings = classify_fail(events, fail, begin, abort, exports)
 
         print(f"\n--- Failure #{idx}: {format_scope(fail)} line {fail.line_no} ---")
+        fail_ctx_dev = int_field(fail, "ctx_device")
+        fail_src_uuid = logical_to_uuid(gpu_maps, fail, fail_ctx_dev)
         print(
             "raw: "
             f"err_code={fail.fields.get('err_code','?')} "
             f"err_string={fail.fields.get('err_string','?')} "
             f"ctx={fail.fields.get('ctx','?')} "
             f"ctx_device={fail.fields.get('ctx_device','?')} "
+            f"ctx_physical_uuid={fail_src_uuid or '?'} "
             f"target_id={fail.fields.get('target_id','?')} "
             f"remote_base={fail.fields.get('remote_base','?')} "
             f"handle_sig={fail.fields.get('handle_sig','?')}"
@@ -594,10 +678,13 @@ def print_failures(
 
         if exports:
             peer, kind = exports[0]
+            peer_dev = int_field(peer, "device")
+            peer_uuid = logical_to_uuid(gpu_maps, peer, peer_dev)
             print(
                 f"[MATCH   ] peer EXPORT ({kind}): "
                 f"{format_scope(peer)} line {peer.line_no}, "
                 f"device={peer.fields.get('device','?')} "
+                f"physical_uuid={peer_uuid or '?'} "
                 f"ctx_device={peer.fields.get('ctx_device','?')} "
                 f"base={peer.fields.get('base','?')} "
                 f"handle_sig={peer.fields.get('handle_sig','?')}"
@@ -717,14 +804,15 @@ def main() -> int:
         print(f"ERROR: cannot read {args.logfile}: {exc}", file=sys.stderr)
         return 2
 
-    events, decode_failures, guardian_lines = parse_log(text.splitlines(True))
+    events, decode_failures, guardian_lines, gpu_maps = parse_log(text.splitlines(True))
 
     print("Mooncake nvlink_intra NVDBG analyzer")
     print(f"input={args.logfile}")
     print(f"lines={len(text.splitlines())} nvdbg_events={len(events)}")
 
     print_counts(events, decode_failures)
-    print_failures(events, max(1, args.max_failures))
+    print_gpu_mapping(gpu_maps, events)
+    print_failures(events, gpu_maps, max(1, args.max_failures))
     print_global_findings(events)
     print_evidence(
         events,
