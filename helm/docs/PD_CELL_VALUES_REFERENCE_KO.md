@@ -24,6 +24,8 @@ pdCellSpec.router.kvConnector
 ```yaml
 pdCellSpec:
   enabled: true
+  hostPID: true
+  hostIPC: true
   router: {...}
   models:
     - name: ...
@@ -52,6 +54,9 @@ pdCellSpec:
 | `strategy` | RollingUpdate, maxSurge 0/maxUnavailable 1 | Deployment strategy |
 | `podAnnotations` | `{}` | Pod annotations |
 | `securityContext` | `{}` | Pod securityContext |
+| `hostPID` | `false` | Pod가 host PID namespace를 사용. Mooncake/CUDA IPC container 경계에서 201 회피 검증용 |
+| `hostIPC` | `false` | Pod가 host IPC namespace를 사용. CUDA IPC 환경에 따라 hostPID와 함께 필요할 수 있음 |
+| `shareProcessNamespace` | `false` | Pod 내부 container끼리 process namespace 공유. `hostPID`와는 별개 |
 | `containerSecurityContext` | `{}` | P/D engine common container securityContext |
 | `env` | `[]` | Cell common env |
 | `envFrom` | `[]` | Cell common envFrom |
@@ -377,8 +382,20 @@ kv_connector_extra_config.mooncake_protocol
 `[<vllm-binary>, serve]` 형태만 허용되며, 실제 container command는 Chart launcher로
 override된다.
 
-이 방식은 `hostIPC`, `shareProcessNamespace`를 요구하지 않는다. 기존 engine
-`/dev/shm`은 그대로 유지한다.
+CUDA IPC는 container/PID namespace 경계의 영향을 받을 수 있다. 최근 동일한
+`cudaIpcOpenMemHandle -> 201 (invalid device context)` 재현에서는 `hostPID: true`가
+필요했고 `hostIPC: true`만으로는 충분하지 않았다. 따라서 Mooncake `nvlink_intra`
+검증에서는 우선 다음을 사용한다.
+
+```yaml
+pdCellSpec:
+  hostPID: true
+  hostIPC: true
+```
+
+`shareProcessNamespace: true`는 Pod 내부 process namespace 공유일 뿐 `hostPID`와
+동일하지 않다. 이 설정들은 container isolation을 약화시키므로 일반 connector의
+기본값은 계속 `false`다. 기존 engine `/dev/shm` mount는 별도로 유지한다.
 
 주의: engine container는 node GPU device가 inject될 수 있으므로 Linux `/dev` 수준의
 hard isolation은 아니다. CUDA runtime에서는 reservation UUID만 CVD로 노출한다.
