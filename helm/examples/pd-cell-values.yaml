@@ -11,10 +11,11 @@
 pdCellSpec:
   enabled: true
 
-  # CUDA IPC across Prefill/Decode containers may require the host PID/IPC
-  # namespaces. Keep these explicit because they weaken container isolation.
+  # Mooncake nvlink_intra uses CUDA IPC across Prefill/Decode containers.
+  # In the validated container topology, omitting hostPID intermittently caused
+  # cudaIpcOpenMemHandle -> 201 (invalid device context).
+  # hostIPC was not required by the final hostPID-only A/B.
   hostPID: true
-  hostIPC: true
 
   router:
     repository: internal-registry/vllm/vllm-router
