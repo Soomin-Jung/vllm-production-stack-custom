@@ -344,6 +344,8 @@ def classify_fail(
     dev_rc = int_field(fail, "dev_rc")
     src_dev = int_field(abort, "source_device")
     ptr_rc = int_field(abort, "ptr_rc")
+    source_ptr_ctx = abort.fields.get("source_ptr_ctx") if abort else None
+    source_ptr_ctx_rc = int_field(abort, "source_ptr_ctx_rc")
 
     # H1: importer worker has no usable current CUcontext.
     if is_null_ctx(ctx) or (ctx_rc is not None and ctx_rc != 0) or (dev_rc is not None and dev_rc != 0):
@@ -408,6 +410,53 @@ def classify_fail(
                 "Worker ctx_device vs source_device",
                 "UNKNOWN",
                 "matching TRANSFER_ABORT/source_device 정보를 찾지 못함.",
+            )
+        )
+
+    # H2.5: same device ordinal can still mean a different CUcontext.
+    if abort is not None and source_ptr_ctx is not None:
+        if source_ptr_ctx_rc not in (None, 0):
+            findings.append(
+                Finding(
+                    "Current ctx vs source pointer owning ctx",
+                    "UNKNOWN",
+                    f"CU_POINTER_ATTRIBUTE_CONTEXT query failed "
+                    f"(source_ptr_ctx_rc={source_ptr_ctx_rc}).",
+                )
+            )
+        elif ctx is not None and source_ptr_ctx != ctx:
+            findings.append(
+                Finding(
+                    "Current ctx vs source pointer owning ctx",
+                    "HIGH",
+                    f"IPC_OPEN_FAIL current_ctx={ctx}, "
+                    f"source_ptr_ctx={source_ptr_ctx}. "
+                    "같은 device ordinal이어도 서로 다른 CUcontext. "
+                    "CUDA IPC/peer mapping context restriction과 강하게 부합.",
+                )
+            )
+        elif ctx is not None:
+            findings.append(
+                Finding(
+                    "Current ctx vs source pointer owning ctx",
+                    "NOT_SEEN",
+                    f"current_ctx == source_ptr_ctx == {ctx}.",
+                )
+            )
+        else:
+            findings.append(
+                Finding(
+                    "Current ctx vs source pointer owning ctx",
+                    "UNKNOWN",
+                    f"source_ptr_ctx={source_ptr_ctx}, current ctx 정보 부족.",
+                )
+            )
+    else:
+        findings.append(
+            Finding(
+                "Current ctx vs source pointer owning ctx",
+                "UNKNOWN",
+                "새 debug build의 source_ptr_ctx 필드가 없음.",
             )
         )
 
@@ -668,6 +717,7 @@ def print_failures(
             f"ctx={fail.fields.get('ctx','?')} "
             f"ctx_device={fail.fields.get('ctx_device','?')} "
             f"ctx_physical_uuid={fail_src_uuid or '?'} "
+            f"source_ptr_ctx={(abort.fields.get('source_ptr_ctx','?') if abort else '?')} "
             f"target_id={fail.fields.get('target_id','?')} "
             f"remote_base={fail.fields.get('remote_base','?')} "
             f"handle_sig={fail.fields.get('handle_sig','?')}"
