@@ -12,22 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Issue #6 diagnostic build.
-//
-// Goal: identify CUDA context / IPC-handle / metadata lifecycle failures with
-// minimal log volume. Successful descriptors are intentionally not logged.
-// Important tags:
-//   [NVDBG][INSTALL]
-//   [NVDBG][EXPORT]
-//   [NVDBG][IPC_OPEN_BEGIN|OK|FAIL]
-//   [NVDBG][TRANSFER_ABORT]
-//   [NVDBG][COPY_FAIL]
-//   [NVDBG][UNREGISTER]
-//   [NVDBG][DTOR]
-//   [NVDBG][RANGE_MISS]
-//
-// REMAP_HIT is emitted only when Mooncake global trace is enabled.
-
 #include "transport/intranode_nvlink_transport/intranode_nvlink_transport.h"
 
 #include <bits/stdint-uintn.h>
@@ -41,8 +25,6 @@
 #include <iomanip>
 #include <memory>
 #include <sstream>
-#include <sys/syscall.h>
-#include <unistd.h>
 
 #include "common.h"
 #include "common/serialization.h"
@@ -62,107 +44,18 @@ static bool checkCudaErrorReturn(cudaError_t result, const char *message) {
 
 namespace mooncake {
 
-static long nvdbgTid() { return static_cast<long>(syscall(SYS_gettid)); }
-
-// Per-worker-thread state for the Issue #6 Runtime binding A/B experiment.
-// submitTransferTask() resolves request.source with the Driver API, explicitly
-// binds the CUDA Runtime to that device with cudaSetDevice(), and the IPC-open
-// logs record the before/after CUcontext identity and return codes.
-struct NvdbgRuntimeBindState {
-    int source_device = -1;
-    CUresult source_device_rc = CUDA_ERROR_INVALID_VALUE;
-    cudaError_t set_device_rc = cudaErrorInvalidDevice;
-    CUcontext ctx_before = nullptr;
-    CUresult ctx_before_rc = CUDA_ERROR_INVALID_VALUE;
-    CUcontext ctx_after = nullptr;
-    CUresult ctx_after_rc = CUDA_ERROR_INVALID_VALUE;
-};
-
-static thread_local NvdbgRuntimeBindState nvdbg_runtime_bind;
-
-static std::string nvdbgRuntimeBindSummary() {
+// Issue #6 minimal-fix candidate.
+// Use CUDA Driver API consistently for the IPC-handle lifecycle while keeping
+// the v0.3.10 transfer/copy/remap logic unchanged.
+static std::string cuErrorString(CUresult result) {
+    const char *name = nullptr;
+    const char *message = nullptr;
+    cuGetErrorName(result, &name);
+    cuGetErrorString(result, &message);
     std::ostringstream oss;
-    oss << "bind_source_device=" << nvdbg_runtime_bind.source_device
-        << " bind_source_device_rc="
-        << static_cast<int>(nvdbg_runtime_bind.source_device_rc)
-        << " bind_set_device_rc="
-        << static_cast<int>(nvdbg_runtime_bind.set_device_rc)
-        << " bind_ctx_before="
-        << reinterpret_cast<void *>(nvdbg_runtime_bind.ctx_before)
-        << " bind_ctx_before_rc="
-        << static_cast<int>(nvdbg_runtime_bind.ctx_before_rc)
-        << " bind_ctx_after="
-        << reinterpret_cast<void *>(nvdbg_runtime_bind.ctx_after)
-        << " bind_ctx_after_rc="
-        << static_cast<int>(nvdbg_runtime_bind.ctx_after_rc);
-    return oss.str();
-}
-
-static std::string nvdbgContextSummary() {
-    CUcontext ctx = nullptr;
-    CUresult ctx_rc = cuCtxGetCurrent(&ctx);
-
-    std::ostringstream oss;
-    oss << "pid=" << getpid() << " tid=" << nvdbgTid()
-        << " ctx=" << reinterpret_cast<void *>(ctx)
-        << " ctx_rc=" << static_cast<int>(ctx_rc);
-
-    if (ctx_rc == CUDA_SUCCESS && ctx != nullptr) {
-        CUdevice ctx_device = -1;
-        CUresult dev_rc = cuCtxGetDevice(&ctx_device);
-        oss << " ctx_device=" << static_cast<int>(ctx_device)
-            << " dev_rc=" << static_cast<int>(dev_rc);
-    } else {
-        oss << " ctx_device=-1 dev_rc=-1";
-    }
-    return oss.str();
-}
-
-static std::string nvdbgPointerSummary(const void *ptr) {
-    cudaPointerAttributes attr{};
-    cudaError_t rc = cudaPointerGetAttributes(&attr, ptr);
-
-    // This helper is called only after the IPC-open path has already failed.
-    // Query the owning CUcontext of the source pointer so we can distinguish:
-    //
-    //   current_ctx.device == source_device
-    //
-    // from the more subtle:
-    //
-    //   current_ctx != source_ptr_ctx
-    //
-    // on the same device ordinal.
-    CUcontext source_ptr_ctx = nullptr;
-    CUresult source_ptr_ctx_rc = cuPointerGetAttribute(
-        &source_ptr_ctx, CU_POINTER_ATTRIBUTE_CONTEXT,
-        reinterpret_cast<CUdeviceptr>(ptr));
-
-    std::ostringstream oss;
-    oss << "source=" << ptr << " ptr_rc=" << static_cast<int>(rc);
-    if (rc == cudaSuccess) {
-        oss << " source_device=" << attr.device
-            << " source_type=" << static_cast<int>(attr.type);
-    } else {
-        oss << " ptr_error=" << cudaGetErrorString(rc);
-    }
-
-    oss << " source_ptr_ctx=" << reinterpret_cast<void *>(source_ptr_ctx)
-        << " source_ptr_ctx_rc=" << static_cast<int>(source_ptr_ctx_rc);
-
-    return oss.str();
-}
-
-static std::string nvdbgHandleSig(const cudaIpcMemHandle_t &handle) {
-    constexpr size_t kSigBytes = 8;
-    const auto *bytes =
-        reinterpret_cast<const unsigned char *>(&handle);
-
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-    for (size_t i = 0;
-         i < std::min(kSigBytes, sizeof(cudaIpcMemHandle_t)); ++i) {
-        oss << std::setw(2) << static_cast<unsigned int>(bytes[i]);
-    }
+    oss << static_cast<int>(result);
+    if (name) oss << " (" << name << ")";
+    if (message) oss << ": " << message;
     return oss.str();
 }
 
@@ -263,11 +156,14 @@ IntraNodeNvlinkTransport::IntraNodeNvlinkTransport() {}
 // }
 
 IntraNodeNvlinkTransport::~IntraNodeNvlinkTransport() {
-    LOG(INFO) << "[NVDBG][DTOR] remap_entries=" << remap_entries_.size()
-              << " registered_bases=" << registered_base_addrs_.size()
-              << " " << nvdbgContextSummary();
     for (auto &entry : remap_entries_) {
-        cudaIpcCloseMemHandle(entry.second.shm_addr);
+        CUresult rc = cuIpcCloseMemHandle(
+            reinterpret_cast<CUdeviceptr>(entry.second.shm_addr));
+        if (rc != CUDA_SUCCESS) {
+            LOG(WARNING) << "IntraNodeNvlinkTransport: "
+                            "cuIpcCloseMemHandle failed: "
+                         << cuErrorString(rc);
+        }
     }
     remap_entries_.clear();
 }
@@ -284,8 +180,6 @@ int IntraNodeNvlinkTransport::install(
     desc->protocol = "nvlink_intra";
     metadata_->addLocalSegment(LOCAL_SEGMENT_ID, local_server_name_,
                                std::move(desc));
-    LOG(INFO) << "[NVDBG][INSTALL] local_server=" << local_server_name_
-              << " protocol=nvlink_intra " << nvdbgContextSummary();
     return 0;
 }
 
@@ -377,45 +271,9 @@ Status IntraNodeNvlinkTransport::submitTransferTask(
         auto &request = *task.request;
         uint64_t dest_addr = request.target_offset;
         if (request.target_id != LOCAL_SEGMENT_ID) {
-            // A/B experiment for intermittent cudaIpcOpenMemHandle(...)=201:
-            // resolve the source device without touching the CUDA Runtime,
-            // then explicitly bind this worker host thread's Runtime state to
-            // that device before entering relocateSharedMemoryAddress().
-            //
-            // Using cuPointerGetAttribute() here is intentional: a pre-open
-            // cudaPointerGetAttributes() could itself initialize Runtime state
-            // and make the experiment harder to interpret.
-            nvdbg_runtime_bind = NvdbgRuntimeBindState{};
-            nvdbg_runtime_bind.ctx_before_rc =
-                cuCtxGetCurrent(&nvdbg_runtime_bind.ctx_before);
-            nvdbg_runtime_bind.source_device_rc = cuPointerGetAttribute(
-                &nvdbg_runtime_bind.source_device,
-                CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
-                reinterpret_cast<CUdeviceptr>(request.source));
-
-            if (nvdbg_runtime_bind.source_device_rc == CUDA_SUCCESS) {
-                nvdbg_runtime_bind.set_device_rc =
-                    cudaSetDevice(nvdbg_runtime_bind.source_device);
-            }
-            nvdbg_runtime_bind.ctx_after_rc =
-                cuCtxGetCurrent(&nvdbg_runtime_bind.ctx_after);
-
             int rc = relocateSharedMemoryAddress(dest_addr, request.length,
                                                  request.target_id);
-            if (rc) {
-                // Query source pointer attributes only after the IPC-open path
-                // has already failed. This keeps diagnostics from changing the
-                // CUDA runtime/context state before cudaIpcOpenMemHandle().
-                LOG(ERROR)
-                    << "[NVDBG][TRANSFER_ABORT] index=" << index
-                    << " target_id=" << request.target_id
-                    << " target_offset="
-                    << reinterpret_cast<void *>(request.target_offset)
-                    << " length=" << request.length
-                    << " " << nvdbgPointerSummary(request.source)
-                    << " " << nvdbgContextSummary();
-                return Status::Memory("device memory not registered");
-            }
+            if (rc) return Status::Memory("device memory not registered");
         }
         task.total_bytes = request.length;
         Slice *slice = getSliceCache().allocate();
@@ -435,21 +293,10 @@ Status IntraNodeNvlinkTransport::submitTransferTask(
         else
             err = cudaMemcpy((void *)slice->local.dest_addr, slice->source_addr,
                              slice->length, cudaMemcpyDefault);
-        if (err != cudaSuccess) {
-            LOG(ERROR) << "[NVDBG][COPY_FAIL] index=" << index
-                       << " opcode=" << static_cast<int>(slice->opcode)
-                       << " source=" << static_cast<void *>(slice->source_addr)
-                       << " mapped_dest="
-                       << static_cast<void *>(slice->local.dest_addr)
-                       << " length=" << slice->length
-                       << " target_id=" << slice->target_id
-                       << " err_code=" << static_cast<int>(err)
-                       << " err_string=" << cudaGetErrorString(err)
-                       << " " << nvdbgContextSummary();
+        if (err != cudaSuccess)
             slice->markFailed();
-        } else {
+        else
             slice->markSuccess();
-        }
     }
     return Status::OK();
 }
@@ -494,26 +341,20 @@ int IntraNodeNvlinkTransport::registerLocalMemory(void *addr, size_t length,
         return 0;
     }
 
-    cudaIpcMemHandle_t handle;
-    err = cudaIpcGetMemHandle(&handle, (void *)base_ptr);
-    if (err != cudaSuccess) {
-        LOG(ERROR) << "IntraNodeNvlinkTransport: cudaIpcGetMemHandle failed";
+    CUipcMemHandle handle;
+    cu_err = cuIpcGetMemHandle(&handle, base_ptr);
+    if (cu_err != CUDA_SUCCESS) {
+        LOG(ERROR) << "IntraNodeNvlinkTransport: cuIpcGetMemHandle failed: "
+                   << cuErrorString(cu_err);
         return -1;
     }
-
-    LOG(INFO) << "[NVDBG][EXPORT] base="
-              << reinterpret_cast<void *>(base_ptr)
-              << " alloc_size=" << alloc_size
-              << " device=" << attr.device
-              << " handle_sig=" << nvdbgHandleSig(handle)
-              << " " << nvdbgContextSummary();
 
     (void)remote_accessible;
     BufferDesc desc;
     desc.addr = (uint64_t)base_ptr;
     desc.length = alloc_size;
     desc.name = location;
-    desc.shm_name = serializeBinaryData(&handle, sizeof(cudaIpcMemHandle_t));
+    desc.shm_name = serializeBinaryData(&handle, sizeof(CUipcMemHandle));
     int rc = metadata_->addLocalMemoryBuffer(desc, true);
     if (rc == 0) {
         registered_base_addrs_.insert((uint64_t)base_ptr);
@@ -542,13 +383,7 @@ int IntraNodeNvlinkTransport::unregisterLocalMemory(void *addr,
         std::lock_guard<std::mutex> lock(register_mutex_);
         registered_base_addrs_.erase((uint64_t)key_ptr);
     }
-    int rc = metadata_->removeLocalMemoryBuffer(key_ptr, update_metadata);
-    LOG(INFO) << "[NVDBG][UNREGISTER] requested=" << addr
-              << " base=" << key_ptr
-              << " range_rc=" << static_cast<int>(cu_err)
-              << " metadata_rc=" << rc
-              << " " << nvdbgContextSummary();
-    return rc;
+    return metadata_->removeLocalMemoryBuffer(key_ptr, update_metadata);
 }
 
 int IntraNodeNvlinkTransport::relocateSharedMemoryAddress(uint64_t &dest_addr,
@@ -565,16 +400,6 @@ int IntraNodeNvlinkTransport::relocateSharedMemoryAddress(uint64_t &dest_addr,
                     remap_entries_[std::make_pair(target_id, entry.addr)]
                         .shm_addr;
                 remap_lock_.unlockShared();
-                if (globalConfig().trace) {
-                    LOG(INFO) << "[NVDBG][REMAP_HIT]"
-                              << " target_id=" << target_id
-                              << " remote_base="
-                              << reinterpret_cast<void *>(entry.addr)
-                              << " mapped_base=" << shm_addr
-                              << " requested="
-                              << reinterpret_cast<void *>(dest_addr)
-                              << " length=" << length;
-                }
                 dest_addr = dest_addr - entry.addr + ((uint64_t)shm_addr);
                 return 0;
             }
@@ -583,60 +408,33 @@ int IntraNodeNvlinkTransport::relocateSharedMemoryAddress(uint64_t &dest_addr,
             if (!remap_entries_.count(std::make_pair(target_id, entry.addr))) {
                 std::vector<unsigned char> output_buffer;
                 deserializeBinaryData(entry.shm_name, output_buffer);
-                if (output_buffer.size() == sizeof(cudaIpcMemHandle_t)) {
-                    cudaIpcMemHandle_t handle;
+                if (output_buffer.size() == sizeof(CUipcMemHandle)) {
+                    CUipcMemHandle handle;
                     memcpy(&handle, output_buffer.data(), sizeof(handle));
-                    const std::string handle_sig = nvdbgHandleSig(handle);
-                    void *shm_addr = nullptr;
 
-                    LOG(INFO)
-                        << "[NVDBG][IPC_OPEN_BEGIN]"
-                        << " segment=" << desc->name
-                        << " target_id=" << target_id
-                        << " remote_base="
-                        << reinterpret_cast<void *>(entry.addr)
-                        << " remote_length=" << entry.length
-                        << " requested="
-                        << reinterpret_cast<void *>(dest_addr)
-                        << " request_length=" << length
-                        << " handle_sig=" << handle_sig
-                        << " remap_cache_size=" << remap_entries_.size()
-                        << " " << nvdbgRuntimeBindSummary()
-                        << " " << nvdbgContextSummary();
-
-                    cudaError_t err = cudaIpcOpenMemHandle(
-                        &shm_addr, handle, cudaIpcMemLazyEnablePeerAccess);
-                    if (err != cudaSuccess) {
-                        LOG(ERROR)
-                            << "[NVDBG][IPC_OPEN_FAIL]"
-                            << " err_code=" << static_cast<int>(err)
-                            << " err_string=" << cudaGetErrorString(err)
-                            << " segment=" << desc->name
-                            << " target_id=" << target_id
-                            << " remote_base="
-                            << reinterpret_cast<void *>(entry.addr)
-                            << " requested="
-                            << reinterpret_cast<void *>(dest_addr)
-                            << " request_length=" << length
-                            << " handle_sig=" << handle_sig
-                            << " " << nvdbgRuntimeBindSummary()
-                            << " " << nvdbgContextSummary();
+                    CUcontext current_ctx = nullptr;
+                    CUresult ctx_rc = cuCtxGetCurrent(&current_ctx);
+                    if (ctx_rc != CUDA_SUCCESS || current_ctx == nullptr) {
+                        LOG(ERROR) << "IntraNodeNvlinkTransport: no usable "
+                                      "current CUDA Driver context before "
+                                      "cuIpcOpenMemHandle: "
+                                   << cuErrorString(ctx_rc);
                         return -1;
                     }
 
-                    LOG(INFO)
-                        << "[NVDBG][IPC_OPEN_OK]"
-                        << " segment=" << desc->name
-                        << " target_id=" << target_id
-                        << " remote_base="
-                        << reinterpret_cast<void *>(entry.addr)
-                        << " mapped_base=" << shm_addr
-                        << " handle_sig=" << handle_sig
-                        << " " << nvdbgRuntimeBindSummary()
-                        << " " << nvdbgContextSummary();
-
+                    CUdeviceptr mapped_addr = 0;
+                    CUresult open_rc = cuIpcOpenMemHandle(
+                        &mapped_addr, handle,
+                        CU_IPC_MEM_LAZY_ENABLE_PEER_ACCESS);
+                    if (open_rc != CUDA_SUCCESS) {
+                        LOG(ERROR) << "IntraNodeNvlinkTransport: "
+                                      "cuIpcOpenMemHandle failed: "
+                                   << cuErrorString(open_rc);
+                        return -1;
+                    }
                     OpenedShmEntry shm_entry;
-                    shm_entry.shm_addr = shm_addr;
+                    shm_entry.shm_addr =
+                        reinterpret_cast<void *>(mapped_addr);
                     shm_entry.length = entry.length;
                     remap_entries_[std::make_pair(target_id, entry.addr)] =
                         shm_entry;
@@ -652,13 +450,8 @@ int IntraNodeNvlinkTransport::relocateSharedMemoryAddress(uint64_t &dest_addr,
         }
         index++;
     }
-    LOG(ERROR) << "[NVDBG][RANGE_MISS]"
-               << " segment=" << desc->name
-               << " target_id=" << target_id
-               << " requested=" << reinterpret_cast<void *>(dest_addr)
-               << " request_length=" << length
-               << " buffer_count=" << desc->buffers.size()
-               << " " << nvdbgContextSummary();
+    LOG(ERROR) << "Requested address " << (void *)dest_addr << " to "
+               << (void *)(dest_addr + length) << " not found!";
     return ERR_INVALID_ARGUMENT;
 }
 
