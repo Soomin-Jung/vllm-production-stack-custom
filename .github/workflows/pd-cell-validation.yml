@@ -229,8 +229,10 @@ jobs:
             exit 1
           fi
 
-          absent 'hostIPC:'
-          absent 'shareProcessNamespace:'
+          # Issue #6 final Mooncake CUDA IPC baseline.
+          contains 'hostPID: true'
+          contains 'hostIPC: false'
+          contains 'shareProcessNamespace: false'
           contains 'kind: ServiceAccount'
           contains 'kind: Role'
           contains 'kind: RoleBinding'
