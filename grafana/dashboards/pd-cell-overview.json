@@ -1,0 +1,364 @@
+{
+  "id": null,
+  "uid": "pd-cell-overview",
+  "title": "vLLM P/D Cell Overview",
+  "tags": [
+    "vllm",
+    "pd-disaggregation",
+    "inference"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "label": "Prometheus",
+        "query": "prometheus",
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        }
+      },
+      {
+        "name": "model",
+        "type": "query",
+        "label": "Model",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$DS_PROMETHEUS"
+        },
+        "query": {
+          "query": "label_values(vllm:num_requests_running{job=\"kubernetes-vllm-pd-engines\"}, model_name)",
+          "refId": "PrometheusVariableQueryEditor-Model"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "pd_engine",
+        "type": "query",
+        "label": "P/D Engine",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$DS_PROMETHEUS"
+        },
+        "query": {
+          "query": "label_values(up{job=\"kubernetes-vllm-pd-engines\"}, pd_engine)",
+          "refId": "PrometheusVariableQueryEditor-Engine"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "P/D Engine Targets UP",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(up{job=\"kubernetes-vllm-pd-engines\"})",
+          "legendFormat": "targets"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "P/D Router Targets UP",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(up{job=\"kubernetes-vllm-pd-router\"})",
+          "legendFormat": "routers"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Running Requests by P/D Engine",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pd_engine) (vllm:num_requests_running{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "{{pd_engine}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Waiting Requests by P/D Engine",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pd_engine) (vllm:num_requests_waiting{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "{{pd_engine}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "KV Cache Usage (%)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * avg by (pd_engine) (vllm:kv_cache_usage_perc{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "{{pd_engine}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Token Throughput (tokens/s)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pd_engine) (rate(vllm:prompt_tokens_total{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "prompt {{pd_engine}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (pd_engine) (rate(vllm:generation_tokens_total{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "generation {{pd_engine}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "p95 TTFT",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:time_to_first_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "{{pd_engine}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "p95 TPOT / ITL",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:inter_token_latency_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))) or histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:time_per_output_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "{{pd_engine}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "GPU Utilization (%)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (instance, gpu) (DCGM_FI_DEV_GPU_UTIL{job=\"nvidia-dcgm-metrics\"})",
+          "legendFormat": "{{gpu}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "GPU Framebuffer Used",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decmbytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (instance, gpu) (DCGM_FI_DEV_FB_USED{job=\"nvidia-dcgm-metrics\"})",
+          "legendFormat": "{{gpu}}"
+        }
+      ]
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "links": []
+}
