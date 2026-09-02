@@ -12,6 +12,20 @@ fi
 # shellcheck disable=SC1090
 . "${LOCK_FILE}"
 
+for required_var in \
+  MOONCAKE_VERSION \
+  MOONCAKE_GIT_TAG \
+  MOONCAKE_COMMIT \
+  PYBIND11_COMMIT \
+  YALANTINGLIBS_COMMIT \
+  MOONCAKE_SOURCE_ARCHIVE \
+  MOONCAKE_RUNTIME_DEPS; do
+  if [[ -z "${!required_var:-}" ]]; then
+    echo "${required_var} is missing from ${LOCK_FILE}" >&2
+    exit 1
+  fi
+done
+
 manifest="${SOURCE_DIR}/SOURCE_MANIFEST.env"
 assert_equal() {
   local name=$1
