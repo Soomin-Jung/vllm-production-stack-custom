@@ -76,6 +76,7 @@ serverFiles:
             namespaces:
               names:
                 - inference
+                - test
 
         relabel_configs:
           - source_labels:
@@ -126,6 +127,7 @@ serverFiles:
             namespaces:
               names:
                 - inference
+                - test
 
         relabel_configs:
           - source_labels:
@@ -191,6 +193,7 @@ serverFiles:
             namespaces:
               names:
                 - inference
+                - test
 
         relabel_configs:
           - source_labels:
@@ -238,6 +241,7 @@ serverFiles:
             namespaces:
               names:
                 - inference
+                - test
 
         relabel_configs:
           - source_labels:
