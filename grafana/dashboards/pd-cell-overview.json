@@ -1,19 +1,42 @@
 {
   "id": null,
   "uid": "pd-cell-overview",
-  "title": "vLLM P/D Cell Overview",
+  "title": "vLLM P/D Cell — Professional Overview",
+  "description": "P/D disaggregation 운영·성능 분석 대시보드. 모든 rate/increase 쿼리는 $__rate_interval 또는 $__range를 사용해 5분 같은 짧은 범위에서도 의미가 유지되도록 설계했습니다.",
   "tags": [
     "vllm",
     "pd-disaggregation",
-    "inference"
+    "inference",
+    "performance"
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
-  "refresh": "10s",
+  "version": 3,
+  "refresh": "5s",
   "time": {
-    "from": "now-1h",
+    "from": "now-30m",
     "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "3h",
+      "6h",
+      "12h",
+      "24h",
+      "2d",
+      "7d"
+    ]
   },
   "templating": {
     "list": [
@@ -37,8 +60,8 @@
           "uid": "$DS_PROMETHEUS"
         },
         "query": {
-          "query": "label_values(up{job=~\"kubernetes-vllm-instances|kubernetes-vllm-pd-engines|kubernetes-vllm-pd-router|kubernetes-litellm-proxy-instances\"}, namespace)",
-          "refId": "PrometheusVariableQueryEditor-Namespace"
+          "query": "label_values(up{job=\"kubernetes-vllm-pd-engines\"}, namespace)",
+          "refId": "ns"
         },
         "includeAll": true,
         "allValue": ".*",
@@ -59,8 +82,30 @@
           "uid": "$DS_PROMETHEUS"
         },
         "query": {
-          "query": "label_values(vllm:num_requests_running{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\"}, model_name)",
-          "refId": "PrometheusVariableQueryEditor-Model"
+          "query": "label_values(up{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\"}, model)",
+          "refId": "model"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "pd_role",
+        "type": "query",
+        "label": "P/D Role",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$DS_PROMETHEUS"
+        },
+        "query": {
+          "query": "label_values(up{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\"}, pd_role)",
+          "refId": "role"
         },
         "includeAll": true,
         "allValue": ".*",
@@ -81,8 +126,8 @@
           "uid": "$DS_PROMETHEUS"
         },
         "query": {
-          "query": "label_values(up{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\"}, pd_engine)",
-          "refId": "PrometheusVariableQueryEditor-Engine"
+          "query": "label_values(up{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\"}, pd_engine)",
+          "refId": "engine"
         },
         "includeAll": true,
         "allValue": ".*",
@@ -99,46 +144,27 @@
   "panels": [
     {
       "id": 1,
-      "type": "stat",
-      "title": "P/D Engine Targets UP",
+      "type": "row",
+      "title": "1. Target / Traffic Health",
       "gridPos": {
-        "h": 4,
-        "w": 6,
+        "h": 1,
+        "w": 24,
         "x": 0,
         "y": 0
       },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "$DS_PROMETHEUS"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(up{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\"})",
-          "legendFormat": "targets"
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "auto"
-      }
+      "collapsed": false,
+      "panels": []
     },
     {
       "id": 2,
       "type": "stat",
-      "title": "P/D Router Targets UP",
+      "title": "P/D Engine Targets UP",
+      "description": "선택한 namespace/model 범위에서 Prometheus가 정상 scrape 중인 Prefill/Decode 엔진 수입니다. 기대 엔진 수보다 작으면 성능 지표를 보기 전에 target discovery/health부터 확인하세요.",
       "gridPos": {
         "h": 4,
         "w": 6,
-        "x": 6,
-        "y": 0
+        "x": 0,
+        "y": 1
       },
       "datasource": {
         "type": "prometheus",
@@ -147,10 +173,14 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(up{job=\"kubernetes-vllm-pd-router\",namespace=~\"$namespace\"})",
-          "legendFormat": "routers"
+          "expr": "sum(up{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "targets"
         }
       ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
       "options": {
         "reduceOptions": {
           "calcs": [
@@ -160,18 +190,22 @@
           "values": false
         },
         "orientation": "auto",
-        "textMode": "auto"
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
       }
     },
     {
       "id": 3,
-      "type": "timeseries",
-      "title": "Running Requests by P/D Engine",
+      "type": "stat",
+      "title": "P/D Router Targets UP",
+      "description": "Cell-local vllm-router의 :29000/metrics scrape 상태입니다. 0이면 P/D 요청 경로와 별개로 router observability가 끊긴 상태입니다.",
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 4
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
       },
       "datasource": {
         "type": "prometheus",
@@ -180,20 +214,39 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (pd_engine) (vllm:num_requests_running{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
-          "legendFormat": "{{pd_engine}}"
+          "expr": "sum(up{job=\"kubernetes-vllm-pd-router\",namespace=~\"$namespace\",model=~\"$model\"})",
+          "legendFormat": "routers"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
     },
     {
       "id": 4,
-      "type": "timeseries",
-      "title": "Waiting Requests by P/D Engine",
+      "type": "stat",
+      "title": "Requests in Selected Range",
+      "description": "현재 대시보드 시간 범위($__range) 동안 완료된 요청 수입니다. 24h 같은 고정 window를 쓰지 않아 최근 5분으로 줄여도 같은 의미를 유지합니다.",
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 4,
+        "w": 6,
         "x": 12,
-        "y": 4
+        "y": 1
       },
       "datasource": {
         "type": "prometheus",
@@ -202,50 +255,80 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (pd_engine) (vllm:num_requests_waiting{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
-          "legendFormat": "{{pd_engine}}"
+          "expr": "sum(increase(vllm:request_success_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__range]))",
+          "legendFormat": "requests"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
     },
     {
       "id": 5,
-      "type": "timeseries",
-      "title": "KV Cache Usage (%)",
+      "type": "stat",
+      "title": "Preemptions in Selected Range",
+      "description": "선택한 시간 범위에서 발생한 preemption 수입니다. KV 압박이나 scheduler capacity 부족의 직접 신호입니다. 0에 가까운 상태가 정상적입니다.",
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 12
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
       },
       "datasource": {
         "type": "prometheus",
         "uid": "$DS_PROMETHEUS"
       },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100
-        },
-        "overrides": []
-      },
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * avg by (pd_engine) (vllm:kv_cache_usage_perc{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
-          "legendFormat": "{{pd_engine}}"
+          "expr": "sum(increase(vllm:num_preemptions_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__range]))",
+          "legendFormat": "preemptions"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
     },
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Token Throughput (tokens/s)",
+      "title": "Request Throughput by Role",
+      "description": "완료 요청의 초당 처리량입니다. $__rate_interval을 사용하므로 5분/1시간/1일 등 범위 변경 시 window가 자동 조정됩니다.",
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 12
+        "x": 0,
+        "y": 5
       },
       "datasource": {
         "type": "prometheus",
@@ -254,129 +337,1051 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (pd_engine) (rate(vllm:prompt_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
-          "legendFormat": "prompt {{pd_engine}}"
-        },
-        {
-          "refId": "B",
-          "expr": "sum by (pd_engine) (rate(vllm:generation_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
-          "legendFormat": "generation {{pd_engine}}"
+          "expr": "sum by (pd_role) (rate(vllm:request_success_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "{{pd_role}}"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     },
     {
       "id": 7,
       "type": "timeseries",
-      "title": "p95 TTFT",
+      "title": "Running / Waiting Requests",
+      "description": "실행 중 요청과 대기 요청을 엔진별로 함께 봅니다. Decode waiting이 지속 상승하면 decode capacity 부족, Prefill waiting 상승은 prompt compute/queue 병목 가능성이 큽니다.",
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 20
+        "x": 12,
+        "y": 5
       },
       "datasource": {
         "type": "prometheus",
         "uid": "$DS_PROMETHEUS"
       },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
-        },
-        "overrides": []
-      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:time_to_first_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
-          "legendFormat": "{{pd_engine}}"
+          "expr": "sum by (pd_engine) (vllm:num_requests_running{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "running {{pd_engine}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (pd_engine) (vllm:num_requests_waiting{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "waiting {{pd_engine}}"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     },
     {
       "id": 8,
       "type": "timeseries",
-      "title": "p95 TPOT / ITL",
+      "title": "Prompt / Generation Token Throughput",
+      "description": "Prefill prompt token 처리율과 Decode generation token 처리율입니다. P/D ratio 튜닝에서 양쪽의 실제 workload 강도를 비교하는 핵심 패널입니다.",
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 20
+        "x": 0,
+        "y": 13
       },
       "datasource": {
         "type": "prometheus",
         "uid": "$DS_PROMETHEUS"
       },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pd_role) (rate(vllm:prompt_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "prompt {{pd_role}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (pd_role) (rate(vllm:generation_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "generation {{pd_role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Waiting Requests by Reason",
+      "description": "vLLM이 capacity/deferred 이유별 waiting metric을 노출하는 버전에서 scheduler 대기 원인을 분리합니다. metric이 없는 버전에서는 이 패널만 No data일 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pd_role,reason) (vllm:num_requests_waiting_by_reason{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "{{pd_role}} / {{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "2. Latency / Request Shape",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "TTFT p50 / p95 / p99",
+      "description": "Time To First Token. Prefill 성능과 queueing 영향을 가장 직접적으로 보여줍니다. p95/p99가 p50 대비 급격히 벌어지면 tail queue 또는 긴 prompt 간섭을 의심하세요.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le,pd_role) (rate(vllm:time_to_first_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{pd_role}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le,pd_role) (rate(vllm:time_to_first_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{pd_role}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le,pd_role) (rate(vllm:time_to_first_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{pd_role}}"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
           "unit": "s"
         },
         "overrides": []
       },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Decode p95 ITL / TPOT",
+      "description": "ITL은 토큰 간 간격, TPOT은 요청 단위 output-token 당 시간입니다. Decode capacity/MTP 튜닝에서 가장 중요한 latency 지표입니다. 구/신 metric 이름을 OR로 호환합니다.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:inter_token_latency_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))) or histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:time_per_output_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
-          "legendFormat": "{{pd_engine}}"
+          "expr": "histogram_quantile(0.95, sum by (le,pd_role) (rate(vllm:inter_token_latency_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "ITL p95 {{pd_role}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le,pd_role) (rate(vllm:request_time_per_output_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))) or histogram_quantile(0.95, sum by (le,pd_role) (rate(vllm:time_per_output_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "TPOT p95 {{pd_role}}"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     },
     {
-      "id": 9,
+      "id": 13,
       "type": "timeseries",
-      "title": "GPU Utilization (%)",
+      "title": "E2E / Queue p95",
+      "description": "전체 요청 latency와 queue time을 같이 봅니다. E2E 상승이 queue 상승과 동반되면 compute 자체보다 capacity/scheduling 병목일 가능성이 큽니다.",
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 31
       },
       "datasource": {
         "type": "prometheus",
         "uid": "$DS_PROMETHEUS"
       },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100
-        },
-        "overrides": []
-      },
       "targets": [
         {
           "refId": "A",
-          "expr": "avg by (instance, gpu) (DCGM_FI_DEV_GPU_UTIL{job=\"nvidia-dcgm-metrics\"})",
-          "legendFormat": "{{gpu}}"
+          "expr": "histogram_quantile(0.95, sum by (le,pd_role) (rate(vllm:e2e_request_latency_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "E2E p95 {{pd_role}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le,pd_role) (rate(vllm:request_queue_time_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "Queue p95 {{pd_role}}"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     },
     {
-      "id": 10,
+      "id": 14,
       "type": "timeseries",
-      "title": "GPU Framebuffer Used",
+      "title": "Prefill / Decode Phase p95",
+      "description": "요청 내부에서 Prefill과 Decode phase에 실제 소비된 시간을 비교합니다. P/D 비대칭 튜닝 시 어느 phase가 wall-time을 지배하는지 확인하는 용도입니다.",
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 31
       },
       "datasource": {
         "type": "prometheus",
         "uid": "$DS_PROMETHEUS"
       },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le,pd_role) (rate(vllm:request_prefill_time_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "Prefill p95 {{pd_role}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le,pd_role) (rate(vllm:request_decode_time_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "Decode p95 {{pd_role}}"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
-          "unit": "decmbytes"
+          "unit": "s"
         },
         "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Avg Prompt Tokens (Selected Range)",
+      "description": "선택 시간 범위에서 완료된 요청의 평균 input token 수입니다. 고정 24h window가 아니라 $__range를 사용해 최근 5분에서도 실제 최근 workload shape를 반영합니다.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "avg by (instance, gpu) (DCGM_FI_DEV_FB_USED{job=\"nvidia-dcgm-metrics\"})",
-          "legendFormat": "{{gpu}}"
+          "expr": "sum(increase(vllm:request_prompt_tokens_sum{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__range])) / clamp_min(sum(increase(vllm:request_prompt_tokens_count{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__range])), 1)",
+          "legendFormat": "tokens"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Avg Generation Tokens (Selected Range)",
+      "description": "선택 시간 범위에서 완료된 요청의 평균 output token 수입니다. Decode workload 강도와 MTP 효과를 해석할 때 함께 봅니다.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(vllm:request_generation_tokens_sum{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__range])) / clamp_min(sum(increase(vllm:request_generation_tokens_count{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__range])), 1)",
+          "legendFormat": "tokens"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Prompt Length p50 / p95 / p99",
+      "description": "input context 길이 분포입니다. Prefill TP/MBT/chunked-prefill 최적화에서 평균보다 p95/p99가 훨씬 중요한 경우가 많습니다.",
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(vllm:request_prompt_tokens_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_prompt_tokens_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:request_prompt_tokens_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "row",
+      "title": "3. KV Cache / Scheduler Efficiency",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "KV Cache Usage",
+      "description": "vLLM KV cache 사용률입니다. Decode 쪽에서 지속적으로 80~90% 이상에 붙거나 preemption과 동반되면 max-num-seqs/메모리/TP 구성 재검토가 필요합니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 45
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * avg by (pd_engine) (vllm:kv_cache_usage_perc{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "{{pd_engine}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Prefix Cache Hit Ratio",
+      "description": "local prefix cache query token 대비 hit token 비율입니다. cache가 꺼져 있거나 metric 미지원이면 No data가 정상입니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 45
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * sum by (pd_role) (rate(vllm:prefix_cache_hits_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])) / clamp_min(sum by (pd_role) (rate(vllm:prefix_cache_queries_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "{{pd_role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "External Prefix / KV Connector Hit Ratio",
+      "description": "외부 KV connector를 통한 queried token 대비 hit token 비율입니다. P/D/외부 cache가 실제로 prompt compute를 줄이는지 확인할 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 53
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * sum by (pd_role) (rate(vllm:external_prefix_cache_hits_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])) / clamp_min(sum by (pd_role) (rate(vllm:external_prefix_cache_queries_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "{{pd_role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Cached / External KV Token Rate",
+      "description": "cached prompt token과 external cache query/hit token 처리율을 같이 봅니다. connector 재사용이 활성화될수록 external hit가 workload와 함께 증가해야 합니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 53
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pd_role) (rate(vllm:prompt_tokens_cached_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "cached prompt {{pd_role}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (pd_role) (rate(vllm:external_prefix_cache_queries_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "external query {{pd_role}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (pd_role) (rate(vllm:external_prefix_cache_hits_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "external hit {{pd_role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "row",
+      "title": "4. Speculative Decoding / MTP",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Draft Acceptance Rate",
+      "description": "draft token 중 target model이 수락한 비율입니다. MTP K를 늘릴 때 이 비율이 급락하면 draft compute 증가가 실제 decode 가속으로 이어지지 않을 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 62
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * sum by (pd_role) (rate(vllm:spec_decode_num_accepted_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])) / clamp_min(sum by (pd_role) (rate(vllm:spec_decode_num_draft_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "{{pd_role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Spec Decode Token Rates",
+      "description": "draft/accepted/emitted token rate를 동시에 봅니다. accepted가 draft에 비해 낮고 emitted throughput도 개선되지 않으면 MTP overhead가 더 큰 상태일 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 62
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pd_role) (rate(vllm:spec_decode_num_draft_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "draft {{pd_role}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (pd_role) (rate(vllm:spec_decode_num_accepted_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "accepted {{pd_role}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (pd_role) (rate(vllm:spec_decode_num_emitted_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "legendFormat": "emitted {{pd_role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Spec Decode Efficiency (if exposed)",
+      "description": "구버전/일부 vLLM에서 노출되는 speculative decoding efficiency/acceptance gauge입니다. counter 기반 패널을 주 지표로 보고 이 패널은 교차검증용으로 사용하세요.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 70
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (pd_role) (vllm:spec_decode_efficiency{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "efficiency {{pd_role}}"
+        },
+        {
+          "refId": "B",
+          "expr": "avg by (pd_role) (vllm:spec_decode_draft_acceptance_rate{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "acceptance {{pd_role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 27,
+      "type": "stat",
+      "title": "MTP Accepted Tokens (Selected Range)",
+      "description": "현재 선택 범위에서 수락된 speculative draft token 총량입니다. 짧은 실험을 반복할 때 24h 누적값 대신 해당 run의 효과만 비교하기 위한 패널입니다.",
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 70
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(vllm:spec_decode_num_accepted_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__range]))",
+          "legendFormat": "accepted"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 28,
+      "type": "stat",
+      "title": "MTP Draft Tokens (Selected Range)",
+      "description": "현재 선택 범위에서 제안된 speculative draft token 총량입니다. Accepted Tokens와 함께 K별 비용 대비 효과를 판단합니다.",
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 70
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(vllm:spec_decode_num_draft_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"}[$__range]))",
+          "legendFormat": "draft"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 29,
+      "type": "row",
+      "title": "5. Router / Metric Surface",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 77
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 30,
+      "type": "table",
+      "title": "vLLM Router Metric Families",
+      "description": "현재 vllm-router :29000 endpoint에 실제 존재하는 metric family 목록입니다. Router 버전별 metric 이름 차이를 확인하고 후속 전용 패널을 추가할 때 source of truth로 사용합니다.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 78
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by (__name__) ({job=\"kubernetes-vllm-pd-router\",namespace=~\"$namespace\",model=~\"$model\"})",
+          "legendFormat": "{{__name__}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 31,
+      "type": "table",
+      "title": "vLLM Engine Metric Families",
+      "description": "현재 Prefill/Decode /metrics에 실제 존재하는 metric family 목록입니다. dashboard가 참조하는 metric이 빠졌을 때 버전/flag 문제인지 빠르게 확인할 수 있습니다.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 78
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by (__name__) ({job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model=~\"$model\",pd_role=~\"$pd_role\",pd_engine=~\"$pd_engine\"})",
+          "legendFormat": "{{__name__}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
     }
   ],
   "annotations": {
