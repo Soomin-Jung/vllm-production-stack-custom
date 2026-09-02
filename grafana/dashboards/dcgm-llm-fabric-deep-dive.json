@@ -1139,12 +1139,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "DCGM_FI_DEV_SM_CLOCK{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "expr": "1e6 * (DCGM_FI_DEV_SM_CLOCK{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"})",
           "legendFormat": "SM {{gpu}}"
         },
         {
           "refId": "B",
-          "expr": "DCGM_FI_DEV_MEM_CLOCK{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "expr": "1e6 * (DCGM_FI_DEV_MEM_CLOCK{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"})",
           "legendFormat": "MEM {{gpu}}"
         }
       ],
