@@ -41,6 +41,40 @@ Therefore the standalone vLLM job still keeps port 8000, but explicitly drops
 the `pd-router` container. P/D engine and router metrics are discovered by
 chart-generated container/port names instead of hard-coded engine port numbers.
 
+## Namespace scope
+
+Inference-related jobs discover both operational namespaces:
+
+~~~text
+inference
+test
+~~~
+
+The Kubernetes namespace is preserved as the Prometheus label:
+
+~~~text
+namespace="inference"
+namespace="test"
+~~~
+
+This is preferred over separate boolean labels such as `inference=true` or
+`test=true`: one stable label key gives simpler PromQL, dashboard variables,
+recording rules and alert grouping.
+
+Examples:
+
+~~~promql
+up{job="kubernetes-vllm-pd-engines", namespace="inference"}
+
+vllm:num_requests_running{
+  job="kubernetes-vllm-pd-engines",
+  namespace="test",
+  pd_role="decode"
+}
+~~~
+
+The Grafana P/D overview dashboard exposes this as the `$namespace` variable.
+
 ## Labels added by relabeling
 
 P/D engine targets expose:
