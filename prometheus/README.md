@@ -132,3 +132,100 @@ that accepts either `inter_token_latency_seconds` or the older
 4. Import/provision the Grafana dashboard.
 5. Run a small P/D request and verify Prefill/Decode series separation.
 6. Only then begin Qwen3.8 P/D parameter sweeps.
+
+
+## Short-range dashboard contract
+
+The dashboards are designed to remain meaningful when the Grafana time range is
+reduced to windows such as **Last 5 minutes**.
+
+Rules used throughout the dashboards:
+
+~~~text
+rate / histogram rate  -> $__rate_interval
+selected-run totals    -> increase(...[$__range])
+selected-run averages  -> avg_over_time(...[$__range])
+no fixed 1h / 24h PromQL windows
+~~~
+
+This avoids a common failure mode where a panel is hard-coded to a long range
+and shows `No data` for short benchmark runs.
+
+A percentile panel can still legitimately have no value if there were no
+requests in the selected range. Target/gauge panels remain available and the
+"Requests in Selected Range" panel makes that distinction explicit.
+
+## Extended DCGM collector
+
+The repository includes:
+
+~~~text
+prometheus/dcgm-extended-collectors.csv
+~~~
+
+This is a **reference collector set**, not automatically applied to the NVIDIA
+DCGM Exporter deployment.
+
+It adds fields useful for LLM and P/D analysis beyond the common Better NVIDIA
+DCGM Dashboard surface:
+
+- NVLink TX/RX profiling throughput
+- NVLink aggregate bandwidth
+- NVLink P2P link status
+- NVLink CRC/replay/recovery errors
+- PCIe TX/RX throughput and replay count
+- SM active / SM occupancy
+- Tensor / FP16 / FP32 pipeline activity
+- DRAM active ratio
+- XID and GPU health
+- ECC / retired pages / row remap state
+- power / thermal / board / reliability throttle durations
+
+Important: dcgm-exporter custom metric configuration is a **complete
+replacement** for the default metric list, not an additive overlay. Review the
+CSV against the exact GPU, driver, DCGM and exporter version before rollout.
+
+Some profiling/DCP fields are hardware/version dependent. If a panel shows
+`No data`, first check the "Advanced DCGM Metric Inventory" panel or the raw
+exporter `/metrics` output before treating it as a Grafana query problem.
+
+## NVLink evidence for P/D
+
+The DCGM deep-dive dashboard intentionally separates three questions:
+
+~~~text
+1. Can these GPUs communicate over NVLink?
+   -> DCGM_EXP_P2P_STATUS
+
+2. Is NVLink traffic actually occurring?
+   -> DCGM_FI_PROF_NVLINK_TX_BYTES
+   -> DCGM_FI_PROF_NVLINK_RX_BYTES
+   -> DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL
+
+3. Is the fabric healthy while traffic occurs?
+   -> CRC FLIT / CRC DATA
+   -> replay
+   -> recovery errors
+~~~
+
+For a controlled P/D test, correlate the request/KV-transfer interval with the
+NVLink TX/RX spike and compare it with PCIe TX/RX.
+
+This is objective **device-fabric activity evidence**, but it is node/GPU-level
+telemetry rather than per-process attribution. Other simultaneous GPU workloads
+can contribute traffic, so use an isolated test window when proving the P/D
+path.
+
+## Dashboard inventory
+
+~~~text
+grafana/dashboards/pd-cell-overview.json
+  P/D request, latency, scheduler, KV cache and MTP analysis
+
+grafana/dashboards/dcgm-llm-fabric-deep-dive.json
+  NVLink/PCIe fabric, compute pipeline, throttle and reliability analysis
+~~~
+
+Every new panel includes a Korean Grafana panel description. Grafana renders the
+description through the panel information tooltip so the dashboard itself
+documents how to interpret the metric.
