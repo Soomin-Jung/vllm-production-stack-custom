@@ -1,534 +1,974 @@
 # Qwen3.6-27B P/D Benchmark Matrix
 
-> 범위: Prefill-first 성능 최적화
+> 범위: Qwen3.6-27B node-local P/D Cell 성능 최적화
 >
-> 핵심 축:
+> 고정 topology baseline:
 >
-> - A = max-num-batched-tokens (MBT)
-> - B = MTP / speculative decoding
-> - C = CUDA Graph mode
->
-> 목표: 단일 축의 주효과(main effect)와 A×B, A×C, B×C, A×B×C 상호작용(interaction)을 분리해서 해석한다.
+> - Prefill TP=2 / PP=1
+> - Decode TP=2 / PP=1
+> - Mooncake nvlink_intra
+> - H200-class 8-GPU node
+
+## 1. 최적화 목표
+
+~~~text
+Prefill
+  TTFT / prompt throughput / long-context compute
+
+Decode
+  TPOT / ITL / output throughput / MTP
+
+Memory
+  hybrid GDN state + full-attention KV capacity
+
+Fabric
+  TP2 collective + P->D KV/state transfer의 NVLink 이용률
+~~~
+
+최종 목표는 단일 엔진 최고 수치가 아니라 P/D 양쪽 자원을 충분히 사용하면서
+queue, KV pressure, GPU compute, NVLink 중 어느 하나도 지속적인 병목이 되지 않는 지점이다.
 
 ---
 
-## 1. Prefill benchmark 고정 조건
+# 2. Qwen3.6 hybrid cache 구조
 
-아래 값은 Prefill matrix 동안 고정한다.
-
-~~~text
-P/D topology        : P1D1
-Prefill TP / PP     : TP1 / PP1
-Decode TP / PP      : 별도 baseline 고정
-max-num-seqs        : 8
-chunked prefill     : ON
-prefix cache        : OFF
-async scheduling    : OFF
-KV cache dtype      : fp8
-gpu-memory-util     : 동일 값 고정
-max-model-len       : 동일 값 고정
-input/output set    : 동일 benchmark corpus 고정
-concurrency         : 동일 값 고정
-CUDA graph sizes    : auto (mode 실험 동안 수동 capture list 금지)
-~~~
-
-MBT/MTP/CUDA Graph 이외의 설정을 동시에 바꾸지 않는다.
-
-### Primary metrics
+Qwen3.6-27B:
 
 ~~~text
-TTFT p50 / p90 / p95
-Prefill phase latency p50 / p90 / p95
-Prompt token throughput
-Request throughput
+48 x Gated DeltaNet
+16 x full attention
 ~~~
 
-### Secondary metrics
+request cache footprint는:
 
 ~~~text
-GPU Util
-SM Active
-Tensor Core Active
-DRAM Active
-CPU utilization
-KV cache usage
-available KV blocks / startup KV capacity
-CUDA Graph capture startup time / memory
-Mooncake KV transfer success / latency
+fixed recurrent GDN state
++ context-length-proportional full-attention KV
++ MTP 사용 시 speculative recurrent state
 ~~~
 
-### MTP-specific metrics
+로 보는 것이 맞다.
+
+## TP2 / FP8 KV planning model
+
+Qwen3.6 config:
 
 ~~~text
-draft tokens/s
-accepted tokens/s
-draft acceptance rate
-mean speculative acceptance length
+GDN
+  key heads   16
+  value heads 48
+  head dim    128
+  conv kernel 4
+  SSM state   float32
+
+Full attention
+  KV heads    4
+  head dim    256
 ~~~
+
+TP=2에서는 GDN state와 full-attention KV가 rank 단위로 분할된다.
+
+block-size=256, FP8 KV를 가정할 경우 vLLM의 hybrid page-size alignment 결과는
+약 1.7K~1.8K token 규모의 physical cache block으로 올라갈 수 있다.
+
+대표 arithmetic:
+
+~~~text
+resolved hybrid block ~= 1792 tokens
+~~~
+
+실제 engine startup log의 resolved block size를 source of truth로 사용한다.
+
+### MBT와 hybrid block size는 다른 축
+
+Decode MBT=2048이 좋은 후보라고 해서:
+
+~~~text
+2048 > 1792
+therefore faster
+~~~
+
+인 것은 아니다.
+
+~~~text
+hybrid block size
+  cache allocation / state page granularity
+
+max-num-batched-tokens
+  scheduler iteration token budget
+~~~
+
+서로 다른 의미다.
 
 ---
 
-## 2. Factor levels
+# 3. Context length별 per-rank cache planning
 
-### A — max-num-batched-tokens
+TP2 + FP8 attention KV + block-size=256 + resolved block~=1792 가정.
 
-| ID | MBT | 의미 |
-|---|---:|---|
-| A1 | 8,192 | 보수적 baseline / 작은 prefill chunk |
-| A2 | 16,384 | 중간 기준점 |
-| A3 | 32,768 | 긴 prompt throughput 우선 후보 |
-| A4 | 65,536 | optional; A3가 유의미하게 개선되고 KV/graph memory 여유가 있을 때만 |
-
-기본 staged matrix는 A1/A2/A3만 사용한다.
-
-### B — MTP
-
-| ID | 설정 | 의미 |
-|---|---|---|
-| B0 | OFF | no-spec baseline |
-| B1 | K=1 | 가장 낮은 MTP overhead |
-| B2 | K=2 | 중간점; 필요 시 추가 |
-| B3 | K=3 | 공격적 MTP 후보 |
-
-초기 reduced matrix는 B0/B1/B3를 사용한다.
-
-B2는 다음 조건 중 하나일 때 추가한다.
+48 GDN state의 대략적 per-request/per-rank 비용:
 
 ~~~text
-B1 < optimum < B3 로 보이는 경우
-B3 acceptance가 급락하지만 B1은 유의미한 이득이 있는 경우
-Decode 측 K2와 P/D pair consistency를 맞춰야 하는 경우
+MTP OFF ~84 MiB
+K1      ~168 MiB
+K3      ~336 MiB
 ~~~
 
-### C — CUDA Graph
+16 full-attention KV는 context에 거의 선형 증가한다.
 
-| ID | mode | Prefill 의미 |
-|---|---|---|
-| C0 | NONE | eager control |
-| C1 | PIECEWISE | Prefill/mixed batch용 우선 후보 |
+| Context | Full-attn KV | Total / OFF | Total / K1 | Total / K3 |
+|---:|---:|---:|---:|---:|
+| 8K | ~140 MiB | ~224 MiB | ~308 MiB | ~476 MiB |
+| 32K | ~532 MiB | ~616 MiB | ~700 MiB | ~868 MiB |
+| 64K | ~1.01 GiB | ~1.09 GiB | ~1.18 GiB | ~1.34 GiB |
+| 128K | ~2.02 GiB | ~2.11 GiB | ~2.19 GiB | ~2.35 GiB |
+| 170K | ~2.60 GiB | ~2.68 GiB | ~2.76 GiB | ~2.93 GiB |
+| 200K | ~3.14 GiB | ~3.23 GiB | ~3.31 GiB | ~3.47 GiB |
 
-Prefill-only matrix에서는 `FULL_DECODE_ONLY`를 사용하지 않는다.
+이 표는 planning용 근사치다.
 
-`FULL_AND_PIECEWISE`는 Prefill의 주효과를 보는 1차 matrix에는 넣지 않는다.
-Decode CUDA Graph 비교 단계에서 별도로 다룬다.
-
----
-
-## 3. Anchor baseline
-
-모든 interaction 비교의 중심점은 아래로 고정한다.
+실제 기준:
 
 ~~~text
-P-BASE
-A2 = MBT 16K
-B0 = MTP OFF
-C1 = PIECEWISE
+GPU KV cache size
+num GPU blocks
+Maximum concurrency
+resolved hybrid block size
 ~~~
 
-이 기준점을 모든 실험 묶음에서 반복 사용해 run-to-run drift를 확인한다.
-
-권장 반복:
-
-~~~text
-각 anchor / 최종 후보: 최소 3회
-나머지 screening run: 최소 1회
-~~~
-
-차이가 실제 튜닝 효과인지 판단할 때는 절대 % cutoff보다 반복 run의 분산/변동폭을 먼저 본다.
-
----
-
-# 4. (A) MBT only
-
-목적:
-
-> MTP와 CUDA Graph 조건을 고정한 상태에서 MBT만 바꿨을 때 Prefill compute/queue/KV trade-off를 본다.
-
-고정:
-
-~~~text
-B = B0 (MTP OFF)
-C = C1 (PIECEWISE)
-~~~
-
-| Test ID | MBT | MTP | CUDA Graph | 핵심 관찰 |
-|---|---:|---|---|---|
-| P-A1 | 8K | OFF | PIECEWISE | TTFT control / 작은 chunk |
-| P-A2 | 16K | OFF | PIECEWISE | **anchor** |
-| P-A3 | 32K | OFF | PIECEWISE | prompt tok/s 증가 vs TTFT/KV pressure |
-| P-A4 | 64K | OFF | PIECEWISE | optional; memory 여유 시 |
-
-판정 포인트:
-
-~~~text
-MBT ↑
-  -> prompt tok/s ↑ ?
-  -> TTFT p95 ↓ 또는 ↑ ?
-  -> queue p95 변화?
-  -> GPU SM/Tensor/DRAM active 변화?
-  -> KV capacity 감소?
-~~~
-
----
-
-# 5. (B) MTP only
-
-목적:
-
-> MBT와 CUDA Graph를 고정하고 Prefill MTP가 실제 이득인지, 단순 overhead인지 본다.
-
-고정:
-
-~~~text
-A = A2 (16K)
-C = C1 (PIECEWISE)
-~~~
-
-| Test ID | MBT | MTP | CUDA Graph | 핵심 관찰 |
-|---|---:|---|---|---|
-| P-B0 | 16K | OFF | PIECEWISE | **anchor** |
-| P-B1 | 16K | K1 | PIECEWISE | 최소 MTP overhead |
-| P-B3 | 16K | K3 | PIECEWISE | 공격적 후보 |
-| P-B2 | 16K | K2 | PIECEWISE | 필요 시 interpolation |
-
-Prefill에서 MTP는 Decode처럼 직접적인 generation speedup을 기대하지 않는다.
-
-주요 질문:
-
-~~~text
-MTP-aware model/cache path를 켰을 때
-Prefill TTFT / prompt tok/s / CPU overhead가 나빠지는가?
-
-P/D correctness / KV transfer layout은 정상인가?
-~~~
-
----
-
-# 6. (C) CUDA Graph mode only
-
-목적:
-
-> 동일 workload에서 Prefill PIECEWISE graph가 eager 대비 실제 이득을 주는지 본다.
-
-고정:
-
-~~~text
-A = A2 (16K)
-B = B0 (MTP OFF)
-~~~
-
-| Test ID | MBT | MTP | CUDA Graph | 핵심 관찰 |
-|---|---:|---|---|---|
-| P-C0 | 16K | OFF | NONE | eager control |
-| P-C1 | 16K | OFF | PIECEWISE | **anchor** |
-
-판정 포인트:
-
-~~~text
-TTFT
-prompt tok/s
-CPU util
-GPU SM Active
-CUDA Graph memory
-startup/capture time
-~~~
-
-PIECEWISE가 유리하더라도 startup memory/capture overhead까지 같이 기록한다.
-
----
-
-# 7. (A × B) MBT + MTP
-
-목적:
-
-> MTP overhead/benefit이 MBT에 따라 달라지는지 확인한다.
-
-고정:
-
-~~~text
-C = C1 (PIECEWISE)
-~~~
-
-### Reduced matrix
-
-| Test ID | MBT | MTP | CUDA Graph |
-|---|---:|---|---|
-| P-AB-01 | 8K | OFF | PIECEWISE |
-| P-AB-02 | 8K | K1 | PIECEWISE |
-| P-AB-03 | 8K | K3 | PIECEWISE |
-| P-AB-04 | 16K | OFF | PIECEWISE |
-| P-AB-05 | 16K | K1 | PIECEWISE |
-| P-AB-06 | 16K | K3 | PIECEWISE |
-| P-AB-07 | 32K | OFF | PIECEWISE |
-| P-AB-08 | 32K | K1 | PIECEWISE |
-| P-AB-09 | 32K | K3 | PIECEWISE |
-
-관찰:
-
-~~~text
-MBT가 커질수록 MTP overhead가 희석되는가?
-MTP ON에서 CPU/GDN dispatch 병목이 커지는가?
-MTP ON일 때 최적 MBT가 OFF와 달라지는가?
-~~~
-
-B2(K2)는 최적점이 B1과 B3 사이에 있다고 보일 때만 추가한다.
-
----
-
-# 8. (A × C) MBT + CUDA Graph
-
-목적:
-
-> CUDA Graph PIECEWISE 효과가 MBT에 따라 달라지는지 확인한다.
-
-고정:
-
-~~~text
-B = B0 (MTP OFF)
-~~~
-
-| Test ID | MBT | MTP | CUDA Graph |
-|---|---:|---|---|
-| P-AC-01 | 8K | OFF | NONE |
-| P-AC-02 | 8K | OFF | PIECEWISE |
-| P-AC-03 | 16K | OFF | NONE |
-| P-AC-04 | 16K | OFF | PIECEWISE |
-| P-AC-05 | 32K | OFF | NONE |
-| P-AC-06 | 32K | OFF | PIECEWISE |
-
-관찰:
-
-~~~text
-작은 MBT에서는 graph launch/CPU overhead 절감이 큰가?
-큰 MBT에서는 kernel compute가 지배해 graph 효과가 줄어드는가?
-PIECEWISE가 KV capacity/startup memory를 얼마나 추가로 사용하나?
-~~~
-
----
-
-# 9. (B × C) MTP + CUDA Graph
-
-목적:
-
-> MTP ON/OFF에 따라 Prefill PIECEWISE graph 효과가 달라지는지 확인한다.
-
-고정:
-
-~~~text
-A = A2 (16K)
-~~~
-
-| Test ID | MBT | MTP | CUDA Graph |
-|---|---:|---|---|
-| P-BC-01 | 16K | OFF | NONE |
-| P-BC-02 | 16K | OFF | PIECEWISE |
-| P-BC-03 | 16K | K1 | NONE |
-| P-BC-04 | 16K | K1 | PIECEWISE |
-| P-BC-05 | 16K | K3 | NONE |
-| P-BC-06 | 16K | K3 | PIECEWISE |
+startup log를 기록한다.
 
 핵심:
 
+- long context에서는 full-attention KV가 지배한다.
+- short context에서는 MTP speculative state overhead 비중이 커진다.
+- MTP K를 올릴 때 speedup과 maximum concurrency 감소를 같이 본다.
+
+---
+
+# 4. max-num-seqs = 1024
+
+H100/H200-class GPU에서 vLLM 0.26.0 OpenAI API server의 자동 default가 1024인 것은 맞다.
+
+그러나 단순 scheduler upper bound만은 아니다.
+
+## 영향을 받는 영역
+
 ~~~text
+scheduler active sequence ceiling
+
+query / seq_lens / block-table metadata buffers
+
+attention backend persistent buffers
+
+Mamba/GDN state-index metadata
+
+CUDA Graph capture envelope
+~~~
+
+기본 max cudagraph capture size:
+
+~~~text
+min(max_num_seqs * 2, 512)
+~~~
+
+## Hybrid + FULL decode CUDA Graph
+
+vLLM 0.26.0은 Mamba/GDN cache가 있는 model에서 full decode cudagraph를 사용할 때:
+
+~~~text
+max_num_seqs <= available Mamba cache blocks
+~~~
+
+를 검사한다.
+
+upstream 코드 설명:
+
+~~~text
+Each decode sequence requires one Mamba cache block.
+~~~
+
+따라서 실제 동시성이 낮아도:
+
+~~~text
+max-num-seqs 1024
+available Mamba blocks 700
+~~~
+
+이면 FULL decode CUDA Graph 초기화가 실패할 수 있다.
+
+## 권장
+
+### Prefill
+
+~~~text
+max-num-seqs = 1024
+~~~
+
+를 non-binding ceiling으로 유지하는 것은 가능하다.
+
+하지만 실제 Prefill 제약은:
+
+~~~text
+MBT
+max-num-partial-prefills
+max-long-partial-prefills
+long-prefill-token-threshold
+KV admission
+~~~
+
+쪽에서 먼저 올 수 있다.
+
+### Decode
+
+초기 권장:
+
+~~~text
+max-num-seqs = 512
+~~~
+
+1024를 full factorial의 고정값으로 두지 않는다.
+
+한 번만:
+
+~~~text
+256
+512
+1024
+~~~
+
+를 short-context / high-concurrency에서 비교한다.
+
+512와 1024의 saturation throughput이 같으면 512가 non-binding이므로 이후 512 고정.
+
+---
+
+# 5. CUDA Graph mode 전체
+
+vLLM 0.26.0 CUDAGraphMode:
+
+~~~text
+NONE
+PIECEWISE
+FULL
+FULL_DECODE_ONLY
+FULL_AND_PIECEWISE
+~~~
+
+## C0 NONE
+
+CUDA Graph 사용 안 함.
+
+장점:
+
+~~~text
+clean control
+capture memory 없음
+debug/correctness 유리
+~~~
+
+단점:
+
+~~~text
+kernel launch / CPU dispatch overhead 노출
+~~~
+
+P/D 모두 baseline.
+
+## C1 PIECEWISE
+
+CUDA Graph-compatible partition을 capture하고 attention/GDN 등 incompatible op는 graph 밖에서 실행.
+
+장점:
+
+~~~text
+dynamic/non-uniform prefill에 유연
+hybrid model Prefill의 우선 후보
+mixed batch compatibility
+~~~
+
+단점:
+
+~~~text
+partition boundary / CPU dispatch overhead
+FULL보다 Decode launch overhead 큼
+capture memory 존재
+~~~
+
+Prefill primary candidate.
+
+## C2 FULL
+
+전체 model forward를 full graph로 capture하는 single mode.
+
+장점:
+
+~~~text
+compatible shape에서는 launch overhead 최소
+~~~
+
+단점:
+
+~~~text
+backend / shape compatibility 제약이 큼
+hybrid GDN arbitrary prefill/mixed batch에 부적합
+vLLM이 backend capability에 따라 자동 downgrade 가능
+~~~
+
+Qwen3.6 main matrix에서는 제외.
+
+requested mode와 resolved mode를 startup log에서 구분한다.
+
+## C3 FULL_DECODE_ONLY
+
+~~~text
+uniform decode -> FULL
+prefill/mixed  -> NONE
+~~~
+
+P/D Decode engine에 가장 자연스러운 specialized mode.
+
+장점:
+
+~~~text
+pure Decode full graph
+PIECEWISE graph memory 절약 가능
+P/D decode 전용 구조에 적합
+~~~
+
+주의:
+
+~~~text
+MTP + hybrid state compatibility
+capture-size alignment
+max-num-seqs <= Mamba blocks
+~~~
+
+Decode primary candidate.
+
+## C4 FULL_AND_PIECEWISE
+
+~~~text
+uniform decode -> FULL
+prefill/mixed  -> PIECEWISE
+~~~
+
+장점:
+
+~~~text
+general serving에서 가장 공격적
+decode full + prefill/mixed piecewise
+~~~
+
+단점:
+
+~~~text
+capture memory 가장 큼
+startup/capture time 길음
+role-separated P/D에서는 사용하지 않는 graph까지 보유 가능
+~~~
+
+Decode에서는 FULL_DECODE_ONLY와 비교하는 fallback/control.
+
+## P/D 권장
+
+| Engine | Primary | Control | Follow-up |
+|---|---|---|---|
+| Prefill | PIECEWISE | NONE | FULL_AND_PIECEWISE 필요 시 |
+| Decode | FULL_DECODE_ONLY | NONE | FULL_AND_PIECEWISE |
+| FULL | main matrix 제외 | resolved-mode 확인 | 필요 시 |
+
+---
+
+# 6. Prefill fixed baseline
+
+~~~text
+TP=2
+PP=1
+max-num-seqs=1024
+prefix cache OFF
+async scheduling OFF
+KV dtype fp8
+same GPU pair
+same P/D topology
+~~~
+
+## P-A MBT
+
+~~~text
+8K
+16K
+32K
+64K optional
+~~~
+
+## P-B MTP
+
+~~~text
+OFF
+K1
+K2 optional
+K3
+~~~
+
+Prefill에서는 MTP가 generation speedup의 중심축이 아니다.
+
+확인:
+
+~~~text
+MTP-aware state/cache overhead
+TTFT regression
+CPU/GDN dispatch overhead
+KV capacity regression
+P/D correctness
+~~~
+
+## P-C CUDA Graph
+
+~~~text
+NONE
+PIECEWISE
+~~~
+
+## Prefill interactions
+
+~~~text
+P-A x P-B
+P-A x P-C
+P-B x P-C
+P-A x P-B x P-C
+~~~
+
+Reduced full factorial:
+
+~~~text
+3 MBT x 3 MTP x 2 CG
+= 18 configurations
+~~~
+
+main/pairwise에서 명확히 열세인 level은 final ABC에서 제거한다.
+
+---
+
+# 7. Decode MBT
+
+Decode-only에서는 Prefill 수준의 큰 MBT를 유지할 이유가 거의 없다.
+
+## Pure decode
+
 MTP OFF:
-  NONE vs PIECEWISE
 
-MTP K1:
-  NONE vs PIECEWISE
-
-MTP K3:
-  NONE vs PIECEWISE
+~~~text
+approximately 1 scheduled token / active request / step
 ~~~
 
-이 결과는 Qwen hybrid/GDN + MTP에서 graph path가 CPU/GPU 실행에 어떤 영향을 주는지 판단하는 핵심 interaction이다.
+max-num-seqs=512라면 MBT=512만으로도 pure decode 512-request envelope를 덮는다.
+
+## MTP
+
+uniform decode planning:
+
+~~~text
+scheduled tokens / request ~= 1 + K
+~~~
+
+| max seqs | MTP | full-envelope tokens |
+|---:|---:|---:|
+| 512 | OFF | 512 |
+| 512 | K1 | 1024 |
+| 512 | K2 | 1536 |
+| 512 | K3 | 2048 |
+| 1024 | OFF | 1024 |
+| 1024 | K1 | 2048 |
+| 1024 | K3 | 4096 |
+
+실제 long-context workload는 KV/state capacity 때문에 이 수치 전에 saturation될 가능성이 높다.
+
+## D-MBT sweep
+
+~~~text
+512
+1024
+2048
+4096 optional control
+~~~
+
+예상:
+
+~~~text
+512
+  low-overhead
+  high concurrency / MTP에서 budget cap 가능
+
+1024
+  strong baseline
+
+2048
+  max-seqs512 + K3 envelope까지 커버
+  Decode production 후보
+
+4096
+  2K에서 scheduler saturation이 확인될 때만
+~~~
+
+따라서 2K를 Decode 우선 후보로 보는 것은 합리적이다.
+
+근거는 Mamba block crossing이 아니라:
+
+~~~text
+target decode concurrency x (1 + K)
+를 충분히 커버하면서
+불필요한 large token budget을 피함
+~~~
+
+이다.
 
 ---
 
-# 10. (A × B × C) Full interaction
+# 8. Decode benchmark factors
 
-Reduced factor set:
-
-~~~text
-A = {8K, 16K, 32K}
-B = {OFF, K1, K3}
-C = {NONE, PIECEWISE}
-~~~
-
-따라서 full factorial은:
+고정 baseline:
 
 ~~~text
-3 × 3 × 2 = 18 unique configurations
+TP=2
+PP=1
+max-num-seqs=512 initial
+prefix cache OFF
+async scheduling OFF
+KV dtype fp8
+same GPU pair
 ~~~
 
-| Test ID | MBT | MTP | CUDA Graph |
-|---|---:|---|---|
-| P-ABC-01 | 8K | OFF | NONE |
-| P-ABC-02 | 8K | OFF | PIECEWISE |
-| P-ABC-03 | 8K | K1 | NONE |
-| P-ABC-04 | 8K | K1 | PIECEWISE |
-| P-ABC-05 | 8K | K3 | NONE |
-| P-ABC-06 | 8K | K3 | PIECEWISE |
-| P-ABC-07 | 16K | OFF | NONE |
-| P-ABC-08 | 16K | OFF | PIECEWISE |
-| P-ABC-09 | 16K | K1 | NONE |
-| P-ABC-10 | 16K | K1 | PIECEWISE |
-| P-ABC-11 | 16K | K3 | NONE |
-| P-ABC-12 | 16K | K3 | PIECEWISE |
-| P-ABC-13 | 32K | OFF | NONE |
-| P-ABC-14 | 32K | OFF | PIECEWISE |
-| P-ABC-15 | 32K | K1 | NONE |
-| P-ABC-16 | 32K | K1 | PIECEWISE |
-| P-ABC-17 | 32K | K3 | NONE |
-| P-ABC-18 | 32K | K3 | PIECEWISE |
+## D-A MBT
 
-### 확장 시 run 수
+~~~text
+512
+1024
+2048
+4096 optional
+~~~
 
-| 확장 | 조합 수 |
-|---|---:|
-| Reduced: 3 MBT × 3 MTP × 2 CG | 18 |
-| K2 추가: 3 × 4 × 2 | 24 |
-| 64K 추가: 4 × 3 × 2 | 24 |
-| K2 + 64K 모두 추가 | 4 × 4 × 2 = 32 |
+## D-B MTP
 
-처음부터 32개를 돌리지 않는다.
+~~~text
+OFF
+K1
+K2
+K3
+~~~
+
+## D-C CUDA Graph
+
+~~~text
+NONE
+FULL_DECODE_ONLY
+FULL_AND_PIECEWISE
+~~~
+
+FULL은 hybrid backend automatic downgrade 때문에 main factor에서 제외.
+
+## D-D max cudagraph capture size
+
+초기:
+
+~~~text
+auto
+~~~
+
+후속:
+
+~~~text
+128
+256
+512
+~~~
+
+MTP에서는 capture shape가 1+K 배수로 정렬된다.
+
+planning target:
+
+~~~text
+capture coverage
+>= target concurrent decode seqs x (1 + K)
+~~~
+
+## Decode interaction 우선순위
+
+~~~text
+1. MBT x MTP
+2. MTP x CUDA Graph
+3. MBT x CUDA Graph
+4. winner에서 capture size
+~~~
 
 ---
 
-# 11. 권장 staged execution
+# 9. Context-length matrix
 
-실제 benchmark는 아래 순서가 효율적이다.
-
-## Stage P0 — Anchor reproducibility
+P/D 모두:
 
 ~~~text
-P-BASE = 16K / MTP OFF / PIECEWISE
-3회 반복
+8K
+32K
+64K
+128K
+170K
+200K
 ~~~
 
-목적:
+Output:
 
-> benchmark noise floor 확보.
+~~~text
+128
+512
+2K
+~~~
+
+## Prefill 관점
+
+~~~text
+context up
+-> TTFT
+-> prompt tok/s
+-> GPU compute saturation
+-> chunking behavior
+~~~
+
+## Decode 관점
+
+~~~text
+context up
+-> full-attention KV footprint up
+-> max concurrent seqs down
+-> TPOT / memory-bandwidth pressure
+~~~
+
+## MTP 관점
+
+~~~text
+K up
+-> speculative GDN state footprint up
+-> acceptance
+-> output tok/s
+-> maximum concurrency down
+~~~
 
 ---
 
-## Stage P1 — Main effects
+# 10. KV capacity validation
+
+각 engine startup마다 기록:
 
 ~~~text
-A only
-  8K / 16K / 32K
-
-B only
-  OFF / K1 / K3
-
-C only
-  NONE / PIECEWISE
+resolved attention block size
+resolved Mamba/GDN block size
+KV cache memory
+num GPU blocks
+maximum concurrency estimate
+CUDA Graph memory
 ~~~
 
-이 단계에서 확실히 열세인 level은 interaction matrix에서 제거할 수 있다.
+runtime:
+
+~~~text
+vllm:kv_cache_usage_perc
+vllm:num_preemptions_total
+running requests
+waiting requests
+waiting reason
+~~~
+
+production 후보:
+
+~~~text
+sustained KV ceiling 없음
+preemption approximately 0
+170K target workload concurrency margin 존재
+~~~
 
 ---
 
-## Stage P2 — Pairwise interactions
+# 11. TP2와 NVLink
 
-우선순위:
+P/D 모두 TP2 고정은 합리적인 baseline이다.
+
+장점:
 
 ~~~text
-1. A × B
-2. B × C
-3. A × C
+weight/rank footprint 감소
+GDN state/rank footprint 감소
+full-attention KV/rank footprint 감소
+long-context concurrency 증가 가능
 ~~~
 
-이유:
+비용:
 
-- A×B: Prefill batch budget과 MTP overhead interaction
-- B×C: hybrid/GDN + MTP에서 graph path interaction
-- A×C: graph 이득이 compute-heavy MBT에서 유지되는지 확인
+~~~text
+layer별 TP collective
+-> NVLink traffic
+~~~
+
+따라서 TP2는 compute/memory만 보지 않고 NVLink와 같이 평가한다.
 
 ---
 
-## Stage P3 — Reduced ABC
+# 12. NVLink traffic을 분리해서 측정
 
-P1/P2 결과에서 살아남은 후보만 사용한다.
-
-예:
+P/D node-local에서는 최소 두 종류가 겹친다.
 
 ~~~text
-A survivors = {16K, 32K}
-B survivors = {OFF, K1}
-C survivor  = {PIECEWISE}
+A. intra-engine TP2 collective
+   P rank0 <-> P rank1
+   D rank0 <-> D rank1
 
-=> 2 × 2 × 1 = 4 final interaction runs
+B. inter-engine P->D KV/state transfer
+   Prefill GPU pair -> Decode GPU pair
 ~~~
 
-반드시 18개 full factorial을 다 돌릴 필요는 없다.
+## N0 Idle
+
+~~~text
+no request
+~~~
+
+fabric noise baseline.
+
+## N1 Prefill TP2 control
+
+Prefill compute 위주 run.
+
+측정:
+
+~~~text
+NVLink TX/RX
+PCIe TX/RX
+prompt tok/s
+SM Active
+~~~
+
+P-side TP collective baseline.
+
+## N2 Decode TP2 control
+
+Decode generation 위주 run.
+
+D-side TP collective baseline.
+
+## N3 Transfer-focused P/D
+
+~~~text
+128K / output 16~32
+170K / output 16~32
+200K / output 16~32
+~~~
+
+긴 Prefill + 매우 짧은 Decode로 transfer interval을 분리.
+
+기대:
+
+~~~text
+P-side NVLink TX spike
+D-side NVLink RX spike
+Mooncake transfer success
+PCIe보다 NVLink activity 우세
+~~~
+
+## N4 Production shape
+
+~~~text
+170K input
+2K output
+target concurrency
+~~~
+
+TP traffic + P->D transfer + MTP가 동시에 있을 때 fabric saturation 여부 확인.
 
 ---
 
-# 12. 결과 기록 표
+# 13. NVLink metrics
 
-각 run은 최소 아래 형식으로 기록한다.
+~~~text
+DCGM_FI_PROF_NVLINK_TX_BYTES
+DCGM_FI_PROF_NVLINK_RX_BYTES
+DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL
+DCGM_EXP_P2P_STATUS
 
-| Field | Value |
-|---|---|
-| Test ID | P-ABC-xx |
-| MBT | |
-| MTP K | |
-| CUDA Graph mode | |
-| input bucket | |
-| output bucket | |
-| concurrency | |
-| TTFT p50 | |
-| TTFT p90 | |
-| TTFT p95 | |
-| Prefill p95 | |
-| prompt tok/s | |
-| request/s | |
-| GPU util | |
-| SM active | |
-| Tensor active | |
-| DRAM active | |
-| CPU util | |
-| KV cache usage | |
-| KV blocks / capacity | |
-| graph capture memory | |
-| startup/capture time | |
-| Mooncake transfer | |
-| MTP acceptance | |
-| mean acceptance length | |
-| Notes | |
+DCGM_FI_PROF_PCIE_TX_BYTES
+DCGM_FI_PROF_PCIE_RX_BYTES
+
+NVLink CRC
+NVLink replay
+NVLink recovery
+~~~
+
+해석:
+
+~~~text
+P2P status
+  path available?
+
+NVLink TX/RX
+  actual fabric traffic?
+
+PCIe TX/RX
+  PCIe/fallback traffic dominating?
+
+CRC/replay/recovery
+  healthy at load?
+~~~
+
+## fabric utilization reference
+
+spec sheet peak만 기준으로 삼지 않는다.
+
+먼저 동일 node / 동일 GPU placement에서:
+
+~~~text
+NCCL all-reduce / send-recv or P2P microbenchmark
+~~~
+
+로 empirical ceiling을 측정한다.
+
+그 뒤:
+
+~~~text
+observed vLLM/Mooncake NVLink GB/s
+/
+same-topology empirical NVLink ceiling
+~~~
+
+로 평가한다.
 
 ---
 
-# 13. Prefill selection rule
+# 14. 최종 staged benchmark
 
-최종 Prefill 후보는 단일 최고 throughput만으로 고르지 않는다.
-
-우선순위:
+## Stage 0 Hardware / cache baseline
 
 ~~~text
-1. correctness / Mooncake transfer
-2. TTFT p95
-3. prompt token throughput
-4. tail stability (p90/p95 spread)
-5. CPU/GPU balance
-6. KV capacity
-7. startup / CUDA Graph memory overhead
+P TP2 / D TP2
+resolved hybrid block 기록
+KV blocks / maximum concurrency 기록
+NVLink topology 확인
+same-placement NCCL/P2P ceiling 측정
 ~~~
 
-특히 MBT가 큰 configuration이 prompt tok/s는 높지만 TTFT p95와 KV capacity를 크게 악화시키면 production winner로 보지 않는다.
+## Stage 1 Prefill main effects
+
+~~~text
+MBT
+MTP
+CG NONE vs PIECEWISE
+~~~
+
+## Stage 2 Prefill interactions
+
+~~~text
+MBT x MTP
+MTP x CG
+MBT x CG
+survivor ABC
+~~~
+
+## Stage 3 Decode max-num-seqs non-binding check
+
+~~~text
+256
+512
+1024
+~~~
+
+short context / high concurrency에서 1회.
+
+## Stage 4 Decode main effects
+
+~~~text
+MBT 512 / 1K / 2K
+MTP OFF / K1 / K2 / K3
+CG NONE / FULL_DECODE_ONLY / FULL_AND_PIECEWISE
+~~~
+
+## Stage 5 Decode interactions
+
+~~~text
+MBT x MTP
+MTP x CG
+MBT x CG
+~~~
+
+## Stage 6 Capture-size sweep
+
+winner 기준:
+
+~~~text
+auto
+128
+256
+512
+~~~
+
+## Stage 7 Context/cache surface
+
+~~~text
+8K
+32K
+64K
+128K
+170K
+200K
+~~~
+
+KV capacity / maximum concurrency를 같이 기록.
+
+## Stage 8 NVLink isolation
+
+~~~text
+N0 idle
+N1 P TP2
+N2 D TP2
+N3 transfer-focused
+N4 production workload
+~~~
 
 ---
 
-# 14. 다음 단계 — Decode matrix
+# 15. Selection rule
 
-Prefill winner를 고른 뒤 Decode는 별도 factor set으로 간다.
+Prefill winner:
 
 ~~~text
-D-A = max-num-batched-tokens
-D-B = MTP K
-D-C = CUDA Graph mode
-D-D = max-num-seqs
-D-E = max_cudagraph_capture_size
+TTFT p95
+prompt tok/s
+GPU saturation
+CPU overhead
+KV capacity
+NVLink TP cost
 ~~~
 
-Decode에서는 Prefill과 달리 `FULL_DECODE_ONLY`와 MTP-aware CUDA Graph capture size가 주요 축이 된다.
+Decode winner:
+
+~~~text
+TPOT / ITL p95
+generation tok/s
+MTP acceptance
+maximum concurrency
+KV/state footprint
+CUDA Graph memory
+NVLink TP cost
+~~~
+
+Cell winner:
+
+~~~text
+P/D queue balance
+no sustained KV pressure
+no preemption
+P->D transfer not bottleneck
+NVLink not saturated/erroring
+170K + 2K workload stable
+~~~
+
+핵심:
+
+> P와 D가 각각 가진 TP2 GPU를 충분히 사용하고, cache와 NVLink headroom을 남기면서,
+> 어느 한쪽 queue도 지속적으로 쌓이지 않는 configuration을 선택한다.
