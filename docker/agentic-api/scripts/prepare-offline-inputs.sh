@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 AGENTIC_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
-# shellcheck source=../SOURCE_LOCK.env
+# SOURCE_LOCK.env is resolved relative to this script at runtime.
+# shellcheck disable=SC1091
 source "$AGENTIC_DIR/SOURCE_LOCK.env"
 
 OUTPUT_DIR=${1:-"$AGENTIC_DIR/vendor"}

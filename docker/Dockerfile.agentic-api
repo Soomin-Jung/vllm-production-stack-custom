@@ -18,6 +18,9 @@ COPY docker/agentic-api/SOURCE_LOCK.env /opt/agentic-api/SOURCE_LOCK.env
 COPY docker/agentic-api/scripts/verify-source-lock.sh /usr/local/bin/verify-source-lock
 COPY docker/agentic-api/vendor/ /opt/agentic-api/vendor/
 
+# Verification and extraction intentionally stay in the build layer that
+# consumes the operator-supplied archive before Cargo reads the source tree.
+# hadolint ignore=DL3003
 RUN set -eux; \
     cd /opt/agentic-api/vendor; \
     sha256sum --check SHA256SUMS; \
@@ -44,6 +47,9 @@ USER root
 # can be reached, then let update-ca-certificates produce the final bundle.
 COPY sources.list /etc/apt/sources.list
 COPY certs/ /opt/certs/
+# The operator-supplied sources.list must select an immutable internal snapshot;
+# the package version therefore belongs to that mirror contract, not this file.
+# hadolint ignore=DL3008
 RUN set -eux; \
     set -- /opt/certs/*.crt; \
     test -f "$1"; \

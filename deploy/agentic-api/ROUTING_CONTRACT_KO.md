@@ -1,6 +1,6 @@
 # Agentic API 경로 및 Router 통합 계약
 
-업데이트: 2026-09-02  
+업데이트: 2026-09-02
 대상: Agentic API v0.5.0, LMStack Router 0.1.9 normal route, 선택적 P/D Cell
 
 ## 1. 채택 구조
