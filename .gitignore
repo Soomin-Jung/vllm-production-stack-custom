@@ -105,6 +105,11 @@ src/vllm_router/_version.py
 
 /tutorials/assets/private.yaml
 
+# Operator-supplied closed-network build inputs
+/certs/
+/sources.list
+/pip.conf
+
 
 # terraform
 # Local .terraform directories

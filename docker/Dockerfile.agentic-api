@@ -1,0 +1,79 @@
+ARG AGENTIC_API_BUILDER_IMAGE=rust:1.96.0-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc
+ARG AGENTIC_API_RUNTIME_IMAGE=debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+
+FROM ${AGENTIC_API_BUILDER_IMAGE} AS builder
+
+ARG AGENTIC_API_VERSION=0.5.0
+ARG AGENTIC_API_COMMIT=032935de73d92f116ac108f24cd63d6a158aad94
+ARG CARGO_BUILD_JOBS=4
+
+ENV CARGO_NET_OFFLINE=true \
+    CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
+    CARGO_TERM_COLOR=never \
+    CARGO_TARGET_DIR=/workspace/target
+
+WORKDIR /workspace
+
+COPY docker/agentic-api/SOURCE_LOCK.env /opt/agentic-api/SOURCE_LOCK.env
+COPY docker/agentic-api/scripts/verify-source-lock.sh /usr/local/bin/verify-source-lock
+COPY docker/agentic-api/vendor/ /opt/agentic-api/vendor/
+
+RUN set -eux; \
+    cd /opt/agentic-api/vendor; \
+    sha256sum --check SHA256SUMS; \
+    set -- agentic-api-offline_*.tar.gz; \
+    test "$#" -eq 1; \
+    tar -xzf "$1" -C /workspace; \
+    verify-source-lock /workspace/agentic-api /opt/agentic-api/SOURCE_LOCK.env; \
+    test "$AGENTIC_API_VERSION" = "$(. /opt/agentic-api/SOURCE_LOCK.env; printf '%s' "$AGENTIC_API_VERSION")"; \
+    test "$AGENTIC_API_COMMIT" = "$(. /opt/agentic-api/SOURCE_LOCK.env; printf '%s' "$AGENTIC_API_COMMIT")"; \
+    cd /workspace/agentic-api; \
+    cargo build --locked --frozen --offline --release -p agentic-server; \
+    install -D -m 0755 -s /workspace/target/release/agentic-server /out/agentic-server; \
+    install -D -m 0755 docker-entrypoint.sh /out/docker-entrypoint.sh
+
+FROM ${AGENTIC_API_RUNTIME_IMAGE} AS runtime
+
+ARG AGENTIC_API_VERSION=0.5.0
+ARG AGENTIC_API_COMMIT=032935de73d92f116ac108f24cd63d6a158aad94
+
+USER root
+
+# sources.list and certs/ are operator-supplied build-context inputs. Bootstrap
+# the CA bundle before apt so an HTTPS package mirror signed by the private CA
+# can be reached, then let update-ca-certificates produce the final bundle.
+COPY sources.list /etc/apt/sources.list
+COPY certs/ /opt/certs/
+RUN set -eux; \
+    set -- /opt/certs/*.crt; \
+    test -f "$1"; \
+    rm -f /etc/apt/sources.list.d/*; \
+    mkdir -p /etc/ssl/certs; \
+    touch /etc/ssl/certs/ca-certificates.crt; \
+    for cert in "$@"; do cat "$cert" >> /etc/ssl/certs/ca-certificates.crt; done; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates; \
+    for cert in "$@"; do cp "$cert" "/usr/local/share/ca-certificates/$(basename "$cert")"; done; \
+    update-ca-certificates; \
+    rm -rf /var/lib/apt/lists/* /opt/certs
+
+COPY --from=builder /out/agentic-server /usr/local/bin/agentic-server
+COPY --from=builder /out/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY docker/agentic-api/SOURCE_LOCK.env /usr/share/agentic-api/SOURCE_LOCK.env
+
+RUN set -eux; \
+    install -d -o 10001 -g 0 -m 0770 /var/lib/agentic-api; \
+    chmod 0755 /usr/local/bin/agentic-server /usr/local/bin/docker-entrypoint.sh
+
+LABEL org.opencontainers.image.title="Agentic API" \
+      org.opencontainers.image.version="${AGENTIC_API_VERSION}" \
+      org.opencontainers.image.revision="${AGENTIC_API_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/vllm-project/agentic-api"
+
+ENV AGENTIC_API_HOME=/var/lib/agentic-api \
+    GATEWAY_HOST=0.0.0.0 \
+    GATEWAY_PORT=9000
+
+USER 10001:0
+EXPOSE 9000
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

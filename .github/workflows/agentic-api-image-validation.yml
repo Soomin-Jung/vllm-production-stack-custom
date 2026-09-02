@@ -1,0 +1,31 @@
+name: Agentic API image and deployment validation
+
+on:
+  pull_request:
+    paths:
+      - "docker/Dockerfile.agentic-api"
+      - "docker/agentic-api/**"
+      - "deploy/agentic-api/**"
+      - ".github/workflows/agentic-api-image-validation.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "docker/Dockerfile.agentic-api"
+      - "docker/agentic-api/**"
+      - "deploy/agentic-api/**"
+      - ".github/workflows/agentic-api-image-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.0
+      - name: Validate offline build and minimal deployment contract
+        run: docker/agentic-api/scripts/validate-static.sh

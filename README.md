@@ -99,6 +99,12 @@ The downstream workflow runs:
 3. A separate render with the upstream schema temporarily excluded to exercise the customized GPU-derived CPU/memory fallback (`2 GPU → 8000m / 20Gi`).
 4. The actual offline production multi-model render was manually verified: each non-Ray Deployment is separated as its own YAML document (`---` followed by `# Source`, `apiVersion`, and `kind: Deployment`), with no separator/string concatenation. The earlier `---apiVersion` observation was limited to a synthetic fixture and is not treated as a production baseline defect.
 
+### Agentic API v0.5.0 offline deployment
+
+- [`docker/agentic-api/README_KO.md`](docker/agentic-api/README_KO.md): exact-source/Cargo-vendored closed-network image build and Kaniko inputs
+- [`deploy/agentic-api/README_KO.md`](deploy/agentic-api/README_KO.md): minimal PostgreSQL-backed Kubernetes deployment, runtime options, and release checks
+- `docker/Dockerfile.agentic-api`: Rust-only standalone gateway image; Python, vLLM, CUDA, and model weights remain in the serving stack
+
 ---
 
 ## Upstream README

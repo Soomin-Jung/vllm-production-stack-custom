@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentic-api
+  labels:
+    app.kubernetes.io/name: agentic-api
+    app.kubernetes.io/component: gateway
+data:
+  # Replace this with the actual vLLM Production Stack router Service DNS name.
+  # Agentic API removes a trailing /v1, so either form is accepted.
+  LLM_API_BASE: "http://llm-router-service.inference.svc.cluster.local:9400"
+  GATEWAY_HOST: "0.0.0.0"
+  GATEWAY_PORT: "9000"
+  POSTGRES_MAX_CONNECTIONS: "10"
+  SKIP_LLM_READY_CHECK: "false"
+  RUST_LOG: "agentic_server=info,tower_http=info"
