@@ -8,7 +8,7 @@ LOCK_DIR=${MOONCAKE_DIR}/locks
 
 for script in \
   "${MOONCAKE_DIR}/scripts/prepare-offline-inputs.sh" \
-  "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" \
+  bash "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" \
   "${MOONCAKE_DIR}/scripts/verify-source-lock.sh" \
   "${MOONCAKE_DIR}/scripts/validate-static.sh"; do
   bash -n "${script}"
@@ -30,7 +30,7 @@ version = Version()
 PY
 
 PYTHONPATH="${tmp_dir}" \
-  "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" auto "${tmp_dir}/cuda12.env" >/dev/null
+  bash "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" auto "${tmp_dir}/cuda12.env" >/dev/null
 grep -Fxq 'CUDA_APT_SUFFIX=12-9' "${tmp_dir}/cuda12.env"
 grep -Fxq 'MOONCAKE_CU13_BUILD=0' "${tmp_dir}/cuda12.env"
 grep -Fxq 'MOONCAKE_PACKAGE_NAME=mooncake-transfer-engine' "${tmp_dir}/cuda12.env"
@@ -43,13 +43,13 @@ version = Version()
 PY
 
 PYTHONPATH="${tmp_dir}" \
-  "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" 13.0 "${tmp_dir}/cuda13.env" >/dev/null
+  bash "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" 13.0 "${tmp_dir}/cuda13.env" >/dev/null
 grep -Fxq 'CUDA_APT_SUFFIX=13-0' "${tmp_dir}/cuda13.env"
 grep -Fxq 'MOONCAKE_CU13_BUILD=1' "${tmp_dir}/cuda13.env"
 grep -Fxq 'MOONCAKE_PACKAGE_NAME=mooncake-transfer-engine-cuda13' "${tmp_dir}/cuda13.env"
 
 if PYTHONPATH="${tmp_dir}" \
-  "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" 12.9 "${tmp_dir}/bad.env" >/dev/null 2>&1; then
+  bash "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" 12.9 "${tmp_dir}/bad.env" >/dev/null 2>&1; then
   echo "CUDA expected-version mismatch must fail" >&2
   exit 1
 fi
