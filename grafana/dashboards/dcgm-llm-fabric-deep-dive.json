@@ -1,0 +1,1641 @@
+{
+  "id": null,
+  "uid": "dcgm-llm-fabric-deep-dive",
+  "title": "NVIDIA DCGM — LLM Fabric & Reliability Deep Dive",
+  "description": "Better NVIDIA DCGM Dashboard를 보완하는 LLM/P-D 특화 GPU deep-dive. NVLink/PCIe fabric activity, compute pipeline, throttle, ECC/XID/health를 중심으로 구성했습니다.",
+  "tags": [
+    "nvidia",
+    "dcgm",
+    "gpu",
+    "nvlink",
+    "llm",
+    "pd-disaggregation"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "3h",
+      "6h",
+      "12h",
+      "24h",
+      "2d",
+      "7d"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "label": "Prometheus",
+        "query": "prometheus",
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        }
+      },
+      {
+        "name": "node",
+        "type": "query",
+        "label": "GPU Node",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$DS_PROMETHEUS"
+        },
+        "query": {
+          "query": "label_values(up{job=\"nvidia-dcgm-metrics\"}, instance)",
+          "refId": "node"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "gpu",
+        "type": "query",
+        "label": "GPU",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$DS_PROMETHEUS"
+        },
+        "query": {
+          "query": "label_values(DCGM_FI_DEV_GPU_UTIL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\"}, gpu)",
+          "refId": "gpu"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "1. Fabric / NVLink / PCIe",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Extended Metric Families Available",
+      "description": "NVLink/P2P/PCIe/health 분석에 필요한 advanced DCGM metric family가 실제 Prometheus에 몇 종류 존재하는지 보여줍니다. 값이 낮으면 dashboard 문제가 아니라 dcgm-exporter collector 설정을 먼저 확인하세요.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(count by (__name__) ({job=\"nvidia-dcgm-metrics\",__name__=~\"DCGM_FI_PROF_NVLINK_.*|DCGM_EXP_P2P_STATUS|DCGM_FI_PROF_PCIE_.*|DCGM_EXP_GPU_HEALTH_STATUS|DCGM_FI_DEV_NVLINK_.*\"}))",
+          "legendFormat": "families",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "NVLink Traffic Observed?",
+      "description": "선택 시간 범위에서 NVLink TX/RX가 0보다 큰 GPU 수입니다. P/D KV transfer 직전/직후 이 값이 증가하면 GPU fabric이 실제로 사용됐다는 객관적 장치 레벨 증거가 됩니다. 단, node-wide traffic이므로 특정 process attribution은 별도 상관분석이 필요합니다.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count((max_over_time(DCGM_FI_PROF_NVLINK_TX_BYTES{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range]) > 0) or (max_over_time(DCGM_FI_PROF_NVLINK_RX_BYTES{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range]) > 0))",
+          "legendFormat": "GPUs",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "NVLink Errors in Selected Range",
+      "description": "선택 범위에서 NVLink CRC/replay/recovery counter 증가량 합계입니다. 정상 P/D transfer에서는 0이 기대됩니다.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range])) + sum(increase(DCGM_FI_DEV_NVLINK_CRC_DATA_ERROR_COUNT_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range])) + sum(increase(DCGM_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range])) + sum(increase(DCGM_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range]))",
+          "legendFormat": "errors"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "PCIe Replays in Selected Range",
+      "description": "PCIe replay counter 증가량입니다. 지속 증가하면 PCIe signal integrity/링크 문제로 데이터 전송 성능이 저하될 수 있습니다.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(DCGM_FI_DEV_PCIE_REPLAY_COUNTER{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range]))",
+          "legendFormat": "replays"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "NVLink TX Throughput",
+      "description": "GPU별 NVLink 송신 대역폭입니다. P/D Mooncake nvlink_intra 요청 시 KV transfer 구간과 동시간대에 명확한 spike가 나타나는지 확인하세요. 값이 없으면 DCP NVLink profiling metric이 exporter에서 비활성일 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_PROF_NVLINK_TX_BYTES{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}} TX"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "NVLink RX Throughput",
+      "description": "GPU별 NVLink 수신 대역폭입니다. Prefill/Decode GPU pair에서 TX/RX spike가 시간적으로 대응하면 NVLink 경로 사용에 대한 강한 객관적 증거가 됩니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_PROF_NVLINK_RX_BYTES{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}} RX"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "NVLink Aggregate Bandwidth Counter",
+      "description": "dcgm-exporter 기본 metric으로 제공 가능한 NVLink aggregate bandwidth입니다. 방향 구분이 없는 보조 지표이며 TX/RX profiling metric이 없을 때 fabric activity 확인용 fallback으로 사용합니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "PCIe TX / RX Throughput",
+      "description": "GPU별 PCIe 전송량입니다. 같은 P/D workload에서 NVLink traffic과 비교하면 데이터 경로가 NVLink 중심인지 PCIe 중심인지 판단하는 보조 증거가 됩니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_PROF_PCIE_TX_BYTES{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}} TX"
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_PROF_PCIE_RX_BYTES{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}} RX"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "NVLink P2P Status",
+      "description": "dcgm-exporter의 peer-to-peer NVLink 상태 metric입니다. peer link가 실제 P2P 가능/정상 상태인지 topology 측면에서 확인합니다. Traffic 패널과 함께 봐야 '가능한 링크'와 '실제 사용된 링크'를 구분할 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_EXP_P2P_STATUS{job=\"nvidia-dcgm-metrics\",instance=~\"$node\"}",
+          "legendFormat": "{{gpu}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "NVLink Reliability Errors",
+      "description": "NVLink CRC FLIT/DATA, replay, recovery 오류의 선택 범위 증가율입니다. bandwidth가 높더라도 이 값이 증가하면 fabric 품질 문제가 있을 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval])",
+          "legendFormat": "CRC flit {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(DCGM_FI_DEV_NVLINK_CRC_DATA_ERROR_COUNT_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval])",
+          "legendFormat": "CRC data {{gpu}}"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(DCGM_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval])",
+          "legendFormat": "replay {{gpu}}"
+        },
+        {
+          "refId": "D",
+          "expr": "rate(DCGM_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval])",
+          "legendFormat": "recovery {{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "row",
+      "title": "2. Compute / Memory Pipeline",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 29
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "SM Active",
+      "description": "SM에 최소 한 warp가 배치되어 실제 실행 가능한 상태였던 cycle 비율입니다. 단순 GPU Util보다 kernel 실행 밀도를 더 직접적으로 보여줍니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * DCGM_FI_PROF_SM_ACTIVE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "SM Occupancy",
+      "description": "SM에 resident한 warp 비율입니다. SM Active는 높은데 occupancy가 낮다면 작은 kernel, register/shared-memory 제약, workload shape 등의 가능성을 봅니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * DCGM_FI_PROF_SM_OCCUPANCY{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Graphics Engine Active",
+      "description": "GPU graphics/compute engine active ratio입니다. GPU_UTIL과 함께 비교하면 driver-level busy와 profiling-level engine activity를 교차검증할 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * DCGM_FI_PROF_GR_ENGINE_ACTIVE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Tensor Core Active",
+      "description": "Tensor HMMA pipe가 실제 활성인 cycle 비율입니다. LLM GEMM 구간에서 tensor core 사용 강도를 확인하는 핵심 지표입니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * DCGM_FI_PROF_PIPE_TENSOR_ACTIVE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "DRAM Active",
+      "description": "HBM/device-memory interface가 read/write에 사용된 cycle 비율입니다. Tensor/SM activity 대비 DRAM active가 높으면 memory-bound 특성이 강할 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 46
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * DCGM_FI_PROF_DRAM_ACTIVE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "FP16 / FP32 Pipe Active",
+      "description": "Tensor Core 외 일반 FP16/FP32 pipeline activity입니다. 모델 kernel mix와 비-Tensor 연산 비중을 관찰하는 보조 지표입니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 46
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * DCGM_FI_PROF_PIPE_FP16_ACTIVE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "FP16 {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "100 * DCGM_FI_PROF_PIPE_FP32_ACTIVE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "FP32 {{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Memory Copy Utilization",
+      "description": "GPU memory copy engine 활용률입니다. KV transfer/host-device copy가 많은 구간과 compute 구간을 구분하는 데 도움이 됩니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_MEM_COPY_UTIL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Framebuffer Used / Reserved",
+      "description": "GPU framebuffer의 실제 used와 reserved 메모리를 함께 봅니다. vLLM weight/KV cache allocation과 장시간 메모리 누수/fragmentation 관찰에 유용합니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 54
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_FB_USED{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"} * 1024 * 1024",
+          "legendFormat": "used {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_DEV_FB_RESERVED{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"} * 1024 * 1024",
+          "legendFormat": "reserved {{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "row",
+      "title": "3. Power / Thermal / Clock",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "GPU Power Usage",
+      "description": "GPU별 순간 전력 사용량입니다. 동일 throughput에서 power가 높아지거나 clock이 떨어지면 thermal/power limit 여부를 아래 violation 패널과 함께 확인하세요.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 63
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_POWER_USAGE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "{{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Energy Used in Selected Range",
+      "description": "현재 선택한 dashboard 범위에서 소비한 GPU 에너지 합계(kWh)입니다. 1h/24h 고정 패널 대신 $__range를 사용하므로 최근 5분 실험도 바로 비교할 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 63
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range])) / 3.6e9",
+          "legendFormat": "kWh"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatth"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Avg Power in Selected Range",
+      "description": "현재 선택 범위의 전체 선택 GPU 평균 전력입니다. 짧은 benchmark run 사이의 전력 효율 비교에 사용합니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 63
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg(avg_over_time(DCGM_FI_DEV_POWER_USAGE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range]))",
+          "legendFormat": "W"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "GPU / HBM Temperature",
+      "description": "GPU core와 HBM/memory 온도를 함께 표시합니다. memory temperature가 먼저 한계에 접근하는 workload도 있으므로 GPU temp만 보면 놓칠 수 있습니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_GPU_TEMP{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "GPU {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_DEV_MEMORY_TEMP{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "HBM {{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "SM / Memory Clock",
+      "description": "SM clock과 memory clock입니다. load가 높은데 clock이 떨어질 경우 power/thermal/reliability violation과 함께 throttle 여부를 판단합니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_SM_CLOCK{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "SM {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_DEV_MEM_CLOCK{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "MEM {{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "hertz"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Power / Thermal Throttle Time Rate",
+      "description": "power/thermal constraint 때문에 throttle된 누적 ns counter의 초당 증가량을 초 단위로 변환합니다. 0보다 지속적으로 크면 성능 저하가 실제 throttle과 연동된 것입니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 79
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(DCGM_FI_DEV_POWER_VIOLATION{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval]) / 1e9",
+          "legendFormat": "power {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(DCGM_FI_DEV_THERMAL_VIOLATION{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval]) / 1e9",
+          "legendFormat": "thermal {{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Board / Reliability Throttle Time Rate",
+      "description": "board limit 또는 reliability constraint에 의한 throttle duration 증가율입니다. GPU utilization만으로는 보이지 않는 하드웨어 제약을 찾는 용도입니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 79
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(DCGM_FI_DEV_BOARD_LIMIT_VIOLATION{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval]) / 1e9",
+          "legendFormat": "board {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(DCGM_FI_DEV_RELIABILITY_VIOLATION{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval]) / 1e9",
+          "legendFormat": "reliability {{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 29,
+      "type": "row",
+      "title": "4. Reliability / Error Surface",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 87
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 30,
+      "type": "stat",
+      "title": "XID Errors in Selected Range",
+      "description": "선택 범위에서 exporter가 관찰한 XID error 증가량입니다. 0이 정상이며 0보다 크면 해당 시점의 XID code와 kernel/driver log를 반드시 상관분석하세요.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 88
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(DCGM_EXP_XID_ERRORS_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range]))",
+          "legendFormat": "XID"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 31,
+      "type": "stat",
+      "title": "ECC DBE in Selected Range",
+      "description": "Double-bit ECC 오류 증가량입니다. SBE와 달리 DBE는 즉시 workload 안정성과 GPU health를 의심해야 하는 강한 신호입니다.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 88
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range])) + sum(increase(DCGM_FI_DEV_ECC_DBE_AGG_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__range]))",
+          "legendFormat": "DBE"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 32,
+      "type": "stat",
+      "title": "Pending Retired Pages",
+      "description": "retirement 대기 중인 GPU memory page 수입니다. 0이 아닌 값은 장비 health 검토 대상입니다.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 88
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(DCGM_FI_DEV_RETIRED_PENDING{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"})",
+          "legendFormat": "pages",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 33,
+      "type": "stat",
+      "title": "Row Remap Failure",
+      "description": "HBM row remap failure state입니다. 0이 정상이며 0보다 크면 GPU 교체/health 진단 우선순위를 높여야 합니다.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 88
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(DCGM_FI_DEV_ROW_REMAP_FAILURE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"})",
+          "legendFormat": "state",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "ECC Error Rate",
+      "description": "SBE/DBE volatile/aggregate ECC counter의 증가율입니다. 장기 누적값이 아니라 현재 선택 시간대에서 새 오류가 발생하는지를 봅니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 93
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(DCGM_FI_DEV_ECC_SBE_VOL_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval])",
+          "legendFormat": "SBE vol {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval])",
+          "legendFormat": "DBE vol {{gpu}}"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(DCGM_FI_DEV_ECC_SBE_AGG_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval])",
+          "legendFormat": "SBE agg {{gpu}}"
+        },
+        {
+          "refId": "D",
+          "expr": "rate(DCGM_FI_DEV_ECC_DBE_AGG_TOTAL{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}[$__rate_interval])",
+          "legendFormat": "DBE agg {{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 35,
+      "type": "timeseries",
+      "title": "Retired / Remapped Memory",
+      "description": "retired page 및 corrected/uncorrectable remapped row 누적 상태입니다. 증가 추세가 있으면 HBM reliability 이슈를 의심합니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 93
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_RETIRED_SBE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "retired SBE {{gpu}}"
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_DEV_RETIRED_DBE{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "retired DBE {{gpu}}"
+        },
+        {
+          "refId": "C",
+          "expr": "DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "remap corr {{gpu}}"
+        },
+        {
+          "refId": "D",
+          "expr": "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS{job=\"nvidia-dcgm-metrics\",instance=~\"$node\",gpu=~\"$gpu\"}",
+          "legendFormat": "remap uncorr {{gpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 36,
+      "type": "table",
+      "title": "GPU Health Status",
+      "description": "dcgm-exporter가 제공하는 GPU health status 및 health label을 raw table로 보여줍니다. metric이 지원되는 exporter 버전에서 빠른 fleet triage에 사용합니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 101
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_EXP_GPU_HEALTH_STATUS{job=\"nvidia-dcgm-metrics\",instance=~\"$node\"}",
+          "legendFormat": "{{gpu}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 37,
+      "type": "table",
+      "title": "Advanced DCGM Metric Inventory",
+      "description": "현재 exporter가 실제로 노출하는 DCGM metric family 목록입니다. 패널이 No data일 때 GPU/DCGM 미지원인지 collector 미활성인지 판단하는 첫 확인 지점입니다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 101
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$DS_PROMETHEUS"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by (__name__) ({job=\"nvidia-dcgm-metrics\",__name__=~\"DCGM_.*\"})",
+          "legendFormat": "{{__name__}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "links": []
+}
