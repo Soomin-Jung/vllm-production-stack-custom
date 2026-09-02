@@ -329,3 +329,81 @@ mean_acceptance_length =
 MTP metric families are created only when speculative decoding is enabled, so
 an MTP-disabled engine intentionally reports `MTP 비활성/표본 없음` in that
 dashboard section.
+
+
+## Throughput and latency query semantics
+
+The P/D dashboard now uses two different rolling windows intentionally.
+
+### Throughput
+
+~~~promql
+increase(counter[2m]) / 120
+~~~
+
+is used for:
+
+- request throughput
+- prompt token throughput
+- generation token throughput
+
+This is a rolling two-minute average. It is more useful for short, bursty manual
+P/D tests than a zero-filled `rate()` query because:
+
+- a short burst remains visible for the next two minutes;
+- a missing counter/selector is not silently converted into zero;
+- a real flat counter still evaluates to zero.
+
+### Latency
+
+Latency panels are historical time-series again.
+
+Each point is a rolling five-minute percentile:
+
+~~~promql
+histogram_quantile(
+  <quantile>,
+  sum by (le, pd_role) (
+    increase(<latency>_bucket[5m])
+  )
+)
+~~~
+
+Every latency panel includes:
+
+~~~text
+p50
+p90
+p95
+~~~
+
+This is intentionally independent from the Grafana dashboard range.
+
+Examples:
+
+~~~text
+Dashboard = Last 5m
+  -> see the historical rolling-5m latency series during those 5 minutes
+
+Dashboard = Last 6h
+  -> see the same rolling-5m latency definition across six hours
+~~~
+
+### Time-series tooltip ordering
+
+All time-series panels use:
+
+~~~json
+"tooltip": {
+  "mode": "multi",
+  "sort": "none"
+}
+~~~
+
+and legends use Name ascending.
+
+Grafana's native time-series tooltip does not expose an explicit
+`sort-by-series-name` option; it only exposes None / value Ascending / value
+Descending. The dashboard therefore disables value sorting and keeps fixed
+query/legend names in alphabetical order so the tooltip follows stable
+name-oriented series ordering instead of being reordered by the current value.
