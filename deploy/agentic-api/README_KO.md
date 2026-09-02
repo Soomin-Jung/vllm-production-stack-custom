@@ -9,14 +9,19 @@ ServiceAccount, PDB, NetworkPolicy는 클러스터 공통 정책이나 환경별
 ```text
 클라이언트 / 인증 API Gateway
   -> Agentic API :9000
-  -> vLLM Production Stack router :9400
+  -> LMStack Router :9400
   -> vLLM serving engines
 ```
 
 Agentic API는 모델 서버가 아니라 stateful protocol gateway다. GPU, 모델 weight, Python, vLLM 런타임은 이 Pod에
-필요하지 않다. 첫 배포는 Responses API 중간 변환을 줄이기 위해 Agentic API를 vLLM router에 직접 연결하는 것을
+필요하지 않다. 첫 배포는 Responses API 중간 변환을 줄이기 위해 Agentic API를 LMStack Router에 직접 연결하는 것을
 권장한다. 다른 OpenAI-compatible proxy를 중간에 둘 경우 `/v1/responses`의 typed item, streaming event,
 tool-call ID, `previous_response_id`가 손실되지 않는지 먼저 검증한다.
+
+여러 model을 제공하는 권장 topology와 edge의 Completions/Chat/Messages/Responses path 분리, SSE/WebSocket,
+retry, LMStack Router 0.1.9, P/D Cell 계약은
+[`ROUTING_CONTRACT_KO.md`](./ROUTING_CONTRACT_KO.md)를 따른다. Agentic API의 단일 `LLM_API_BASE`는 단일
+physical backend가 아니라 multi-model LMStack Router 같은 하나의 logical upstream을 뜻한다.
 
 ## Responses API 계약
 
@@ -44,7 +49,7 @@ tool output을 typed item으로 보존할 수 있다. 또한 `response_id`, `pre
 
 1. `docker/Dockerfile.agentic-api`로 빌드해 내부 registry에 올린 immutable image digest
 2. 모든 replica가 공유하는 외부 PostgreSQL과 전용 DB/role
-3. vLLM router 또는 inference endpoint의 Service DNS와 `/health`, `/v1/responses` 도달성
+3. `/v1/responses`를 지원하는 LMStack Router 또는 inference endpoint의 Service DNS와 `/health` 도달성
 4. 내부 registry pull secret, PostgreSQL CA/client 인증서 등 클러스터별 Secret
 5. 외부 공개 시 SSE buffering을 끄고 WebSocket upgrade를 전달하는 인증 gateway/Ingress
 
@@ -139,6 +144,8 @@ OIDC를 설정하지 않으면 inbound 인증은 없다. `OPENAI_API_KEY`는 ups
 4. 두 replica에 요청이 분산된 상태에서 같은 conversation이 이어지는지 확인한다.
 5. 한 Pod를 재시작하고 후속 응답, SSE 종료, WebSocket 재연결을 확인한다.
 6. PostgreSQL backup/PITR, schema upgrade와 rollback 절차를 별도 운영 runbook으로 검증한다.
+7. edge에서 `POST /v1/responses` SSE와 `GET /v1/responses` WebSocket Upgrade가 모두 Agentic으로 route되는지 확인한다.
+8. Responses POST에 partial stream/tool execution 이후 blind retry가 적용되지 않는지 확인한다.
 
 PDB, topology spread hard constraint, NetworkPolicy, Ingress/Gateway API, HPA는 공통 플랫폼 정책에 맞춰 overlay에서
 추가한다. 최소 예시는 replica anti-affinity를 soft rule로만 제공한다.
