@@ -1,10 +1,19 @@
-ARG VLLM_BASE_IMAGE=vllm/vllm-openai:v0.26.0-cu129
+ARG VLLM_BASE_IMAGE=vllm/vllm-openai:v0.28.0
+ARG MOONCAKE_PROFILE=0.3.12.post1
+ARG TARGET_CUDA_VERSION=auto
+ARG CUDA_DEVEL_PACKAGES=auto
+ARG MOONCAKE_BUILD_JOBS=8
 
 ####
 # Stage: Base Configure
 ####
 
 FROM ${VLLM_BASE_IMAGE} AS configured-base
+
+ARG MOONCAKE_PROFILE
+ARG TARGET_CUDA_VERSION
+ARG CUDA_DEVEL_PACKAGES
+ARG MOONCAKE_BUILD_JOBS
 
 # The upstream vLLM image runs as root. Keep the internal trust and package
 # repository configuration in both the builder and final runtime image.
@@ -30,11 +39,6 @@ RUN set -eux; \
 ####
 FROM configured-base AS mooncake-builder
 
-ARG PYTHON_VERSION=3.12
-ARG MOONCAKE_BUILD_JOBS=8
-ARG MOONCAKE_CU13_BUILD=0
-ARG CUDA_DEVEL_PACKAGES="cuda-nvcc-12-9 cuda-cudart-dev-12-9 cuda-driver-dev-12-9"
-
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     CUDA_HOME=/usr/local/cuda \
@@ -44,17 +48,32 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /opt/mooncake
 
-COPY docker/mooncake/SOURCE_LOCK.env /opt/mooncake/SOURCE_LOCK.env
+COPY docker/mooncake/locks/ /opt/mooncake/locks/
 COPY docker/mooncake/requirements-build.txt /opt/mooncake/requirements-build.txt
+COPY docker/mooncake/scripts/detect-cuda-contract.sh /opt/mooncake/detect-cuda-contract.sh
 COPY docker/mooncake/scripts/verify-source-lock.sh /opt/mooncake/verify-source-lock.sh
 COPY docker/mooncake/scripts/verify-install.py /opt/mooncake/verify-install.py
 COPY docker/mooncake/vendor/ /opt/mooncake/vendor/
 
-# The base image, APT packages, and Python packages are supplied through the
-# internal registry and the repository settings copied into configured-base.
-# No GitHub or Go proxy is used during this build.
+# Select a Mooncake source profile independently from the vLLM/CUDA base.
+RUN set -eux; \
+    PROFILE_LOCK="/opt/mooncake/locks/${MOONCAKE_PROFILE}.env"; \
+    test -f "${PROFILE_LOCK}"; \
+    cp "${PROFILE_LOCK}" /opt/mooncake/SOURCE_LOCK.env; \
+    chmod 0755 /opt/mooncake/detect-cuda-contract.sh \
+               /opt/mooncake/verify-source-lock.sh; \
+    /opt/mooncake/detect-cuda-contract.sh \
+      "${TARGET_CUDA_VERSION}" \
+      /opt/mooncake/CUDA_CONTRACT.env; \
+    cat /opt/mooncake/SOURCE_LOCK.env; \
+    cat /opt/mooncake/CUDA_CONTRACT.env
+
+# The base image is the source of truth for CUDA ABI. If it is a runtime image
+# without nvcc/headers, derive matching NVIDIA APT packages from torch.version.cuda.
+# CUDA_DEVEL_PACKAGES can override this for a custom mirror.
 # hadolint ignore=DL3008
 RUN set -eux; \
+    . /opt/mooncake/CUDA_CONTRACT.env; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -79,36 +98,51 @@ RUN set -eux; \
         tar; \
     if ! command -v nvcc >/dev/null 2>&1 || \
        [ ! -f /usr/local/cuda/include/cuda_runtime.h ]; then \
-        test -n "${CUDA_DEVEL_PACKAGES}"; \
-        apt-get install -y --no-install-recommends ${CUDA_DEVEL_PACKAGES}; \
+        if [ "${CUDA_DEVEL_PACKAGES}" = "auto" ]; then \
+            RESOLVED_CUDA_DEVEL_PACKAGES="cuda-nvcc-${CUDA_APT_SUFFIX} cuda-cudart-dev-${CUDA_APT_SUFFIX} cuda-driver-dev-${CUDA_APT_SUFFIX}"; \
+        else \
+            RESOLVED_CUDA_DEVEL_PACKAGES="${CUDA_DEVEL_PACKAGES}"; \
+        fi; \
+        test -n "${RESOLVED_CUDA_DEVEL_PACKAGES}"; \
+        echo "Installing CUDA development packages: ${RESOLVED_CUDA_DEVEL_PACKAGES}"; \
+        apt-get install -y --no-install-recommends ${RESOLVED_CUDA_DEVEL_PACKAGES}; \
     fi; \
+    command -v nvcc; \
+    test -f /usr/local/cuda/include/cuda_runtime.h; \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/mooncake/vendor
-
+# Extract exactly the archive declared by the selected source profile. Multiple
+# Mooncake versions may coexist in vendor/ without making the build ambiguous.
 RUN set -eux; \
-    set -- /opt/mooncake/vendor/mooncake-offline_*.tar.gz; \
-    test "$#" -eq 1; \
-    SOURCE_TAR="$1"; \
+    . /opt/mooncake/SOURCE_LOCK.env; \
+    SOURCE_TAR="/opt/mooncake/vendor/${MOONCAKE_SOURCE_ARCHIVE}"; \
+    CHECKSUM_FILE="${SOURCE_TAR}.sha256"; \
     test -f "${SOURCE_TAR}"; \
-    if [ -f /opt/mooncake/vendor/SHA256SUMS ]; then \
-        sha256sum --check SHA256SUMS; \
+    if [ -f "${CHECKSUM_FILE}" ]; then \
+        cd /opt/mooncake/vendor; \
+        sha256sum --check "$(basename "${CHECKSUM_FILE}")"; \
+    elif [ -f /opt/mooncake/vendor/SHA256SUMS ]; then \
+        cd /opt/mooncake/vendor; \
+        grep -F "  ${MOONCAKE_SOURCE_ARCHIVE}" SHA256SUMS | sha256sum --check -; \
+    else \
+        echo "No checksum file found for ${MOONCAKE_SOURCE_ARCHIVE}" >&2; \
+        exit 1; \
     fi; \
     tar -xzf "${SOURCE_TAR}" -C /opt/mooncake; \
     test -f /opt/mooncake/Mooncake/CMakeLists.txt; \
-    /opt/mooncake/verify-source-lock.sh /opt/mooncake/Mooncake; \
-    command -v "python${PYTHON_VERSION}"; \
-    command -v nvcc; \
-    "python${PYTHON_VERSION}" -c \
+    MOONCAKE_LOCK_FILE=/opt/mooncake/SOURCE_LOCK.env \
+      /opt/mooncake/verify-source-lock.sh /opt/mooncake/Mooncake; \
+    command -v python3; \
+    python3 -c \
       'import os, sysconfig; header=os.path.join(sysconfig.get_paths()["include"], "Python.h"); assert os.path.isfile(header), header'; \
-    "python${PYTHON_VERSION}" -m pip install \
+    python3 -m pip install \
       --no-cache-dir \
       --requirement /opt/mooncake/requirements-build.txt
 
 WORKDIR /opt/mooncake
 
 # yalantinglibs is a pinned Mooncake submodule, but Mooncake resolves it as an
-# installed CMake package. Build it locally before configuring Mooncake.
+# installed CMake package. Build the version carried by the selected profile.
 RUN set -eux; \
     cmake \
       -S /opt/mooncake/Mooncake/extern/yalantinglibs \
@@ -151,7 +185,7 @@ RUN set -eux; \
       -DUSE_REDIS=OFF \
       -DUSE_TENT=OFF \
       -DWITH_METRICS=ON \
-      -DPython3_EXECUTABLE="$(command -v python${PYTHON_VERSION})"; \
+      -DPython3_EXECUTABLE="$(command -v python3)"; \
     cmake --build /opt/mooncake/Mooncake/build \
       --parallel "${MOONCAKE_BUILD_JOBS}"; \
     grep -Fx 'USE_CUDA:BOOL=ON' /opt/mooncake/Mooncake/build/CMakeCache.txt; \
@@ -160,13 +194,18 @@ RUN set -eux; \
     grep -Fx 'WITH_STORE:BOOL=OFF' /opt/mooncake/Mooncake/build/CMakeCache.txt; \
     mkdir -p /opt/mooncake/build-info; \
     cp /opt/mooncake/SOURCE_LOCK.env /opt/mooncake/build-info/SOURCE_LOCK.env; \
+    cp /opt/mooncake/CUDA_CONTRACT.env /opt/mooncake/build-info/CUDA_CONTRACT.env; \
     grep -E '^(USE_CUDA|USE_MNNVL|USE_INTRA_NVLINK|WITH_STORE|WITH_STORE_RUST|USE_ETCD):' \
       /opt/mooncake/Mooncake/build/CMakeCache.txt \
       > /opt/mooncake/build-info/CMAKE_FEATURES.txt
 
 WORKDIR /opt/mooncake/Mooncake
 
+# Mooncake uses a separate package name for CUDA 13. Derive CU13_BUILD from the
+# actual CUDA ABI of the selected vLLM base instead of requiring another arg.
 RUN set -eux; \
+    . /opt/mooncake/CUDA_CONTRACT.env; \
+    PYTHON_VERSION="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"; \
     PYTHON_VERSION="${PYTHON_VERSION}" \
     OUTPUT_DIR=/opt/mooncake/dist \
     BUILD_DIR=build \
@@ -183,6 +222,9 @@ RUN set -eux; \
 ####
 FROM configured-base AS runtime
 
+ARG VLLM_BASE_IMAGE
+ARG MOONCAKE_PROFILE
+
 # Preserve the upstream vLLM image execution user and entrypoint contract.
 # hadolint ignore=DL3002,DL3066
 USER root
@@ -194,21 +236,26 @@ COPY --from=mooncake-builder /opt/mooncake/build-info/ /opt/mooncake-build-info/
 COPY docker/mooncake/scripts/verify-install.py /usr/local/bin/verify-mooncake-install
 
 RUN set -eux; \
+    . /opt/mooncake-build-info/SOURCE_LOCK.env; \
     python3 -m pip uninstall -y \
       mooncake-transfer-engine \
       mooncake-transfer-engine-cuda13 || true; \
+    if [ -n "${MOONCAKE_RUNTIME_DEPS:-}" ]; then \
+        python3 -m pip install \
+          --no-cache-dir \
+          ${MOONCAKE_RUNTIME_DEPS}; \
+    fi; \
     python3 -m pip install \
       --no-index \
       --no-deps \
       --no-cache-dir \
       --force-reinstall \
       /tmp/mooncake-dist/*.whl; \
-    python3 -c 'import aiohttp, requests'; \
     chmod 0755 /usr/local/bin/verify-mooncake-install; \
     python3 /usr/local/bin/verify-mooncake-install; \
     rm -rf /tmp/mooncake-dist
 
-LABEL ai.mooncake.version="0.3.10.post2" \
-      ai.mooncake.source.commit="e1d6d6f6f49fbbd77b7ee6e5d0c77349f341b3e3" \
+LABEL ai.mooncake.profile="${MOONCAKE_PROFILE}" \
       ai.mooncake.transport.nvlink="true" \
-      ai.mooncake.transport.nvlink_intra="true"
+      ai.mooncake.transport.nvlink_intra="true" \
+      ai.vllm.base-image="${VLLM_BASE_IMAGE}"
