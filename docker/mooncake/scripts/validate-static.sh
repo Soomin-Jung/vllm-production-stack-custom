@@ -8,7 +8,7 @@ LOCK_DIR=${MOONCAKE_DIR}/locks
 
 for script in \
   "${MOONCAKE_DIR}/scripts/prepare-offline-inputs.sh" \
-  bash "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" \
+  "${MOONCAKE_DIR}/scripts/detect-cuda-contract.sh" \
   "${MOONCAKE_DIR}/scripts/verify-source-lock.sh" \
   "${MOONCAKE_DIR}/scripts/validate-static.sh"; do
   bash -n "${script}"
