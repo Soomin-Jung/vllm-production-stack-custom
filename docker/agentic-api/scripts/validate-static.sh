@@ -18,7 +18,7 @@ for script in "$SCRIPT_DIR"/*.sh; do
 done
 
 # SOURCE_LOCK.env is generated and resolved from the repository root at runtime.
-# shellcheck disable=SC1091
+# shellcheck disable=SC1090,SC1091
 source "$LOCK_FILE"
 
 test "$AGENTIC_API_VERSION" = "0.5.0" || fail "Agentic API version is not pinned to 0.5.0"

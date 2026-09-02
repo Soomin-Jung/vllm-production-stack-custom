@@ -40,7 +40,7 @@ FROM ${AGENTIC_API_RUNTIME_IMAGE} AS runtime
 ARG AGENTIC_API_VERSION=0.5.0
 ARG AGENTIC_API_COMMIT=032935de73d92f116ac108f24cd63d6a158aad94
 
-USER root
+USER 0
 
 # sources.list and certs/ are operator-supplied build-context inputs. Bootstrap
 # the CA bundle before apt so an HTTPS package mirror signed by the private CA
