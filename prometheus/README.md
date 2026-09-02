@@ -229,3 +229,103 @@ grafana/dashboards/dcgm-llm-fabric-deep-dive.json
 Every new panel includes a Korean Grafana panel description. Grafana renders the
 description through the panel information tooltip so the dashboard itself
 documents how to interpret the metric.
+
+
+## Why short ranges previously showed No data
+
+The first dashboard revision used `$__rate_interval`, but the supplied
+Prometheus configuration did not declare `scrape_interval`.
+
+Prometheus defaults to:
+
+~~~text
+scrape_interval = 1m
+~~~
+
+while Grafana Prometheus data sources commonly default to a 15s scrape interval.
+Grafana calculates:
+
+~~~text
+$__rate_interval = max($__interval + scrape_interval, 4 * scrape_interval)
+~~~
+
+using the **Grafana data-source / query Min step value**, not by reading the
+actual Prometheus server configuration.
+
+That mismatch explains the observed pattern:
+
+~~~text
+Gauge panels
+  -> work at Last 5m
+
+rate()/histogram panels
+  -> No data at Last 5m
+  -> begin working only after dashboard range is expanded
+~~~
+
+PR #7 now makes the serving scrape contract explicit:
+
+~~~yaml
+scrape_interval: 15s
+scrape_timeout: 10s
+~~~
+
+for standalone vLLM, P/D engines, P/D router and LiteLLM.
+
+The P/D dashboard also sets a 15s Prometheus query Min step and uses two query
+styles:
+
+~~~text
+continuous rate panels
+  -> rate(...[$__rate_interval])
+
+benchmark-range latency/token percentiles
+  -> increase(histogram_bucket[$__range])
+     + instant histogram_quantile(...)
+~~~
+
+The second form is intentionally used for TTFT/ITL/TPOT/E2E/queue/phase/token
+percentiles so **Last 5m means "calculate the percentile from requests observed
+in these 5 minutes"**, instead of depending on a rolling rate window.
+
+If there are genuinely zero request samples in the selected range, these stat
+panels render a Korean `최근 요청 없음` / `최근 Decode 표본 없음` message rather
+than being interpreted as a broken dashboard.
+
+### vLLM 0.26.0 metric audit
+
+The P/D dashboard was re-audited against
+`vllm-project/vllm v0.26.0` source.
+
+The following speculative-decoding counters are valid:
+
+~~~text
+vllm:spec_decode_num_drafts_total
+vllm:spec_decode_num_draft_tokens_total
+vllm:spec_decode_num_accepted_tokens_total
+vllm:spec_decode_num_accepted_tokens_per_pos_total
+~~~
+
+The earlier draft referenced metrics not present in v0.26.0:
+
+~~~text
+vllm:spec_decode_num_emitted_tokens_total
+vllm:spec_decode_efficiency
+vllm:spec_decode_draft_acceptance_rate
+~~~
+
+Those references were removed.
+
+The dashboard now computes the documented metrics directly:
+
+~~~promql
+acceptance_rate =
+  accepted_tokens / draft_tokens
+
+mean_acceptance_length =
+  1 + accepted_tokens / num_drafts
+~~~
+
+MTP metric families are created only when speculative decoding is enabled, so
+an MTP-disabled engine intentionally reports `MTP 비활성/표본 없음` in that
+dashboard section.
