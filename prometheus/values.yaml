@@ -70,6 +70,8 @@ serverFiles:
       # targets, but explicitly exclude the P/D Cell's pd-router container:
       # pd-router also serves its API on :8000 and exposes Prometheus on :29000.
       - job_name: "kubernetes-vllm-instances"
+        scrape_interval: 15s
+        scrape_timeout: 10s
         metrics_path: /metrics
         kubernetes_sd_configs:
           - role: pod
@@ -121,6 +123,8 @@ serverFiles:
       # Pod discovery therefore keeps working when prefill/decode counts or
       # base ports change.
       - job_name: "kubernetes-vllm-pd-engines"
+        scrape_interval: 15s
+        scrape_timeout: 10s
         metrics_path: /metrics
         kubernetes_sd_configs:
           - role: pod
@@ -187,6 +191,8 @@ serverFiles:
       #   metrics port name: router-metrics
       #   metrics port: 29000 by default
       - job_name: "kubernetes-vllm-pd-router"
+        scrape_interval: 15s
+        scrape_timeout: 10s
         metrics_path: /metrics
         kubernetes_sd_configs:
           - role: pod
@@ -235,6 +241,8 @@ serverFiles:
       # Preserve the existing rule that inference Pods exposing :4000 are
       # LiteLLM targets.
       - job_name: "kubernetes-litellm-proxy-instances"
+        scrape_interval: 15s
+        scrape_timeout: 10s
         metrics_path: /metrics
         kubernetes_sd_configs:
           - role: pod
