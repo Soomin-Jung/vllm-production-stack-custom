@@ -9,7 +9,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "time": {
     "from": "now-1h",
@@ -29,6 +29,28 @@
         }
       },
       {
+        "name": "namespace",
+        "type": "query",
+        "label": "Namespace",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$DS_PROMETHEUS"
+        },
+        "query": {
+          "query": "label_values(up{job=~\"kubernetes-vllm-instances|kubernetes-vllm-pd-engines|kubernetes-vllm-pd-router|kubernetes-litellm-proxy-instances\"}, namespace)",
+          "refId": "PrometheusVariableQueryEditor-Namespace"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
         "name": "model",
         "type": "query",
         "label": "Model",
@@ -37,7 +59,7 @@
           "uid": "$DS_PROMETHEUS"
         },
         "query": {
-          "query": "label_values(vllm:num_requests_running{job=\"kubernetes-vllm-pd-engines\"}, model_name)",
+          "query": "label_values(vllm:num_requests_running{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\"}, model_name)",
           "refId": "PrometheusVariableQueryEditor-Model"
         },
         "includeAll": true,
@@ -59,7 +81,7 @@
           "uid": "$DS_PROMETHEUS"
         },
         "query": {
-          "query": "label_values(up{job=\"kubernetes-vllm-pd-engines\"}, pd_engine)",
+          "query": "label_values(up{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\"}, pd_engine)",
           "refId": "PrometheusVariableQueryEditor-Engine"
         },
         "includeAll": true,
@@ -92,7 +114,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(up{job=\"kubernetes-vllm-pd-engines\"})",
+          "expr": "sum(up{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\"})",
           "legendFormat": "targets"
         }
       ],
@@ -125,7 +147,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(up{job=\"kubernetes-vllm-pd-router\"})",
+          "expr": "sum(up{job=\"kubernetes-vllm-pd-router\",namespace=~\"$namespace\"})",
           "legendFormat": "routers"
         }
       ],
@@ -158,7 +180,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (pd_engine) (vllm:num_requests_running{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
+          "expr": "sum by (pd_engine) (vllm:num_requests_running{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
           "legendFormat": "{{pd_engine}}"
         }
       ]
@@ -180,7 +202,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (pd_engine) (vllm:num_requests_waiting{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
+          "expr": "sum by (pd_engine) (vllm:num_requests_waiting{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
           "legendFormat": "{{pd_engine}}"
         }
       ]
@@ -210,7 +232,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * avg by (pd_engine) (vllm:kv_cache_usage_perc{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
+          "expr": "100 * avg by (pd_engine) (vllm:kv_cache_usage_perc{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"})",
           "legendFormat": "{{pd_engine}}"
         }
       ]
@@ -232,12 +254,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (pd_engine) (rate(vllm:prompt_tokens_total{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "expr": "sum by (pd_engine) (rate(vllm:prompt_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
           "legendFormat": "prompt {{pd_engine}}"
         },
         {
           "refId": "B",
-          "expr": "sum by (pd_engine) (rate(vllm:generation_tokens_total{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
+          "expr": "sum by (pd_engine) (rate(vllm:generation_tokens_total{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))",
           "legendFormat": "generation {{pd_engine}}"
         }
       ]
@@ -265,7 +287,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:time_to_first_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:time_to_first_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
           "legendFormat": "{{pd_engine}}"
         }
       ]
@@ -293,7 +315,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:inter_token_latency_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))) or histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:time_per_output_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:inter_token_latency_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval]))) or histogram_quantile(0.95, sum by (le, pd_engine) (rate(vllm:time_per_output_token_seconds_bucket{job=\"kubernetes-vllm-pd-engines\",namespace=~\"$namespace\",model_name=~\"$model\",pd_engine=~\"$pd_engine\"}[$__rate_interval])))",
           "legendFormat": "{{pd_engine}}"
         }
       ]
