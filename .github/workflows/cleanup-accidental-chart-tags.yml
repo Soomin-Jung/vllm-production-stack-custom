@@ -1,0 +1,36 @@
+name: Cleanup accidental chart tags
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/cleanup-accidental-chart-tags.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-tags:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete accidental downstream chart tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tag in \
+            vllm-stack-0.1.9 \
+            vllm-stack-0.1.10 \
+            vllm-stack-0.1.11; do
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+              echo "Deleting ${tag}"
+              git push origin ":refs/tags/${tag}"
+            else
+              echo "${tag} already absent"
+            fi
+          done
