@@ -1,5 +1,5 @@
 ARG DOCKER_REGISTRY=docker.io
-ARG AGENTIC_API_BUILDER_IMAGE=library/rust:1.96.0-bookworm
+ARG AGENTIC_API_BUILDER_IMAGE=library/rust:1.98.0-bookworm
 ARG AGENTIC_API_RUNTIME_IMAGE=library/debian:bookworm-slim
 
 FROM ${DOCKER_REGISTRY}/${AGENTIC_API_BUILDER_IMAGE} AS builder

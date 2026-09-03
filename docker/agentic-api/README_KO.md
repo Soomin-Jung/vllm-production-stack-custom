@@ -28,6 +28,8 @@ docker/agentic-api/
 - `certs/`: 내부 Cargo/APT endpoint용 CA
 - `sources.list`: Debian bookworm 내부 APT mirror
 
+Agentic API source의 `rust-toolchain.toml`은 Rust `1.98.0`을 지정하므로 builder image에도 같은 toolchain이 설치되어 있어야 한다. 내부 Cargo proxy는 crate 의존성만 제공하며 rustup toolchain 배포 파일은 제공하지 않는다.
+
 source는 연결 가능한 구간에서 간단히 준비할 수 있다.
 
 ```bash
@@ -47,7 +49,7 @@ cp docker/agentic-api/cargo-config.toml.example \
 docker build \
   --file docker/Dockerfile.agentic-api \
   --build-arg DOCKER_REGISTRY=registry.example.invalid \
-  --build-arg AGENTIC_API_BUILDER_IMAGE=base/rust:1.96.0-bookworm \
+  --build-arg AGENTIC_API_BUILDER_IMAGE=base/rust:1.98.0-bookworm \
   --build-arg AGENTIC_API_RUNTIME_IMAGE=base/debian:bookworm-slim \
   --build-arg CARGO_BUILD_JOBS=8 \
   --tag registry.example.invalid/llm/agentic-api:0.5.0 \
