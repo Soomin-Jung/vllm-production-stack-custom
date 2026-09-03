@@ -126,12 +126,16 @@ cd docker/vllm-router
 
 docker build \
   -f Dockerfile.rust-proxy \
-  --build-arg RUST_BUILDER_IMAGE=<internal-registry>/rustlang/rust:<pinned-bullseye-tag-or-digest> \
-  --build-arg RUNTIME_IMAGE=<internal-registry>/python:3.12-slim-bullseye \
+  --build-arg DOCKER_REGISTRY=<internal-registry> \
+  --build-arg RUST_BUILDER_IMAGE=rustlang/rust:nightly-bullseye \
+  --build-arg RUNTIME_IMAGE=python:3.12-slim-bullseye \
   --build-arg VLLM_ROUTER_VERSION=0.1.15 \
   -t <internal-registry>/vllm/vllm-router:v0.1.15 \
   .
 ```
+
+Set `DOCKER_REGISTRY` to the registry host only. Keep each image argument as
+the repository and tag below that registry. The default registry is `docker.io`.
 
 `Dockerfile.rust-proxy` deliberately keeps the upstream v0.1.15 build/runtime
 family while removing unnecessary external access:

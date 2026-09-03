@@ -1,3 +1,5 @@
+ARG DOCKER_REGISTRY=docker.io
+
 # Closed-network image for the Cell-local vLLM Router.
 #
 # Keep this file on baseline Dockerfile syntax only. In particular, do not add a
@@ -7,8 +9,8 @@
 # This image intentionally installs the official vllm-router release wheel from
 # a pre-populated local wheelhouse. No network access is required during the
 # image build after BASE_IMAGE is available from the internal registry.
-ARG BASE_IMAGE=python:3.12-slim-bookworm
-FROM ${BASE_IMAGE}
+ARG BASE_IMAGE=library/python:3.12-slim-bookworm
+FROM ${DOCKER_REGISTRY}/${BASE_IMAGE}
 
 ARG VLLM_ROUTER_VERSION=0.1.15
 

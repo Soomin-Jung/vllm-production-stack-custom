@@ -1,3 +1,5 @@
+ARG DOCKER_REGISTRY=docker.io
+
 # Closed-network convenience image for environments with an internal PyPI proxy.
 # Keep baseline Dockerfile syntax only so BuildKit does not need to resolve an
 # external Dockerfile frontend image.
@@ -8,8 +10,8 @@
 #
 # No Rust/Cargo toolchain is required. --only-binary=:all: deliberately prevents
 # an accidental source build when the release wheel is unavailable in the proxy.
-ARG BASE_IMAGE=python:3.12-slim-bookworm
-FROM ${BASE_IMAGE}
+ARG BASE_IMAGE=library/python:3.12-slim-bookworm
+FROM ${DOCKER_REGISTRY}/${BASE_IMAGE}
 
 ARG VLLM_ROUTER_VERSION=0.1.15
 

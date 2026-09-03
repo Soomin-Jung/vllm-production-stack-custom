@@ -157,12 +157,16 @@ cd docker/vllm-router
 
 docker build \
   -f Dockerfile.rust-proxy \
-  --build-arg RUST_BUILDER_IMAGE=<internal-registry>/rustlang/rust:<pinned-bullseye-tag-or-digest> \
-  --build-arg RUNTIME_IMAGE=<internal-registry>/python:3.12-slim-bullseye \
+  --build-arg DOCKER_REGISTRY=<internal-registry> \
+  --build-arg RUST_BUILDER_IMAGE=rustlang/rust:nightly-bullseye \
+  --build-arg RUNTIME_IMAGE=python:3.12-slim-bullseye \
   --build-arg VLLM_ROUTER_VERSION=0.1.15 \
   -t <internal-registry>/vllm/vllm-router:v0.1.15 \
   .
 ```
+
+`DOCKER_REGISTRY`에는 registry host만 넣고 image 인자에는 그 아래 repository/tag만 넣는다.
+인자를 생략하면 `docker.io`를 사용한다.
 
 `Dockerfile.rust-proxy`는 다음을 보장한다.
 

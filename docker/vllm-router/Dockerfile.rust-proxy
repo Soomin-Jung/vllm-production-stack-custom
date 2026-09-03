@@ -1,3 +1,5 @@
+ARG DOCKER_REGISTRY=docker.io
+
 # Production-oriented source build for the Cell-local vLLM Router.
 #
 # This keeps the upstream v0.1.15 execution model: build and run the standalone
@@ -25,9 +27,9 @@
 # because that overrides the default with an empty string.
 
 ARG RUST_BUILDER_IMAGE=rustlang/rust:nightly-bullseye
-ARG RUNTIME_IMAGE=python:3.12-slim-bullseye
+ARG RUNTIME_IMAGE=library/python:3.12-slim-bullseye
 
-FROM ${RUST_BUILDER_IMAGE} AS rust-builder
+FROM ${DOCKER_REGISTRY}/${RUST_BUILDER_IMAGE} AS rust-builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -79,7 +81,7 @@ RUN set -eux; \
 # python:3.12-slim-bullseye as its tested runtime. It can be reduced to a pinned
 # Debian Bullseye runtime after `ldd`/runtime certification confirms all shared
 # libraries are present.
-FROM ${RUNTIME_IMAGE} AS runtime
+FROM ${DOCKER_REGISTRY}/${RUNTIME_IMAGE} AS runtime
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

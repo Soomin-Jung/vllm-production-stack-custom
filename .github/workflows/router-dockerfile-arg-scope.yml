@@ -57,7 +57,7 @@ jobs:
                   + ', '.join(missing)
               )
 
-          required = {'RUST_BUILDER_IMAGE', 'RUNTIME_IMAGE'}
+          required = {'DOCKER_REGISTRY', 'RUST_BUILDER_IMAGE', 'RUNTIME_IMAGE'}
           missing_required = sorted(required - declared.keys())
           if missing_required:
               raise SystemExit(
