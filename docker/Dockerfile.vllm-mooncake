@@ -72,7 +72,7 @@ RUN set -eux; \
 # The base image is the source of truth for CUDA ABI. If it is a runtime image
 # without nvcc/headers, derive matching NVIDIA APT packages from torch.version.cuda.
 # CUDA_DEVEL_PACKAGES can override this for a custom mirror.
-# hadolint ignore=DL3008
+# hadolint ignore=DL3008,SC2086
 RUN set -eux; \
     . /opt/mooncake/CUDA_CONTRACT.env; \
     apt-get update; \
@@ -237,6 +237,7 @@ COPY --from=mooncake-builder /opt/mooncake/dist/ /tmp/mooncake-dist/
 COPY --from=mooncake-builder /opt/mooncake/build-info/ /opt/mooncake-build-info/
 COPY docker/mooncake/scripts/verify-install.py /usr/local/bin/verify-mooncake-install
 
+# hadolint ignore=SC2086
 RUN set -eux; \
     . /opt/mooncake-build-info/SOURCE_LOCK.env; \
     python3 -m pip uninstall -y \
