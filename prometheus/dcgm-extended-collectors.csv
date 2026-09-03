@@ -1,0 +1,82 @@
+# Extended DCGM collector reference for LLM/P-D observability.
+# IMPORTANT: dcgm-exporter customMetrics is a COMPLETE replacement, not additive.
+# Validate support on the target GPU/DCGM version before rollout.
+#
+# Format:
+# DCGM FIELD, Prometheus metric type, help message
+
+# Clocks
+DCGM_FI_DEV_SM_CLOCK, gauge, SM clock frequency in MHz.
+DCGM_FI_DEV_MEM_CLOCK, gauge, Memory clock frequency in MHz.
+
+# Temperature
+DCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature in C.
+DCGM_FI_DEV_MEMORY_TEMP, gauge, HBM or device memory temperature in C.
+
+# Power and energy
+DCGM_FI_DEV_POWER_USAGE, gauge, GPU power draw in W.
+DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION, counter, Total GPU energy consumed since driver load in mJ.
+
+# Framebuffer memory
+DCGM_FI_DEV_FB_FREE, gauge, Framebuffer memory free in MiB.
+DCGM_FI_DEV_FB_USED, gauge, Framebuffer memory used in MiB.
+DCGM_FI_DEV_FB_RESERVED, gauge, Framebuffer memory reserved in MiB.
+
+# General utilization
+DCGM_FI_DEV_GPU_UTIL, gauge, GPU utilization in percent.
+DCGM_FI_DEV_MEM_COPY_UTIL, gauge, Memory copy utilization in percent.
+
+# Datacenter profiling / compute efficiency
+DCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, Ratio of time the graphics engine is active.
+DCGM_FI_PROF_SM_ACTIVE, gauge, Ratio of cycles an SM has at least one warp assigned.
+DCGM_FI_PROF_SM_OCCUPANCY, gauge, Ratio of resident warps on SMs.
+DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles Tensor HMMA pipe is active.
+DCGM_FI_PROF_DRAM_ACTIVE, gauge, Ratio of cycles device memory interface is active.
+DCGM_FI_PROF_PIPE_FP16_ACTIVE, gauge, Ratio of cycles FP16 pipe is active.
+DCGM_FI_PROF_PIPE_FP32_ACTIVE, gauge, Ratio of cycles FP32 pipe is active.
+
+# PCIe
+DCGM_FI_PROF_PCIE_TX_BYTES, gauge, PCIe transmit rate in bytes per second.
+DCGM_FI_PROF_PCIE_RX_BYTES, gauge, PCIe receive rate in bytes per second.
+DCGM_FI_DEV_PCIE_REPLAY_COUNTER, counter, Total PCIe replay count.
+
+# NVLink traffic / topology
+DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, gauge, Aggregate NVLink bandwidth counter across active lanes.
+DCGM_FI_PROF_NVLINK_TX_BYTES, gauge, NVLink transmit rate in bytes per second.
+DCGM_FI_PROF_NVLINK_RX_BYTES, gauge, NVLink receive rate in bytes per second.
+DCGM_EXP_P2P_STATUS, gauge, Current NVLink P2P status per peer link.
+
+# NVLink reliability
+DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL, counter, Total NVLink flow-control CRC errors.
+DCGM_FI_DEV_NVLINK_CRC_DATA_ERROR_COUNT_TOTAL, counter, Total NVLink data CRC errors.
+DCGM_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_TOTAL, counter, Total NVLink replay retries.
+DCGM_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_TOTAL, counter, Total NVLink recovery errors.
+
+# GPU errors / health
+DCGM_FI_DEV_XID_ERRORS, gauge, Last XID error observed.
+DCGM_EXP_XID_ERRORS_TOTAL, counter, Total XID errors observed by exporter.
+DCGM_EXP_GPU_HEALTH_STATUS, gauge, Current DCGM-reported GPU health status.
+
+# ECC
+DCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Volatile single-bit ECC errors.
+DCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Volatile double-bit ECC errors.
+DCGM_FI_DEV_ECC_SBE_AGG_TOTAL, counter, Aggregate single-bit ECC errors.
+DCGM_FI_DEV_ECC_DBE_AGG_TOTAL, counter, Aggregate double-bit ECC errors.
+
+# Retired / remapped memory rows
+DCGM_FI_DEV_RETIRED_SBE, counter, Pages retired due to single-bit ECC errors.
+DCGM_FI_DEV_RETIRED_DBE, counter, Pages retired due to double-bit ECC errors.
+DCGM_FI_DEV_RETIRED_PENDING, counter, Pages pending retirement.
+DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS, counter, Correctable remapped rows.
+DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Uncorrectable remapped rows.
+DCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Row-remap failure state.
+
+# Throttling / clock violation durations
+DCGM_FI_DEV_POWER_VIOLATION, counter, Time throttled by power constraints in ns.
+DCGM_FI_DEV_THERMAL_VIOLATION, counter, Time throttled by thermal constraints in ns.
+DCGM_FI_DEV_SYNC_BOOST_VIOLATION, counter, Time throttled by sync-boost constraints in ns.
+DCGM_FI_DEV_BOARD_LIMIT_VIOLATION, counter, Time throttled by board-limit constraints in ns.
+DCGM_FI_DEV_RELIABILITY_VIOLATION, counter, Time throttled by reliability constraints in ns.
+
+# Static labels
+DCGM_FI_DRIVER_VERSION, label, Driver version.

@@ -1,0 +1,277 @@
+serverFiles:
+  alerting_rules.yml: {}
+  alerts: {}
+  recording_rules.yml: {}
+  rules: {}
+
+  prometheus.yml:
+    rule_files:
+      - /etc/config/recording_rules.yml
+      - /etc/config/alerting_rules.yml
+
+    scrape_configs:
+      # NVIDIA DCGM Exporter.
+      #
+      # Preserve the existing operational behavior:
+      # - discover only kube-system
+      # - keep dcgm-exporter Pods
+      # - scrape the Pod IP on :9200
+      # - expose node as both node and instance
+      # - rewrite the gpu label as <node>:<gpu-index>
+      - job_name: "nvidia-dcgm-metrics"
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - kube-system
+
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_pod_label_app_kubernetes_io_name
+            regex: "dcgm-exporter"
+            action: keep
+
+          - source_labels:
+              - __meta_kubernetes_pod_ip
+            regex: "(.+)"
+            target_label: __address__
+            replacement: "$1:9200"
+            action: replace
+
+          - source_labels:
+              - __meta_kubernetes_pod_node_name
+            target_label: node
+
+          - source_labels:
+              - __meta_kubernetes_pod_node_name
+            target_label: instance
+
+          - source_labels:
+              - __meta_kubernetes_namespace
+            target_label: namespace
+
+          - source_labels:
+              - __meta_kubernetes_pod_name
+            target_label: pod
+
+        metric_relabel_configs:
+          - source_labels:
+              - instance
+              - gpu
+            separator: ";"
+            regex: "^([^;]+);([^;]+)$"
+            target_label: gpu
+            replacement: "${1}:${2}"
+            action: replace
+
+      # Legacy / standalone vLLM discovery.
+      #
+      # Keep the existing rule that inference Pods exposing :8000 are vLLM
+      # targets, but explicitly exclude the P/D Cell's pd-router container:
+      # pd-router also serves its API on :8000 and exposes Prometheus on :29000.
+      - job_name: "kubernetes-vllm-instances"
+        scrape_interval: 15s
+        scrape_timeout: 10s
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - inference
+                - test
+
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_pod_container_port_number
+            regex: "8000"
+            action: keep
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_name
+            regex: "pd-router"
+            action: drop
+
+          - source_labels:
+              - __address__
+            regex: "([^:]+):8000"
+            target_label: instance
+            replacement: "$1"
+            action: replace
+
+          - source_labels:
+              - __meta_kubernetes_namespace
+            target_label: namespace
+
+          - source_labels:
+              - __meta_kubernetes_pod_name
+            target_label: pod
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_name
+            target_label: container
+
+          - source_labels:
+              - __meta_kubernetes_pod_label_model
+            target_label: model
+
+      # P/D Cell vLLM engines.
+      #
+      # Do not hard-code 8101/8201 here. The chart names the engine ports:
+      #   Prefill -> pf-<index>-http
+      #   Decode  -> dc-<index>-http
+      #
+      # Pod discovery therefore keeps working when prefill/decode counts or
+      # base ports change.
+      - job_name: "kubernetes-vllm-pd-engines"
+        scrape_interval: 15s
+        scrape_timeout: 10s
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - inference
+                - test
+
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_pod_label_pd_cell
+            regex: "true"
+            action: keep
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_name
+            regex: "(prefill|decode)-.*"
+            action: keep
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_port_name
+            regex: "(pf|dc)-.*-http"
+            action: keep
+
+          - source_labels:
+              - __meta_kubernetes_namespace
+            target_label: namespace
+
+          - source_labels:
+              - __meta_kubernetes_pod_name
+            target_label: pod
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_name
+            target_label: container
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_name
+            regex: "(prefill|decode)-.*"
+            target_label: pd_role
+            replacement: "$1"
+            action: replace
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_name
+            target_label: pd_engine
+
+          - source_labels:
+              - __meta_kubernetes_pod_label_model
+            target_label: model
+
+          - source_labels:
+              - __address__
+            regex: "([^:]+):[0-9]+"
+            target_label: instance
+            replacement: "$1"
+            action: replace
+
+      # Cell-local vllm-router metrics.
+      #
+      # PR #4 renders:
+      #   container: pd-router
+      #   API port: 8000
+      #   metrics port name: router-metrics
+      #   metrics port: 29000 by default
+      - job_name: "kubernetes-vllm-pd-router"
+        scrape_interval: 15s
+        scrape_timeout: 10s
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - inference
+                - test
+
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_pod_label_pd_cell
+            regex: "true"
+            action: keep
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_name
+            regex: "pd-router"
+            action: keep
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_port_name
+            regex: "router-metrics"
+            action: keep
+
+          - source_labels:
+              - __meta_kubernetes_namespace
+            target_label: namespace
+
+          - source_labels:
+              - __meta_kubernetes_pod_name
+            target_label: pod
+
+          - source_labels:
+              - __meta_kubernetes_pod_label_model
+            target_label: model
+
+          - source_labels:
+              - __address__
+            regex: "([^:]+):[0-9]+"
+            target_label: instance
+            replacement: "$1"
+            action: replace
+
+      # LiteLLM proxy discovery.
+      #
+      # Preserve the existing rule that inference Pods exposing :4000 are
+      # LiteLLM targets.
+      - job_name: "kubernetes-litellm-proxy-instances"
+        scrape_interval: 15s
+        scrape_timeout: 10s
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - inference
+                - test
+
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_pod_container_port_number
+            regex: "4000"
+            action: keep
+
+          - source_labels:
+              - __address__
+            regex: "([^:]+):4000"
+            target_label: instance
+            replacement: "$1"
+            action: replace
+
+          - source_labels:
+              - __meta_kubernetes_namespace
+            target_label: namespace
+
+          - source_labels:
+              - __meta_kubernetes_pod_name
+            target_label: pod
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_name
+            target_label: container
