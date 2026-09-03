@@ -45,9 +45,11 @@ jobs:
           set -euo pipefail
 
           # Production primary: standalone Rust binary through internal proxies.
+          grep -Fq -- 'DOCKER_REGISTRY=docker.io' \
+            docker/vllm-router/Dockerfile.rust-proxy
           grep -Fq -- 'RUST_BUILDER_IMAGE=rustlang/rust:nightly-bullseye' \
             docker/vllm-router/Dockerfile.rust-proxy
-          grep -Fq -- 'RUNTIME_IMAGE=python:3.12-slim-bullseye' \
+          grep -Fq -- 'RUNTIME_IMAGE=library/python:3.12-slim-bullseye' \
             docker/vllm-router/Dockerfile.rust-proxy
           grep -Fq -- 'COPY ./sources.list /etc/apt/sources.list' \
             docker/vllm-router/Dockerfile.rust-proxy
