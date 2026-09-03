@@ -181,7 +181,7 @@ jobs:
           contains 'kind: Deployment'
           contains 'pd-test-example-pd-p1d1-pd-cell'
           contains 'pd-test-example-pd-p1d1-pd-engine-service'
-          contains 'pd-deployment: example-pd-p1d1'
+          contains 'pd-deployment: "example-pd-p1d1"'
           contains 'pd-orchestrator: "vllm-router"'
           contains 'pd-kv-connector: "mooncake"'
           contains 'name: gpu-reservation'
