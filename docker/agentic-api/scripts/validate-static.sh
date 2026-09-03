@@ -17,8 +17,8 @@ for script in "$SCRIPT_DIR"/*.sh; do
 done
 
 grep -Fq 'ARG DOCKER_REGISTRY=docker.io' "$DOCKERFILE" || fail "DOCKER_REGISTRY build arg missing"
-grep -Fq 'FROM ${DOCKER_REGISTRY}/${AGENTIC_API_BUILDER_IMAGE}' "$DOCKERFILE" || fail "builder registry prefix missing"
-grep -Fq 'FROM ${DOCKER_REGISTRY}/${AGENTIC_API_RUNTIME_IMAGE}' "$DOCKERFILE" || fail "runtime registry prefix missing"
+grep -Fq "FROM \${DOCKER_REGISTRY}/\${AGENTIC_API_BUILDER_IMAGE}" "$DOCKERFILE" || fail "builder registry prefix missing"
+grep -Fq "FROM \${DOCKER_REGISTRY}/\${AGENTIC_API_RUNTIME_IMAGE}" "$DOCKERFILE" || fail "runtime registry prefix missing"
 grep -Fq 'COPY docker/agentic-api/agentic-api-src/' "$DOCKERFILE" || fail "source directory input missing"
 grep -Fq 'COPY docker/agentic-api/cargo-config.toml' "$DOCKERFILE" || fail "Cargo proxy config missing"
 grep -Fq 'cargo build --release --locked -p agentic-server' "$DOCKERFILE" || fail "locked Cargo build missing"
