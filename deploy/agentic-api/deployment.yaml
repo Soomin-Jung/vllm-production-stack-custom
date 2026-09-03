@@ -44,7 +44,7 @@ spec:
                     app.kubernetes.io/component: gateway
       containers:
         - name: agentic-api
-          # Replace this with the immutable internal-registry image digest.
+          # Replace this with the versioned internal-registry image.
           image: agentic-api:0.5.0
           imagePullPolicy: IfNotPresent
           args:

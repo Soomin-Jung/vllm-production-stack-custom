@@ -1,54 +1,41 @@
-ARG AGENTIC_API_BUILDER_IMAGE=rust:1.96.0-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc
-ARG AGENTIC_API_RUNTIME_IMAGE=debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+ARG DOCKER_REGISTRY=docker.io
+ARG AGENTIC_API_BUILDER_IMAGE=library/rust:1.96.0-bookworm
+ARG AGENTIC_API_RUNTIME_IMAGE=library/debian:bookworm-slim
 
-FROM ${AGENTIC_API_BUILDER_IMAGE} AS builder
+FROM ${DOCKER_REGISTRY}/${AGENTIC_API_BUILDER_IMAGE} AS builder
 
-ARG AGENTIC_API_VERSION=0.5.0
-ARG AGENTIC_API_COMMIT=032935de73d92f116ac108f24cd63d6a158aad94
 ARG CARGO_BUILD_JOBS=4
 
-ENV CARGO_NET_OFFLINE=true \
-    CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
     CARGO_TERM_COLOR=never \
     CARGO_TARGET_DIR=/workspace/target
 
-WORKDIR /workspace
-
-COPY docker/agentic-api/SOURCE_LOCK.env /opt/agentic-api/SOURCE_LOCK.env
-COPY docker/agentic-api/scripts/verify-source-lock.sh /usr/local/bin/verify-source-lock
-COPY docker/agentic-api/vendor/ /opt/agentic-api/vendor/
-
-# Verification and extraction intentionally stay in the build layer that
-# consumes the operator-supplied archive before Cargo reads the source tree.
-# hadolint ignore=DL3003
+# Use the same source-directory and Cargo-proxy pattern as the Rust Router build.
+COPY certs/ /opt/certs/
 RUN set -eux; \
-    cd /opt/agentic-api/vendor; \
-    sha256sum --check SHA256SUMS; \
-    set -- agentic-api-offline_*.tar.gz; \
-    test "$#" -eq 1; \
-    tar -xzf "$1" -C /workspace; \
-    verify-source-lock /workspace/agentic-api /opt/agentic-api/SOURCE_LOCK.env; \
-    test "$AGENTIC_API_VERSION" = "$(. /opt/agentic-api/SOURCE_LOCK.env; printf '%s' "$AGENTIC_API_VERSION")"; \
-    test "$AGENTIC_API_COMMIT" = "$(. /opt/agentic-api/SOURCE_LOCK.env; printf '%s' "$AGENTIC_API_COMMIT")"; \
-    cd /workspace/agentic-api; \
-    cargo build --locked --frozen --offline --release -p agentic-server; \
+    find /opt/certs -type f -name '*.crt' \
+      -exec cp -v '{}' /usr/local/share/ca-certificates/ ';'; \
+    update-ca-certificates; \
+    rm -rf /opt/certs
+
+COPY docker/agentic-api/cargo-config.toml /usr/local/cargo/config.toml
+COPY docker/agentic-api/agentic-api-src/ /workspace/agentic-api/
+
+WORKDIR /workspace/agentic-api
+
+RUN set -eux; \
+    cargo build --release --locked -p agentic-server; \
     install -D -m 0755 -s /workspace/target/release/agentic-server /out/agentic-server; \
     install -D -m 0755 docker-entrypoint.sh /out/docker-entrypoint.sh
 
-FROM ${AGENTIC_API_RUNTIME_IMAGE} AS runtime
+FROM ${DOCKER_REGISTRY}/${AGENTIC_API_RUNTIME_IMAGE} AS runtime
 
 ARG AGENTIC_API_VERSION=0.5.0
-ARG AGENTIC_API_COMMIT=032935de73d92f116ac108f24cd63d6a158aad94
 
 USER 0
 
-# sources.list and certs/ are operator-supplied build-context inputs. Bootstrap
-# the CA bundle before apt so an HTTPS package mirror signed by the private CA
-# can be reached, then let update-ca-certificates produce the final bundle.
 COPY sources.list /etc/apt/sources.list
 COPY certs/ /opt/certs/
-# The operator-supplied sources.list must select an immutable internal snapshot;
-# the package version therefore belongs to that mirror contract, not this file.
 # hadolint ignore=DL3008
 RUN set -eux; \
     set -- /opt/certs/*.crt; \
@@ -65,7 +52,6 @@ RUN set -eux; \
 
 COPY --from=builder /out/agentic-server /usr/local/bin/agentic-server
 COPY --from=builder /out/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY docker/agentic-api/SOURCE_LOCK.env /usr/share/agentic-api/SOURCE_LOCK.env
 
 RUN set -eux; \
     install -d -o 10001 -g 0 -m 0770 /var/lib/agentic-api; \
@@ -73,7 +59,6 @@ RUN set -eux; \
 
 LABEL org.opencontainers.image.title="Agentic API" \
       org.opencontainers.image.version="${AGENTIC_API_VERSION}" \
-      org.opencontainers.image.revision="${AGENTIC_API_COMMIT}" \
       org.opencontainers.image.source="https://github.com/vllm-project/agentic-api"
 
 ENV AGENTIC_API_HOME=/var/lib/agentic-api \

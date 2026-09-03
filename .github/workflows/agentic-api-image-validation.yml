@@ -27,5 +27,5 @@ jobs:
       - uses: azure/setup-kubectl@v4
         with:
           version: v1.31.0
-      - name: Validate offline build and minimal deployment contract
+      - name: Validate source build and minimal deployment contract
         run: docker/agentic-api/scripts/validate-static.sh

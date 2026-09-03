@@ -157,11 +157,8 @@ global Router는 model/Cell 선택만 하고 cell-local Router가 다음을 소�
 - original Decode request 보존
 - Responses status, error, SSE와 cancellation 전파
 
-`vllm-project/router` v0.1.15 tag는 source commit
-[`1fbcde7`](https://github.com/vllm-project/router/tree/1fbcde7443d75b36befb61bc081f64c2a1f13a4b)이며,
-`/v1/responses` Prefill copy에 `max_output_tokens=1`을 설정하고 `max_tokens`를 주입하지 않는 코드와 단위 테스트를
-포함한다. 내부 image는 tag뿐 아니라 이 source commit에 대응하는 digest로 pin하고 Mooncake/NIXL data path를 E2E로
-검증한다.
+`vllm-project/router` v0.1.15는 `/v1/responses` Prefill copy에 `max_output_tokens=1`을 설정하고 `max_tokens`를
+주입하지 않는다. Cell Router image는 검증한 version tag로 고정하고 Mooncake/NIXL data path를 E2E로 확인한다.
 
 ## 6. Kubernetes Service가 추가하는 선택
 
@@ -225,21 +222,10 @@ upstream accept 여부 불명 / partial SSE / tool call 이후
 Completions lane과 Responses lane은 retry budget과 replay 조건을 분리한다. load balancer의 generic retry 기본값을
 Responses POST에 그대로 적용하지 않는다.
 
-## 9. image provenance
+## 9. image version
 
-fixed tag는 `latest`보다 낫지만 immutable proof는 아니다. 운영 기록에는 다음을 함께 보관한다.
-
-```text
-image repository + tag
-runtime image digest
-source repository + commit SHA
-build recipe and dependency lock
-SBOM/provenance where available
-contract-test result
-```
-
-특히 `0.1.9-dev` 같은 내부 tag는 official tag와 같은 source임을 이름만으로 추론하지 않는다. running Pod의
-`imageID`, Router `/version`, source lock을 서로 대조한다.
+운영 image는 `latest` 대신 검증한 version tag로 고정한다. 배포 전에는 running Pod의 image tag와 Router
+`/version`이 기대한 version인지 확인한다.
 
 ## 10. release gate
 
@@ -265,7 +251,7 @@ contract-test result
 - partial SSE 이후 edge replay 없음
 - Agentic/Router/vLLM rolling drain
 - Router stream memory와 connection-pool distribution
-- image digest/source SHA 대조
+- 배포 image tag와 runtime version 확인
 
 ## 11. 최종 판정
 
@@ -280,4 +266,4 @@ Pod-level KV routing     = 후속 과제, direct endpoint ownership 필요
 ```
 
 구현 범위를 “Agentic API 배포 + vLLM Proxy path routing”으로 시작하는 것은 타당하다. 완료 정의에는 POST뿐 아니라
-WebSocket Upgrade, endpoint별 retry/timeout, image provenance, P/D exact contract test까지 포함한다.
+WebSocket Upgrade, endpoint별 retry/timeout, image version, P/D exact contract test까지 포함한다.

@@ -47,7 +47,7 @@ tool output을 typed item으로 보존할 수 있다. 또한 `response_id`, `pre
 
 ## 배포 전 필수 조건
 
-1. `docker/Dockerfile.agentic-api`로 빌드해 내부 registry에 올린 immutable image digest
+1. `docker/Dockerfile.agentic-api`로 빌드해 내부 registry에 올린 versioned image
 2. 모든 replica가 공유하는 외부 PostgreSQL과 전용 DB/role
 3. `/v1/responses`를 지원하는 LMStack Router 또는 inference endpoint의 Service DNS와 `/health` 도달성
 4. 내부 registry pull secret, PostgreSQL CA/client 인증서 등 클러스터별 Secret
@@ -63,7 +63,7 @@ SQLite는 단일 Pod 개발 확인에는 쓸 수 있지만 replica 간 상태를
 
 ```bash
 cd deploy/agentic-api
-kustomize edit set image agentic-api=registry.example.invalid/llm/agentic-api@sha256:REPLACE_ME
+kustomize edit set image agentic-api=registry.example.invalid/llm/agentic-api:0.5.0
 sed -i 's#llm-router-service.inference.svc.cluster.local:9400#<실제-router-service>:9400#' configmap.yaml
 ```
 

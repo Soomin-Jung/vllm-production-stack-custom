@@ -109,6 +109,8 @@ src/vllm_router/_version.py
 /certs/
 /sources.list
 /pip.conf
+/docker/agentic-api/agentic-api-src/
+/docker/agentic-api/cargo-config.toml
 
 
 # terraform
