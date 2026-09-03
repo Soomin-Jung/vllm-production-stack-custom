@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 DOCKERFILE=${ROOT_DIR}/docker/Dockerfile.vllm-mooncake
@@ -70,7 +71,9 @@ for profile in 0.3.10.post2 0.3.12.post1; do
   )
 done
 
+grep -Fq -- 'ARG DOCKER_REGISTRY=docker.io' "${DOCKERFILE}"
 grep -Fq -- 'ARG VLLM_BASE_IMAGE=' "${DOCKERFILE}"
+grep -Fq -- 'FROM ${DOCKER_REGISTRY}/${VLLM_BASE_IMAGE}' "${DOCKERFILE}"
 grep -Fq -- 'ARG MOONCAKE_PROFILE=0.3.12.post1' "${DOCKERFILE}"
 grep -Fq -- 'ARG TARGET_CUDA_VERSION=auto' "${DOCKERFILE}"
 grep -Fq -- 'ARG CUDA_DEVEL_PACKAGES=auto' "${DOCKERFILE}"

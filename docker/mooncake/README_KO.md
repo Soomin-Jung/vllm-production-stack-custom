@@ -51,6 +51,7 @@ registry.example/vllm-openai@sha256:<digest>
 Dockerfile 최상단:
 
 ~~~dockerfile
+ARG DOCKER_REGISTRY=docker.io
 ARG VLLM_BASE_IMAGE=vllm/vllm-openai:v0.28.0
 ARG MOONCAKE_PROFILE=0.3.12.post1
 ARG TARGET_CUDA_VERSION=auto
@@ -60,7 +61,8 @@ ARG MOONCAKE_BUILD_JOBS=8
 
 ### VLLM_BASE_IMAGE
 
-실제 사용할 vLLM image를 그대로 지정한다.
+`DOCKER_REGISTRY`에는 registry host를 지정하고, `VLLM_BASE_IMAGE`에는 그 아래 repository와 tag를 지정한다.
+`DOCKER_REGISTRY`를 생략하면 `docker.io`를 사용한다.
 
 예:
 
@@ -227,13 +229,27 @@ SOURCE_MANIFEST.env가 포함된다.
 ### vLLM 0.26 + CUDA 12.9 + Mooncake 0.3.10
 
 ~~~bash
-/kaniko/executor   --context dir:///workspace/vllm-production-stack-custom   --dockerfile docker/Dockerfile.vllm-mooncake   --destination registry.example/vllm-openai:v0.26.0-cu129-mc0310-nvlink   --build-arg VLLM_BASE_IMAGE=registry.example/vllm-openai:v0.26.0-cu129   --build-arg MOONCAKE_PROFILE=0.3.10.post2   --build-arg TARGET_CUDA_VERSION=12.9
+/kaniko/executor \
+  --context dir:///workspace/vllm-production-stack-custom \
+  --dockerfile docker/Dockerfile.vllm-mooncake \
+  --destination registry.example/vllm-openai:v0.26.0-cu129-mc0310-nvlink \
+  --build-arg DOCKER_REGISTRY=registry.example \
+  --build-arg VLLM_BASE_IMAGE=vllm-openai:v0.26.0-cu129 \
+  --build-arg MOONCAKE_PROFILE=0.3.10.post2 \
+  --build-arg TARGET_CUDA_VERSION=12.9
 ~~~
 
 ### vLLM 0.28 + CUDA 12.9 custom image + Mooncake 0.3.12
 
 ~~~bash
-/kaniko/executor   --context dir:///workspace/vllm-production-stack-custom   --dockerfile docker/Dockerfile.vllm-mooncake   --destination registry.example/vllm-openai:v0.28.0-cu129-mc0312-nvlink   --build-arg VLLM_BASE_IMAGE=registry.example/vllm-openai:v0.28.0-cu129   --build-arg MOONCAKE_PROFILE=0.3.12.post1   --build-arg TARGET_CUDA_VERSION=12.9
+/kaniko/executor \
+  --context dir:///workspace/vllm-production-stack-custom \
+  --dockerfile docker/Dockerfile.vllm-mooncake \
+  --destination registry.example/vllm-openai:v0.28.0-cu129-mc0312-nvlink \
+  --build-arg DOCKER_REGISTRY=registry.example \
+  --build-arg VLLM_BASE_IMAGE=vllm-openai:v0.28.0-cu129 \
+  --build-arg MOONCAKE_PROFILE=0.3.12.post1 \
+  --build-arg TARGET_CUDA_VERSION=12.9
 ~~~
 
 이 경우 Mooncake distribution은 자동으로 mooncake-transfer-engine이다.
@@ -241,7 +257,14 @@ SOURCE_MANIFEST.env가 포함된다.
 ### vLLM 0.28 + CUDA 13 + Mooncake 0.3.12
 
 ~~~bash
-/kaniko/executor   --context dir:///workspace/vllm-production-stack-custom   --dockerfile docker/Dockerfile.vllm-mooncake   --destination registry.example/vllm-openai:v0.28.0-cu13-mc0312-nvlink   --build-arg VLLM_BASE_IMAGE=registry.example/vllm-openai:v0.28.0   --build-arg MOONCAKE_PROFILE=0.3.12.post1   --build-arg TARGET_CUDA_VERSION=13.0
+/kaniko/executor \
+  --context dir:///workspace/vllm-production-stack-custom \
+  --dockerfile docker/Dockerfile.vllm-mooncake \
+  --destination registry.example/vllm-openai:v0.28.0-cu13-mc0312-nvlink \
+  --build-arg DOCKER_REGISTRY=registry.example \
+  --build-arg VLLM_BASE_IMAGE=vllm-openai:v0.28.0 \
+  --build-arg MOONCAKE_PROFILE=0.3.12.post1 \
+  --build-arg TARGET_CUDA_VERSION=13.0
 ~~~
 
 CUDA 13이면 CU13_BUILD=1이 자동 적용되고 mooncake-transfer-engine-cuda13 wheel을 만든다.
