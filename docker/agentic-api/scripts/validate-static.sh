@@ -6,6 +6,7 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd)
 DOCKERFILE="$REPO_ROOT/docker/Dockerfile.agentic-api"
 KUSTOMIZATION_DIR="$REPO_ROOT/deploy/agentic-api"
 ROUTING_CONTRACT="$KUSTOMIZATION_DIR/ROUTING_CONTRACT_KO.md"
+FILE_CONFIG="$KUSTOMIZATION_DIR/config.toml"
 
 fail() {
     echo "ERROR: $*" >&2
@@ -40,6 +41,12 @@ fi
 
 grep -Fq 'replicas: 2' "$KUSTOMIZATION_DIR/deployment.yaml" || fail "two replicas missing"
 grep -Fq 'key: DATABASE_URL' "$KUSTOMIZATION_DIR/deployment.yaml" || fail "PostgreSQL secret wiring missing"
+grep -Fq 'llm_api_base = ' "$FILE_CONFIG" || fail "file-based LLM upstream missing"
+grep -Fq 'name: agentic-api-file-config' "$KUSTOMIZATION_DIR/kustomization.yaml" || fail "file ConfigMap generator missing"
+grep -Fq 'mountPath: /var/lib/agentic-api' "$KUSTOMIZATION_DIR/deployment.yaml" || fail "config.toml mount missing"
+if grep -Fq 'LLM_API_BASE:' "$KUSTOMIZATION_DIR/configmap.yaml"; then
+    fail "LLM_API_BASE environment variable would override config.toml"
+fi
 grep -Fq 'GET /v1/responses' "$ROUTING_CONTRACT" || fail "Responses WebSocket route missing"
 grep -Fq 'LMStack Router 0.1.9 normal round-robin' "$ROUTING_CONTRACT" || fail "LMStack route baseline missing"
 grep -Fq 'blind replay' "$ROUTING_CONTRACT" || fail "Responses retry rule missing"

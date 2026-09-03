@@ -1,7 +1,7 @@
 # Agentic API v0.5.0 최소 Kubernetes 배포
 
 이 디렉터리는 업스트림 `deploy/kubernetes` 예시 중 운영 경로에 반드시 필요한 리소스만 남긴다.
-`ConfigMap`, `Deployment`, `Service`만 Kustomize 대상이며 실제 Secret은 별도로 생성한다. Ingress, Namespace,
+환경 변수용 `ConfigMap`, 파일 설정용 generated `ConfigMap`, `Deployment`, `Service`만 Kustomize 대상이며 실제 Secret은 별도로 생성한다. Ingress, Namespace,
 ServiceAccount, PDB, NetworkPolicy는 클러스터 공통 정책이나 환경별 overlay가 소유하도록 제외했다.
 
 ## 권장 경로
@@ -64,7 +64,7 @@ SQLite는 단일 Pod 개발 확인에는 쓸 수 있지만 replica 간 상태를
 ```bash
 cd deploy/agentic-api
 kustomize edit set image agentic-api=registry.example.invalid/llm/agentic-api:0.5.0
-sed -i 's#llm-router-service.inference.svc.cluster.local:9400#<실제-router-service>:9400#' configmap.yaml
+sed -i 's#llm-router-service.inference.svc.cluster.local:9400#<실제-router-service>:9400#' config.toml
 ```
 
 Git에 Secret 값을 기록하지 않고 대상 namespace에 직접 만든다. PostgreSQL private CA가 필요하면 Secret으로
@@ -81,6 +81,41 @@ kubectl -n inference get pods,service -l app.kubernetes.io/name=agentic-api
 
 upstream이 `/health`를 제공하지 않을 때만 `SKIP_LLM_READY_CHECK=true`로 바꾼다. 이 경우에도 `/ready`의 PostgreSQL
 검사는 유지되지만, inference endpoint 도달성은 별도의 smoke test가 소유해야 한다.
+
+## 파일 설정
+
+Agentic API v0.5.0은 YAML이나 임의 `--config` 경로를 지원하지 않는다. 시작 시 고정된
+`$AGENTIC_API_HOME/config.toml`을 읽으며, 이 배포에서는 generated ConfigMap의 [`config.toml`](./config.toml)을
+`/var/lib/agentic-api/config.toml`로 read-only mount한다. PostgreSQL을 사용하므로 Pod-local writable home이나
+SQLite volume은 두지 않는다. Kustomize가 파일 내용 기반 suffix를 ConfigMap 이름에 붙이고 Deployment 참조를 함께
+바꾸므로 `config.toml` 변경 후 `kubectl apply -k`를 실행하면 새 Pod로 rollout된다.
+
+설정 우선순위는 `CLI 또는 환경 변수 > config.toml > 기본값`이다. 같은 값을 환경 변수와 파일에 동시에 선언하면
+파일 변경이 적용되지 않은 것처럼 보일 수 있으므로 한 위치만 소유한다. 이 예시는 일반 upstream/tool 설정은 파일,
+credential과 v0.5.0의 env 전용 설정은 ConfigMap/Secret으로 분리한다.
+
+| `config.toml` 항목 | 상위 우선순위 설정 | 용도 |
+| --- | --- | --- |
+| `llm_api_base` | `--llm-api-base`, `LLM_API_BASE` | 단일 logical inference upstream. trailing `/v1`은 제거됨 |
+| `database_url` | `--db-url`, `DATABASE_URL` | SQLite/PostgreSQL URL. 운영 credential은 Secret의 환경 변수 사용 |
+| `web_search.base_url` | `YOU_API_BASE_URL` | built-in web-search provider URL |
+| `web_search.api_key_env` | 없음 | 실제 key 값이 아니라 key를 읽을 환경 변수 이름 |
+| `mcp.allowed_hosts` | `AGENTIC_MCP_ALLOWED_HOSTS` | 요청 body가 선언하는 remote MCP URL의 host allowlist |
+| `messages_gateway.tool_aliases` | `MESSAGES_GATEWAY_TOOL_ALIASES` | legacy Messages function 이름을 gateway tool에 매핑 |
+| `mcp_servers.<label>` | 없음 | operator-owned HTTP/stdio MCP server와 allowed tools |
+
+`config.toml`은 알 수 없는 key를 허용하지 않으므로 아래 항목은 파일에 넣으면 startup parse가 실패한다.
+
+- listen/CORS: `GATEWAY_HOST`, `GATEWAY_PORT`, `CORS_ALLOWED_ORIGINS`
+- readiness: CLI의 `--llm-ready-timeout-s`, `--llm-ready-interval-s`; `SKIP_LLM_READY_CHECK`
+- inbound/upstream 인증: `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OPENAI_API_KEY`
+- PostgreSQL/SQLite pool과 timeout 변수
+- `RUST_LOG`, `AGENTIC_API_SCHEMA_READY`
+
+v0.5.0에는 response/conversation retention, session TTL, HTTP body limit, SSE keepalive 또는 SSE timeout을 조정하는
+배포 설정이 없다. 특히 stateful executor의 upstream SSE byte-chunk idle timeout은 source에 30초로 고정되어 있다.
+긴 prefill 동안 upstream이 30초 넘게 아무 byte도 보내지 않는 workload는 별도 장문 E2E 검증이 필요하며, 값을
+변경하려면 Agentic API source patch가 필요하다. retention은 PostgreSQL 운영 정책과 별도 cleanup job이 소유한다.
 
 ## 실행 옵션
 

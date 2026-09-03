@@ -111,9 +111,11 @@ spec:
               drop:
                 - ALL
           volumeMounts:
-            - name: agentic-api-home
+            - name: agentic-api-file-config
               mountPath: /var/lib/agentic-api
+              readOnly: true
       volumes:
-        - name: agentic-api-home
-          emptyDir:
-            sizeLimit: 64Mi
+        - name: agentic-api-file-config
+          configMap:
+            name: agentic-api-file-config
+            defaultMode: 0440

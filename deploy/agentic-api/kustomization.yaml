@@ -5,3 +5,7 @@ resources:
   - configmap.yaml
   - deployment.yaml
   - service.yaml
+configMapGenerator:
+  - name: agentic-api-file-config
+    files:
+      - config.toml

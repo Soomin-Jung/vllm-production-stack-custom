@@ -1,0 +1,31 @@
+# Agentic API v0.5.0 reads this fixed file from
+# $AGENTIC_API_HOME/config.toml. CLI arguments and environment variables take
+# precedence. Keep credentials in Kubernetes Secrets, not in this ConfigMap.
+
+llm_api_base = "http://llm-router-service.inference.svc.cluster.local:9400"
+
+# DATABASE_URL is injected from the agentic-api Secret. The file form is
+# supported, but should not be used for a credentialed production URL.
+# database_url = "postgresql://agentic-api@postgres:5432/agentic_api"
+
+# Optional built-in web-search provider. api_key_env names an environment
+# variable; it does not contain the credential itself.
+# [web_search]
+# base_url = "https://ydc-index.io"
+# api_key_env = "YOU_API_KEY"
+
+# Optional allowlist for request-declared remote MCP URLs. Operator-configured
+# mcp_servers below are trusted separately and do not use this allowlist.
+# [mcp]
+# allowed_hosts = ["mcp.example.com"]
+
+# Optional compatibility mapping for legacy /v1/messages function names.
+# [messages_gateway]
+# tool_aliases = "WebSearch=web_search"
+
+# Optional operator-owned HTTP MCP server. Do not place credential headers in
+# this ConfigMap; use a Secret-backed configuration mechanism when required.
+# [mcp_servers.example]
+# url = "https://mcp.example.com/mcp"
+# allowed_tools = ["tool_1_name", "tool_2_name"]
+# require_approval = "never"

@@ -6,12 +6,8 @@ metadata:
     app.kubernetes.io/name: agentic-api
     app.kubernetes.io/component: gateway
 data:
-  # Replace this with the internal LMStack Router Service DNS name. For the
-  # Responses lane, use a build containing production-stack PR #691 (official
-  # vllm-stack-0.1.9 or later), pin its image digest, and start with the normal
-  # round-robin route rather than the 0.1.9 legacy P/D or KV-aware path.
-  # Agentic API removes a trailing /v1, so either form is accepted.
-  LLM_API_BASE: "http://llm-router-service.inference.svc.cluster.local:9400"
+  # Runtime settings that Agentic API v0.5.0 does not read from config.toml.
+  # The upstream URL and non-secret tool settings are in config.toml.
   GATEWAY_HOST: "0.0.0.0"
   GATEWAY_PORT: "9000"
   POSTGRES_MAX_CONNECTIONS: "10"
