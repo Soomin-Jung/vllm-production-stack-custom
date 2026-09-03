@@ -7,15 +7,14 @@ description: The stack deployment of vLLM
 # Application charts are a collection of templates that can be packaged into versioned archives
 # to be deployed.
 #
-# Library charts provide useful utilities or functions for the chart developer. They're included as
+# Library charts provide useful utilities or functions to the chart developer. They're included as
 # a dependency of application charts to inject those utilities and functions into the rendering
 # pipeline. Library charts do not define any templates and therefore cannot be deployed.
 type: application
 
-# This is the chart version. This version number should be incremented each time you make changes
-# to the chart and its templates, including the app version.
-# Versions are expected to follow Semantic Versioning (https://semver.org/)
-version: 0.1.11
+# This chart version tracks the pinned upstream vLLM Production Stack baseline.
+# Downstream customizations are tracked by Git commits and pull requests.
+version: 0.1.8
 
 maintainers:
   - name: apostac
