@@ -1,0 +1,14 @@
+# Cargo dependencies are resolved through the internal sparse-registry proxy.
+# Keep the trailing slash in the sparse registry URL.
+
+[registry]
+default = "cargo-proxy"
+
+[registries.cargo-proxy]
+index = "sparse+https://REGISTRY.EXAMPLE.INVALID/cargo/index/"
+
+[source.crates-io]
+replace-with = "cargo-proxy"
+
+[source.cargo-proxy]
+registry = "sparse+https://REGISTRY.EXAMPLE.INVALID/cargo/index/"

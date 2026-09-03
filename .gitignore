@@ -105,6 +105,13 @@ src/vllm_router/_version.py
 
 /tutorials/assets/private.yaml
 
+# Operator-supplied closed-network build inputs
+/certs/
+/sources.list
+/pip.conf
+/docker/agentic-api/agentic-api-src/
+/docker/agentic-api/cargo-config.toml
+
 
 # terraform
 # Local .terraform directories

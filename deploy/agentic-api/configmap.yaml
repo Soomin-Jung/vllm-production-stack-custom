@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentic-api
+  labels:
+    app.kubernetes.io/name: agentic-api
+    app.kubernetes.io/component: gateway
+data:
+  # Runtime settings that Agentic API v0.5.0 does not read from config.toml.
+  # The upstream URL and non-secret tool settings are in config.toml.
+  GATEWAY_HOST: "0.0.0.0"
+  GATEWAY_PORT: "9000"
+  POSTGRES_MAX_CONNECTIONS: "10"
+  SKIP_LLM_READY_CHECK: "false"
+  RUST_LOG: "agentic_server=info,tower_http=info"
