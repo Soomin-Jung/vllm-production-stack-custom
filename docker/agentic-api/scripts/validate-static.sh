@@ -41,6 +41,9 @@ fi
 
 grep -Fq 'replicas: 2' "$KUSTOMIZATION_DIR/deployment.yaml" || fail "two replicas missing"
 grep -Fq 'key: DATABASE_URL' "$KUSTOMIZATION_DIR/deployment.yaml" || fail "PostgreSQL secret wiring missing"
+grep -Fq 'type: LoadBalancer' "$KUSTOMIZATION_DIR/service.yaml" || fail "LoadBalancer Service missing"
+grep -Fq 'port: 9700' "$KUSTOMIZATION_DIR/service.yaml" || fail "external Service port 9700 missing"
+grep -Fq 'targetPort: http' "$KUSTOMIZATION_DIR/service.yaml" || fail "Service target port missing"
 grep -Fq 'llm_api_base = ' "$FILE_CONFIG" || fail "file-based LLM upstream missing"
 grep -Fq 'name: agentic-api-file-config' "$KUSTOMIZATION_DIR/kustomization.yaml" || fail "file ConfigMap generator missing"
 grep -Fq 'mountPath: /var/lib/agentic-api' "$KUSTOMIZATION_DIR/deployment.yaml" || fail "config.toml mount missing"

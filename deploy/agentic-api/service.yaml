@@ -6,12 +6,12 @@ metadata:
     app.kubernetes.io/name: agentic-api
     app.kubernetes.io/component: gateway
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app.kubernetes.io/name: agentic-api
     app.kubernetes.io/component: gateway
   ports:
     - name: http
-      port: 9000
+      port: 9700
       targetPort: http
       protocol: TCP

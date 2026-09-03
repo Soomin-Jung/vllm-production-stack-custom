@@ -8,7 +8,8 @@ ServiceAccount, PDB, NetworkPolicy는 클러스터 공통 정책이나 환경별
 
 ```text
 클라이언트 / 인증 API Gateway
-  -> Agentic API :9000
+  -> Agentic API LoadBalancer :9700
+  -> Agentic API Pod :9000
   -> LMStack Router :9400
   -> vLLM serving engines
 ```
@@ -164,8 +165,8 @@ DB limit에 남긴다. 각 replica는 시작 시 embedded migration을 실행하
 ## 인증과 노출 범위
 
 OIDC를 설정하지 않으면 inbound 인증은 없다. `OPENAI_API_KEY`는 upstream credential일 뿐 caller 인증이 아니다.
-따라서 기본 Service는 `ClusterIP`로 두고 기존 인증 API Gateway 뒤에 배치하거나 `OIDC_ISSUER`와
-`OIDC_AUDIENCE`를 함께 설정한다. v0.5.0에서는 인증된 사용자 간 persisted object 권한 격리까지 완결된 것으로
+이 배포는 `LoadBalancer:9700`으로 노출하므로 외부 접근 경로에서 기존 인증 API Gateway를 반드시 통과시키거나
+`OIDC_ISSUER`와 `OIDC_AUDIENCE`를 함께 설정한다. v0.5.0에서는 인증된 사용자 간 persisted object 권한 격리까지 완결된 것으로
 간주하지 말고, [upstream issue #107](https://github.com/vllm-project/agentic-api/issues/107)이 정리되기 전까지
 불특정 multi-tenant에 직접 노출하기 전에 trusted edge 또는 tenant 단위 격리를 둔다.
 
