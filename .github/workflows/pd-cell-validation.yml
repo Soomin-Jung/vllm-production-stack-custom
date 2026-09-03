@@ -3,6 +3,7 @@ name: Validate P-D Cell Helm extension
 on:
   pull_request:
     paths:
+      - 'helm/values.yaml'
       - 'helm/templates/_helpers.tpl'
       - 'helm/templates/configmap-pd-cell-gpu-launcher.yaml'
       - 'helm/templates/configmap-pd-cell-guardian.yaml'
@@ -179,6 +180,8 @@ jobs:
 
           contains 'kind: Deployment'
           contains 'pd-test-example-pd-p1d1-pd-cell'
+          contains 'pd-test-example-pd-p1d1-pd-engine-service'
+          contains 'pd-deployment: example-pd-p1d1'
           contains 'pd-orchestrator: "vllm-router"'
           contains 'pd-kv-connector: "mooncake"'
           contains 'name: gpu-reservation'
@@ -198,6 +201,11 @@ jobs:
           contains 'pd-router,gpu-reservation,prefill-0,decode-0'
           contains 'name: pd-cell-guardian-token'
           contains 'name: pd-cell-guardian-script'
+          contains 'name: pd-cell-guardian-log'
+          contains 'name: PD_GUARDIAN_LOG_DIR'
+          contains '/var/log/pd-cell-guardian'
+          contains '/var/log/vllm-pd-cell/guardian'
+          contains 'type: DirectoryOrCreate'
           contains '--vllm-pd-disaggregation'
           contains '--kv-connector'
           contains 'mooncake'
@@ -245,6 +253,44 @@ jobs:
           absent '--static-backends'
           absent '--static-models'
           absent '--static-aliases'
+
+          grep -Fq -- 'target restarted before initial full readiness'             helm/templates/configmap-pd-cell-guardian.yaml
+          grep -Fq -- 'whole_cell_recycle_requested'             helm/templates/configmap-pd-cell-guardian.yaml
+          grep -Fq -- 'last_state'             helm/templates/configmap-pd-cell-guardian.yaml
+
+      - name: Verify P-D enablement does not mutate legacy modelSpec Pod template
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/legacy-model-values.yaml <<'YAML'
+          servingEngineSpec:
+            enableEngine: true
+            modelSpec:
+              - name: legacy-sentinel
+                repository: vllm/vllm-openai
+                tag: test
+                modelURL: /models/legacy-sentinel
+                replicaCount: 1
+                requestGPU: 1
+                vllmConfig: {}
+          routerSpec:
+            enableRouter: false
+          pdCellSpec:
+            enabled: false
+          YAML
+
+          helm template legacy-test ./helm -n inference             -f /tmp/legacy-model-values.yaml             --show-only templates/deployment-vllm-multi.yaml             > /tmp/legacy-modelspec-without-pd.yaml
+
+          helm template legacy-test ./helm -n inference             -f /tmp/legacy-model-values.yaml             -f helm/examples/pd-cell-values.yaml             --show-only templates/deployment-vllm-multi.yaml             > /tmp/legacy-modelspec-with-pd.yaml
+
+          diff -u /tmp/legacy-modelspec-without-pd.yaml /tmp/legacy-modelspec-with-pd.yaml
+
+          grep -Fq -- 'imagePullPolicy: "Always"' /tmp/legacy-modelspec-without-pd.yaml
+          if grep -Fq -- 'pd-cell' /tmp/legacy-modelspec-without-pd.yaml; then
+            echo 'Legacy modelSpec Deployment unexpectedly contains P/D Cell fields'
+            exit 1
+          fi
 
       - name: Verify NIXL mapping still uses vLLM Router
         shell: bash

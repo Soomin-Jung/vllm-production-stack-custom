@@ -113,6 +113,14 @@ tests:
             value: "5600"
       - template: service-pd-cell.yaml
         equal:
+          path: metadata.name
+          value: RELEASE-NAME-pd-test-pd-engine-service
+      - template: service-pd-cell.yaml
+        equal:
+          path: spec.selector.pd-deployment
+          value: pd-test
+      - template: service-pd-cell.yaml
+        equal:
           path: spec.ports[0].targetPort
           value: pd-router
 
@@ -296,6 +304,26 @@ tests:
           content:
             name: PD_GUARDIAN_TARGETS
             value: pd-router,gpu-reservation,prefill-0,decode-0,decode-1
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[5].env
+          content:
+            name: PD_GUARDIAN_LOG_DIR
+            value: /var/log/pd-cell-guardian
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[5].volumeMounts
+          content:
+            name: pd-cell-guardian-log
+            mountPath: /var/log/pd-cell-guardian
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.volumes
+          content:
+            name: pd-cell-guardian-log
+            hostPath:
+              path: /var/log/vllm-pd-cell/guardian
+              type: DirectoryOrCreate
 
   - it: should propagate engine API key to vllm-router as OPENAI_API_KEY
     set:

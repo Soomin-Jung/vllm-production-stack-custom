@@ -10,8 +10,6 @@ servingEngineSpec:
     release: "0.1.8" # default: "test"
   # -- Extra service ports for models
   extraPorts: []
-  # -- Default image pull policy for vLLM serving engine containers
-  imagePullPolicy: "IfNotPresent"
 
   # vllmApiKey: (optional) api key for securing the vLLM models. Can be either:
   #   - A string containing the token directly (will be stored in a generated secret)
@@ -135,7 +133,7 @@ servingEngineSpec:
   #   tag: "latest"
   #   modelURL: "mistralai/Mistral-7B-Instruct-v0.2"
   #   replicaCount: 1
-  #   imagePullPolicy: "IfNotPresent" # or "Always"
+  #   imagePullPolicy: "Always" # or "IfNotPresent"
   #
   #   requestCPU: 10
   #   requestMemory: "64Gi"

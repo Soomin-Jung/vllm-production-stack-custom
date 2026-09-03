@@ -23,6 +23,7 @@ data:
     import time
     import urllib.error
     import urllib.request
+    from datetime import datetime, timezone
 
     POD_NAME = os.environ["POD_NAME"]
     POD_NAMESPACE = os.environ["POD_NAMESPACE"]
@@ -30,6 +31,11 @@ data:
     TARGETS = {x for x in os.environ["PD_GUARDIAN_TARGETS"].split(",") if x}
     POLL_SECONDS = float(os.environ.get("PD_GUARDIAN_POLL_SECONDS", "2"))
     DELETE_GRACE_SECONDS = int(os.environ.get("PD_GUARDIAN_DELETE_GRACE_SECONDS", "5"))
+    LOG_DIR = os.environ.get("PD_GUARDIAN_LOG_DIR", "/var/log/pd-cell-guardian")
+    LOG_FILE = os.path.join(
+        LOG_DIR,
+        f"{POD_NAMESPACE}_{POD_NAME}_{POD_UID}.jsonl",
+    )
 
     TOKEN_FILE = "/var/run/secrets/pd-cell-guardian/token"
     CA_FILE = "/var/run/secrets/pd-cell-guardian/ca.crt"
@@ -44,6 +50,53 @@ data:
 
     def log(message):
         print(f"[pd-cell-guardian] {message}", flush=True)
+
+    def audit(event, **fields):
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": event,
+            "namespace": POD_NAMESPACE,
+            "pod": POD_NAME,
+            "pod_uid": POD_UID,
+            **fields,
+        }
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(LOG_FILE, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        except Exception as exc:
+            # Audit persistence must never disable lifecycle protection.
+            log(f"audit write failed: {exc!r}")
+
+    def compact_status(status):
+        if not status:
+            return None
+        return {
+            "name": status.get("name"),
+            "ready": bool(status.get("ready", False)),
+            "restart_count": int(status.get("restartCount", 0)),
+            "state": status.get("state", {}),
+            "last_state": status.get("lastState", {}),
+            "image": status.get("image"),
+            "image_id": status.get("imageID"),
+            "container_id": status.get("containerID"),
+        }
+
+    def pod_context(pod):
+        current = statuses(pod)
+        return {
+            "phase": pod.get("status", {}).get("phase"),
+            "reason": pod.get("status", {}).get("reason"),
+            "message": pod.get("status", {}).get("message"),
+            "deletion_timestamp": pod.get("metadata", {}).get("deletionTimestamp"),
+            "containers": {
+                name: compact_status(current.get(name))
+                for name in sorted(TARGETS)
+                if name in current
+            },
+        }
 
     def token():
         with open(TOKEN_FILE, "r", encoding="utf-8") as f:
@@ -68,8 +121,14 @@ data:
     def get_pod():
         return request("GET")
 
-    def delete_self(reason):
+    def delete_self(reason, pod=None, trigger_container=None):
         log(f"whole-cell recycle requested: {reason}")
+        audit(
+            "whole_cell_recycle_requested",
+            reason=reason,
+            trigger_container=trigger_container,
+            pod=pod_context(pod) if pod else None,
+        )
         payload = {
             "apiVersion": "v1",
             "kind": "DeleteOptions",
@@ -82,10 +141,18 @@ data:
                 "Pod DELETE accepted; waiting for Kubernetes to terminate "
                 f"{POD_NAMESPACE}/{POD_NAME}"
             )
+            audit("pod_delete_accepted", reason=reason, trigger_container=trigger_container)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 log("Pod already deleting/deleted")
+                audit("pod_already_deleted", reason=reason, trigger_container=trigger_container)
             else:
+                audit(
+                    "pod_delete_failed",
+                    reason=reason,
+                    trigger_container=trigger_container,
+                    http_status=exc.code,
+                )
                 raise
         # Do not exit immediately and let kubelet restart only the guardian.
         while True:
@@ -103,6 +170,13 @@ data:
 
     log(f"watching Pod {POD_NAMESPACE}/{POD_NAME} uid={POD_UID}")
     log(f"targets={','.join(sorted(TARGETS))}")
+    audit(
+        "guardian_started",
+        targets=sorted(TARGETS),
+        poll_seconds=POLL_SECONDS,
+        delete_grace_seconds=DELETE_GRACE_SECONDS,
+        log_file=LOG_FILE,
+    )
 
     baseline = None
 
@@ -112,6 +186,7 @@ data:
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 log("Pod no longer exists; exiting")
+                audit("pod_missing_from_api")
                 sys.exit(0)
             log(f"GET Pod failed with HTTP {exc.code}; retrying")
             time.sleep(POLL_SECONDS)
@@ -123,6 +198,7 @@ data:
 
         if pod.get("metadata", {}).get("uid") != POD_UID:
             log("Pod UID changed; exiting without touching the replacement Pod")
+            audit("pod_uid_changed", observed_uid=pod.get("metadata", {}).get("uid"))
             sys.exit(0)
 
         current = statuses(pod)
@@ -133,6 +209,19 @@ data:
                 log(f"waiting for target statuses: {','.join(missing)}")
                 time.sleep(POLL_SECONDS)
                 continue
+
+            restarted_before_ready = {
+                name: int(current[name].get("restartCount", 0))
+                for name in sorted(TARGETS)
+                if int(current[name].get("restartCount", 0)) > 0
+            }
+            if restarted_before_ready:
+                delete_self(
+                    "target restarted before initial full readiness: "
+                    + json.dumps(restarted_before_ready, sort_keys=True),
+                    pod=pod,
+                    trigger_container=next(iter(restarted_before_ready)),
+                )
 
             not_ready = sorted(
                 name for name in TARGETS if not current[name].get("ready", False)
@@ -149,19 +238,25 @@ data:
                 "armed after all targets became Ready; restart baseline="
                 + json.dumps(baseline, sort_keys=True)
             )
+            audit("guardian_armed", restart_baseline=baseline, pod=pod_context(pod))
             time.sleep(POLL_SECONDS)
             continue
 
         missing = sorted(TARGETS - set(current))
         if missing:
-            delete_self("target status disappeared: " + ",".join(missing))
+            delete_self(
+                "target status disappeared: " + ",".join(missing),
+                pod=pod,
+            )
 
         for name in sorted(TARGETS):
             restart_count = int(current[name].get("restartCount", 0))
             if restart_count > baseline[name]:
                 delete_self(
                     f"{name} restartCount changed "
-                    f"{baseline[name]} -> {restart_count}"
+                    f"{baseline[name]} -> {restart_count}",
+                    pod=pod,
+                    trigger_container=name,
                 )
 
         time.sleep(POLL_SECONDS)

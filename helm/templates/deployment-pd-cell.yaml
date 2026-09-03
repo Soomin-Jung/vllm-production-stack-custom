@@ -14,6 +14,11 @@
   {{- $guardianResources := $guardian.resources | default dict -}}
   {{- $guardianRequests := $guardianResources.requests | default dict -}}
   {{- $guardianLimits := $guardianResources.limits | default dict -}}
+  {{- $guardianLogHostPath := default "/var/log/vllm-pd-cell/guardian" $guardian.logHostPath -}}
+  {{- $guardianLogMountPath := "/var/log/pd-cell-guardian" -}}
+  {{- if and $guardianEnabled (not (hasPrefix "/" $guardianLogHostPath)) -}}
+    {{- fail "pdCellSpec.guardian.logHostPath must be an absolute host path" -}}
+  {{- end -}}
 
   {{- $globalEnvMap := dict -}}
   {{- range $e := ($global.env | default (list)) -}}
@@ -383,7 +388,7 @@
     {{- end -}}
 
     {{- if $guardianEnabled -}}
-      {{- range $reservedName := (list "pd-cell-guardian-script" "pd-cell-guardian-token") -}}
+      {{- range $reservedName := (list "pd-cell-guardian-script" "pd-cell-guardian-token" "pd-cell-guardian-log") -}}
         {{- if hasKey $podVolumeMap $reservedName -}}
           {{- fail (printf "pdCellSpec model %s: volume name %s is reserved by the P/D Cell guardian" $name $reservedName) -}}
         {{- end -}}
@@ -1059,6 +1064,8 @@ spec:
               value: {{ $guardianPollSeconds | quote }}
             - name: PD_GUARDIAN_DELETE_GRACE_SECONDS
               value: {{ $guardianDeleteGraceSeconds | quote }}
+            - name: PD_GUARDIAN_LOG_DIR
+              value: {{ $guardianLogMountPath | quote }}
           resources:
             requests:
               cpu: {{ default "20m" $guardianRequests.cpu | quote }}
@@ -1073,6 +1080,8 @@ spec:
             - name: pd-cell-guardian-token
               mountPath: /var/run/secrets/pd-cell-guardian
               readOnly: true
+            - name: pd-cell-guardian-log
+              mountPath: {{ $guardianLogMountPath | quote }}
         {{- end }}
 
       {{- with $imagePullSecret }}
@@ -1102,6 +1111,10 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
+        - name: pd-cell-guardian-log
+          hostPath:
+            path: {{ $guardianLogHostPath | quote }}
+            type: DirectoryOrCreate
         {{- end }}
         {{- if $isMooncakeConnector }}
         - name: pd-mooncake-gpu-map

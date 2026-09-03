@@ -79,6 +79,7 @@ pdCellSpec:
     enabled: true
     pollIntervalSeconds: 2
     deleteGracePeriodSeconds: 5
+    logHostPath: /var/log/vllm-pd-cell/guardian
     resources:
       requests:
         cpu: 20m
@@ -93,19 +94,39 @@ pdCellSpec:
 | `enabled` | `true` | whole-cell guardian 활성화 |
 | `pollIntervalSeconds` | `2` | 자기 Pod status 조회 주기 |
 | `deleteGracePeriodSeconds` | `5` | failure 감지 후 Pod DELETE grace period |
+| `logHostPath` | `/var/log/vllm-pd-cell/guardian` | node-local guardian JSONL audit directory. absolute host path |
 | `resources` | 20m/64Mi request, 100m/128Mi limit | guardian sidecar resource |
 
 동작:
 
 ```text
-P/D/Router/(Mooncake gpu-reservation) 모두 Ready
-  -> restartCount baseline 저장
+모든 target status 관찰
+  -> full Ready 이전 restartCount > 0
+  -> partial-restart generation으로 판정
+  -> whole-cell DELETE
+
+restart 없이 P/D/Router/(Mooncake gpu-reservation) 모두 Ready
+  -> restartCount=0 baseline 저장
   -> ARMED
 
 이후 대상 container 중 하나 restartCount 증가
   -> guardian이 자기 Pod UID를 precondition으로 DELETE
   -> Deployment가 fresh P/D Cell Pod 생성
 ```
+
+guardian lifecycle event는 다음 hostPath에 Pod UID별 JSONL 파일로 영속화한다.
+
+```text
+host:      /var/log/vllm-pd-cell/guardian
+container: /var/log/pd-cell-guardian
+file:      <namespace>_<pod>_<pod-uid>.jsonl
+```
+
+각 recycle record에는 trigger container와 Kubernetes container status의
+`state` / `lastState`가 포함되므로 OOM/exit code/reason/finishedAt 같은 직전 종료
+정보를 Pod 교체 뒤에도 분석할 수 있다. Alloy 같은 node-level collector는 hostPath의
+`*.jsonl`을 수집 대상으로 사용한다. 감사로그 write 실패는 guardian의 lifecycle
+보호 자체를 중단시키지 않는다.
 
 guardian은 Kubernetes API를 호출할 수 있는 projected ServiceAccount token만 자기
 container에 mount한다. Engine/Router에는 Pod delete token을 자동 mount하지 않도록
@@ -519,7 +540,7 @@ servedModelNames:
 모델마다:
 
 ```text
-<release>-<name>-engine-service
+<release>-<name>-pd-engine-service
 ```
 
 를 생성한다.
@@ -568,7 +589,7 @@ Cell 내부 LMStack orchestrator는 Mooncake contract mismatch 때문에 제거�
 
 Mooncake direct URL Router와 Mooncake CUDA IPC state는 partial engine restart에서 stale generation 문제가 발생할 수 있다.
 
-현재 운영 contract는 partial restart 복구가 아니라 **P/D Cell 전체를 하나의 failure domain으로 취급**하는 것이다. Chart guardian이 정상 Ready 이후 P/D/Router/gpu-reservation의 restartCount 증가를 감지하면 자기 Pod 전체를 recycle한다.
+현재 운영 contract는 partial restart 복구가 아니라 **P/D Cell 전체를 하나의 failure domain으로 취급**하는 것이다. Chart guardian은 최초 full Ready 전의 restartCount > 0도 stale generation으로 처리하고, ARMED 이후 P/D/Router/gpu-reservation의 restartCount 증가 역시 자기 Pod 전체 recycle로 연결한다.
 
 ---
 

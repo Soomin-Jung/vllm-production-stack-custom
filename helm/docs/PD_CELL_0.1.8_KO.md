@@ -769,7 +769,7 @@ P/D Cell은 **Pod 전체를 하나의 failure domain**으로 취급한다.
 - Prefill-only restart에서 vllm-router의 stale Prefill `engine_id` 가능성이 확인됨
 - Mooncake 0.3.10 `nvlink_intra`에서 partial restart 후 CUDA IPC context lifecycle
   문제가 실제 재현됨
-- 고객 운영 요구사항은 단일 노드 P/D Cell 전체 재기동으로 복구되면 충분함
+- 현재 운영 contract에서는 단일 노드 P/D Cell 전체 재기동으로 복구되면 충분함
 
 따라서 partial engine restart를 복구하려고 Router/Mooncake state를 억지로 이어가지 않는다.
 
@@ -790,18 +790,38 @@ decode-*
 
 ```text
 1. Pod 시작
-2. 모든 감시 대상 container가 Ready가 될 때까지 대기
-3. 각 container restartCount를 baseline으로 저장
-4. ARMED
-5. 이후 어느 하나라도 restartCount 증가
-6. guardian이 자기 Pod를 UID precondition으로 DELETE
-7. Deployment가 fresh Pod 생성
-8. reservation / Router / P / D / Mooncake state가 모두 새 generation으로 시작
+2. 모든 감시 대상 container status가 관찰될 때까지 대기
+3. 최초 full Ready 이전이라도 target restartCount > 0이면 stale generation으로 판정
+4. guardian이 자기 Pod를 UID precondition으로 DELETE
+5. restart 없이 모든 target이 Ready가 되면 restartCount=0 baseline으로 ARMED
+6. 이후 어느 하나라도 restartCount 증가
+7. guardian이 자기 Pod를 UID precondition으로 DELETE
+8. Deployment가 fresh Pod 생성
+9. reservation / Router / P / D / Mooncake state가 모두 새 generation으로 시작
 ```
 
-초기 startup 중 restart는 baseline에 포함될 수 있으므로 guardian은 모든 대상이 최초
-Ready가 된 뒤에만 armed된다. 이는 잘못된 profile/image 때문에 startup 자체가 실패하는
-상황에서 무한 Pod delete loop를 피하기 위한 것이다.
+즉 **초기 startup 중 발생한 core container restart도 정상 generation에 흡수하지 않는다.**
+P/D Cell의 lifecycle contract는 "한 Pod generation 안에서는 core container restart가
+0이어야 한다"로 고정한다. 잘못된 image/profile 때문에 반복 실패하는 경우에는
+Deployment/Kubernetes의 backoff와 운영 알람으로 처리하며, 부분 재시작된 generation을
+정상 상태로 승격시키지는 않는다.
+
+guardian은 restart/recycle 판단을 stdout뿐 아니라 node-local hostPath에도 JSONL로 남긴다.
+
+```text
+host:      /var/log/vllm-pd-cell/guardian
+container: /var/log/pd-cell-guardian
+
+<namespace>_<pod>_<pod-uid>.jsonl
+```
+
+기록에는 UTC timestamp, Pod UID, trigger container, restartCount, container
+`state/lastState`, exit reason/code/time, Pod phase/reason, DELETE 수락 여부가 포함된다.
+따라서 Pod가 recycle되어 이전 container log가 사라져도 node-local audit trail을
+Alloy 같은 node log collector가 수집할 수 있다.
+
+단, node 자체가 hard-fail하여 guardian이 failure를 관찰하지 못한 경우까지 이 파일이
+보장하는 것은 아니다. 그 경우 Kubernetes event/kubelet/node telemetry를 함께 본다.
 
 ### 16.2 Kubernetes API / RBAC
 
@@ -823,7 +843,7 @@ guardian container에만 projected volume으로 mount한다.
 
 ### 16.3 현재 acceptance
 
-partial restart는 known limitation이며 현 고객 요구사항의 blocker가 아니다.
+partial restart continuity는 현재 지원 contract가 아니며, whole-cell recycle을 표준 복구 경로로 사용한다.
 
 production acceptance는:
 
@@ -988,7 +1008,9 @@ D remote_bootstrap_addr present
 
 ### Gate 7 — resilience
 
+- 최초 full Ready 이전 Prefill/Decode restartCount > 0 감지 및 whole-cell recycle
 - 정상 Ready 상태에서 Prefill restartCount 증가 감지
+- guardian JSONL audit에 trigger container / lastState.terminated / delete outcome 기록
 - guardian whole-Pod DELETE
 - fresh reservation/Router/P/D generation 확인
 - whole-cell restart 후 actual KV transfer 재검증
