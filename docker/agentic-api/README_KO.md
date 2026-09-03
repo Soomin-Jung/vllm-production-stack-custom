@@ -28,7 +28,7 @@ docker/agentic-api/
 - `certs/`: 내부 Cargo/APT endpoint용 CA
 - `sources.list`: Debian bookworm 내부 APT mirror
 
-Agentic API source의 `rust-toolchain.toml`은 Rust `1.98.0`을 지정하므로 builder image에도 같은 toolchain이 설치되어 있어야 한다. 내부 Cargo proxy는 crate 의존성만 제공하며 rustup toolchain 배포 파일은 제공하지 않는다.
+Agentic API source의 `rust-toolchain.toml`은 Rust `1.98.0`과 개발용 `clippy`, `rustfmt` component를 지정한다. 공식 Rust image는 minimal profile로 설치되므로 이 component 확인이 외부 rustup 동기화를 유발할 수 있다. Dockerfile은 `RUSTUP_TOOLCHAIN=1.98.0`으로 image에 이미 설치된 compiler를 직접 선택한다. `cargo build`에 필요 없는 개발용 component는 설치하지 않으며, 내부 Cargo proxy는 crate 의존성만 제공한다.
 
 source는 연결 가능한 구간에서 간단히 준비할 수 있다.
 

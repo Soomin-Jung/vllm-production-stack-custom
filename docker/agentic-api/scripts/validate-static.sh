@@ -18,6 +18,7 @@ done
 
 grep -Fq 'ARG DOCKER_REGISTRY=docker.io' "$DOCKERFILE" || fail "DOCKER_REGISTRY build arg missing"
 grep -Fq 'ARG AGENTIC_API_BUILDER_IMAGE=library/rust:1.98.0-bookworm' "$DOCKERFILE" || fail "Rust builder must match rust-toolchain.toml 1.98.0"
+grep -Fq 'RUSTUP_TOOLCHAIN=1.98.0' "$DOCKERFILE" || fail "installed Rust toolchain override missing"
 grep -Fq "FROM \${DOCKER_REGISTRY}/\${AGENTIC_API_BUILDER_IMAGE}" "$DOCKERFILE" || fail "builder registry prefix missing"
 grep -Fq "FROM \${DOCKER_REGISTRY}/\${AGENTIC_API_RUNTIME_IMAGE}" "$DOCKERFILE" || fail "runtime registry prefix missing"
 grep -Fq 'COPY docker/agentic-api/agentic-api-src/' "$DOCKERFILE" || fail "source directory input missing"

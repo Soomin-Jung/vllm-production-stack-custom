@@ -8,7 +8,8 @@ ARG CARGO_BUILD_JOBS=4
 
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
     CARGO_TERM_COLOR=never \
-    CARGO_TARGET_DIR=/workspace/target
+    CARGO_TARGET_DIR=/workspace/target \
+    RUSTUP_TOOLCHAIN=1.98.0
 
 # Use the same source-directory and Cargo-proxy pattern as the Rust Router build.
 COPY certs/ /opt/certs/
