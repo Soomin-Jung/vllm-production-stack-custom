@@ -3,6 +3,22 @@
 {{- if ($pdCellSpec.enabled | default false) -}}
 
   {{- $global := $root.Values.global | default dict -}}
+  {{- $guardian := $pdCellSpec.guardian | default dict -}}
+  {{- $guardianEnabled := true -}}
+  {{- if hasKey $guardian "enabled" -}}
+    {{- $guardianEnabled = $guardian.enabled -}}
+  {{- end -}}
+  {{- $guardianName := include "chart.pdCellGuardianName" $root -}}
+  {{- $guardianPollSeconds := int (default 2 $guardian.pollIntervalSeconds) -}}
+  {{- $guardianDeleteGraceSeconds := int (default 5 $guardian.deleteGracePeriodSeconds) -}}
+  {{- $guardianResources := $guardian.resources | default dict -}}
+  {{- $guardianRequests := $guardianResources.requests | default dict -}}
+  {{- $guardianLimits := $guardianResources.limits | default dict -}}
+  {{- $guardianLogHostPath := default "/var/log/vllm-pd-cell/guardian" $guardian.logHostPath -}}
+  {{- $guardianLogMountPath := "/var/log/pd-cell-guardian" -}}
+  {{- if and $guardianEnabled (not (hasPrefix "/" $guardianLogHostPath)) -}}
+    {{- fail "pdCellSpec.guardian.logHostPath must be an absolute host path" -}}
+  {{- end -}}
 
   {{- $globalEnvMap := dict -}}
   {{- range $e := ($global.env | default (list)) -}}
@@ -37,154 +53,412 @@
   {{- $seenNames := dict -}}
 
   {{ range $modelSpec := ($pdCellSpec.models | default (list)) }}
-    {{ $name := required "pdCellSpec.models[].name is required" $modelSpec.name }}
-    {{ if hasKey $seenNames $name }}
-      {{ fail (printf "pdCellSpec.models[].name must be unique within one Helm release; duplicate: %s" $name) }}
-    {{ end }}
-    {{ $_ := set $seenNames $name true }}
-    {{ $servedModelName := default $name $modelSpec.servedModelName }}
-    {{ $repository := required (printf "pdCellSpec model %s: repository is required" $name) $modelSpec.repository }}
-    {{ $tag := required (printf "pdCellSpec model %s: tag is required" $name) $modelSpec.tag }}
-    {{ $replicaCount := 1 }}
-    {{ if hasKey $modelSpec "replicaCount" }}
-      {{ $replicaCount = int $modelSpec.replicaCount }}
-    {{ end }}
-    {{ if lt $replicaCount 0 }}
-      {{ fail (printf "pdCellSpec model %s: replicaCount must be >= 0" $name) }}
-    {{ end }}
+    {{- $name := required "pdCellSpec.models[].name is required" $modelSpec.name -}}
+    {{- if hasKey $seenNames $name -}}
+      {{- fail (printf "pdCellSpec.models[].name must be unique within one Helm release; duplicate: %s" $name) -}}
+    {{- end -}}
+    {{- $_ := set $seenNames $name true -}}
 
-    {{ $prefill := required (printf "pdCellSpec model %s: prefill is required" $name) $modelSpec.prefill }}
-    {{ $decode := required (printf "pdCellSpec model %s: decode is required" $name) $modelSpec.decode }}
-    {{ $pCount := int (required (printf "pdCellSpec model %s: prefill.count is required" $name) $prefill.count) }}
-    {{ $dCount := int (required (printf "pdCellSpec model %s: decode.count is required" $name) $decode.count) }}
-    {{ if lt $pCount 1 }}
-      {{ fail (printf "pdCellSpec model %s: prefill.count must be >= 1" $name) }}
-    {{ end }}
-    {{ if lt $dCount 1 }}
-      {{ fail (printf "pdCellSpec model %s: decode.count must be >= 1" $name) }}
-    {{ end }}
-    {{ $pProfile := required (printf "pdCellSpec model %s: prefill.profile is required" $name) $prefill.profile }}
-    {{ $dProfile := required (printf "pdCellSpec model %s: decode.profile is required" $name) $decode.profile }}
-    {{ $pPortBase := int (default 8101 $prefill.portBase) }}
-    {{ $dPortBase := int (default 8201 $decode.portBase) }}
-    {{ $pInternalPortBase := int (default 20000 $prefill.internalPortBase) }}
-    {{ $dInternalPortBase := int (default 30000 $decode.internalPortBase) }}
-    {{ $pDpMasterPortBase := int (default 24000 $prefill.dpMasterPortBase) }}
-    {{ $dDpMasterPortBase := int (default 34000 $decode.dpMasterPortBase) }}
-    {{ $pSideChannelPortBase := int (default 5600 $prefill.sideChannelPortBase) }}
-    {{ $dSideChannelPortBase := int (default 5700 $decode.sideChannelPortBase) }}
-    {{ $pInternalPortStride := int (default 100 $prefill.internalPortStride) }}
-    {{ $dInternalPortStride := int (default 100 $decode.internalPortStride) }}
-    {{ $pInternalPortMode := default "vllm" $prefill.internalPortMode }}
-    {{ $dInternalPortMode := default "vllm" $decode.internalPortMode }}
-    {{ if not (has $pInternalPortMode (list "vllm" "dp" "auto")) }}
-      {{ fail (printf "pdCellSpec model %s: prefill.internalPortMode must be vllm, dp, or auto" $name) }}
-    {{ end }}
-    {{ if not (has $dInternalPortMode (list "vllm" "dp" "auto")) }}
-      {{ fail (printf "pdCellSpec model %s: decode.internalPortMode must be vllm, dp, or auto" $name) }}
-    {{ end }}
+    {{- $servedModelNames := list -}}
+    {{- $hasServedModelOverride := or (hasKey $modelSpec "servedModelName") (hasKey $modelSpec "servedModelNames") -}}
+    {{- if $hasServedModelOverride -}}
+      {{- $servedModelNamesRaw := $modelSpec.servedModelName | default "" -}}
+      {{- if hasKey $modelSpec "servedModelNames" -}}
+        {{- $servedModelNamesRaw = $modelSpec.servedModelNames -}}
+      {{- end -}}
+      {{- if kindIs "slice" $servedModelNamesRaw -}}
+        {{- range $servedName := $servedModelNamesRaw -}}
+          {{- if empty $servedName -}}
+            {{- fail (printf "pdCellSpec model %s: servedModelNames must not contain an empty name" $name) -}}
+          {{- end -}}
+          {{- $servedModelNames = append $servedModelNames (printf "%v" $servedName) -}}
+        {{- end -}}
+      {{- else -}}
+        {{- if empty $servedModelNamesRaw -}}
+          {{- fail (printf "pdCellSpec model %s: servedModelName must not be empty when explicitly configured" $name) -}}
+        {{- end -}}
+        {{- $servedModelNames = append $servedModelNames (printf "%v" $servedModelNamesRaw) -}}
+      {{- end -}}
+      {{- $servedModelNames = uniq $servedModelNames -}}
+      {{- if empty $servedModelNames -}}
+        {{- fail (printf "pdCellSpec model %s: servedModelNames must contain at least one name when explicitly configured" $name) -}}
+      {{- end -}}
+    {{- end -}}
 
-    {{ $router := mergeOverwrite (deepCopy ($pdCellSpec.router | default dict)) ($modelSpec.router | default dict) }}
-    {{ $routerRepository := required (printf "pdCellSpec model %s: router.repository is required" $name) $router.repository }}
-    {{ $routerTag := required (printf "pdCellSpec model %s: router.tag is required; pin a validated orchestrated-P/D LMRouter image" $name) $router.tag }}
-    {{ $routerPort := int (default 8000 $router.port) }}
-    {{ $routerHealthInterval := int (default 30 $router.healthCheckInterval) }}
-    {{ $routerHealthTimeout := int (default 5 $router.healthCheckTimeout) }}
-    {{ $routerImagePullPolicy := default "IfNotPresent" $root.Values.routerSpec.imagePullPolicy }}
-    {{ $routerImagePullPolicy = default $routerImagePullPolicy $router.imagePullPolicy }}
-    {{ $routerResources := mergeOverwrite (deepCopy ($root.Values.routerSpec.resources | default dict)) ($router.resources | default dict) }}
-    {{ if empty $routerResources }}
-      {{ $routerResources = dict "requests" (dict "cpu" "1000m" "memory" "5Gi") }}
-    {{ end }}
-    {{ $modelType := default "chat" $modelSpec.modelType }}
+    {{- $repository := required (printf "pdCellSpec model %s: repository is required" $name) $modelSpec.repository -}}
+    {{- $tag := required (printf "pdCellSpec model %s: tag is required" $name) $modelSpec.tag -}}
+    {{- $replicaCount := 1 -}}
+    {{- if hasKey $modelSpec "replicaCount" -}}
+      {{- $replicaCount = int $modelSpec.replicaCount -}}
+    {{- end -}}
+    {{- if lt $replicaCount 0 -}}
+      {{- fail (printf "pdCellSpec model %s: replicaCount must be >= 0" $name) -}}
+    {{- end -}}
 
-    {{ $kv := mergeOverwrite (deepCopy ($pdCellSpec.kvTransfer | default dict)) ($modelSpec.kvTransfer | default dict) }}
-    {{ $kvConnector := required (printf "pdCellSpec model %s: kvTransfer.connector is required" $name) $kv.connector }}
-    {{ $kvBaseConfig := deepCopy ($kv.config | default dict) }}
-    {{ $bootstrapPortBase := int (default 9001 $kv.bootstrapPortBase) }}
-    {{ $abortTimeout := int (default 600 $kv.abortRequestTimeout) }}
-    {{ $nixlSideChannelEnabled := has $kvConnector (list "NixlConnector" "NixlPullConnector" "NixlPushConnector") }}
-    {{ if hasKey $kv "nixlSideChannelEnabled" }}
-      {{ $nixlSideChannelEnabled = $kv.nixlSideChannelEnabled }}
-    {{ end }}
+    {{- $prefill := required (printf "pdCellSpec model %s: prefill is required" $name) $modelSpec.prefill -}}
+    {{- $decode := required (printf "pdCellSpec model %s: decode is required" $name) $modelSpec.decode -}}
+    {{- $pCount := int (required (printf "pdCellSpec model %s: prefill.count is required" $name) $prefill.count) -}}
+    {{- $dCount := int (required (printf "pdCellSpec model %s: decode.count is required" $name) $decode.count) -}}
+    {{- if lt $pCount 1 -}}
+      {{- fail (printf "pdCellSpec model %s: prefill.count must be >= 1" $name) -}}
+    {{- end -}}
+    {{- if lt $dCount 1 -}}
+      {{- fail (printf "pdCellSpec model %s: decode.count must be >= 1" $name) -}}
+    {{- end -}}
 
-    {{ $engineImagePullPolicy := default "Always" $root.Values.servingEngineSpec.imagePullPolicy }}
-    {{ if hasKey $pdCellSpec "imagePullPolicy" }}
-      {{ $engineImagePullPolicy = $pdCellSpec.imagePullPolicy }}
-    {{ end }}
-    {{ if hasKey $modelSpec "imagePullPolicy" }}
-      {{ $engineImagePullPolicy = $modelSpec.imagePullPolicy }}
-    {{ end }}
+    {{- $pProfile := required (printf "pdCellSpec model %s: prefill.profile is required" $name) $prefill.profile -}}
+    {{- $dProfile := required (printf "pdCellSpec model %s: decode.profile is required" $name) $decode.profile -}}
+    {{- $pPortBase := int (default 8101 $prefill.portBase) -}}
+    {{- $dPortBase := int (default 8201 $decode.portBase) -}}
+    {{- $pInternalPortBase := int (default 20000 $prefill.internalPortBase) -}}
+    {{- $dInternalPortBase := int (default 30000 $decode.internalPortBase) -}}
+    {{- $pDpMasterPortBase := int (default 24000 $prefill.dpMasterPortBase) -}}
+    {{- $dDpMasterPortBase := int (default 34000 $decode.dpMasterPortBase) -}}
+    {{- $pSideChannelPortBase := int (default 5600 $prefill.sideChannelPortBase) -}}
+    {{- $dSideChannelPortBase := int (default 5700 $decode.sideChannelPortBase) -}}
+    {{- $pInternalPortStride := int (default 100 $prefill.internalPortStride) -}}
+    {{- $dInternalPortStride := int (default 100 $decode.internalPortStride) -}}
+    {{- $pInternalPortMode := default "vllm" $prefill.internalPortMode -}}
+    {{- $dInternalPortMode := default "vllm" $decode.internalPortMode -}}
+    {{- if not (has $pInternalPortMode (list "vllm" "dp" "auto")) -}}
+      {{- fail (printf "pdCellSpec model %s: prefill.internalPortMode must be vllm, dp, or auto" $name) -}}
+    {{- end -}}
+    {{- if not (has $dInternalPortMode (list "vllm" "dp" "auto")) -}}
+      {{- fail (printf "pdCellSpec model %s: decode.internalPortMode must be vllm, dp, or auto" $name) -}}
+    {{- end -}}
 
-    {{ $runtimeClassName := default "" $root.Values.servingEngineSpec.runtimeClassName }}
-    {{ if hasKey $pdCellSpec "runtimeClassName" }}
-      {{ $runtimeClassName = $pdCellSpec.runtimeClassName }}
-    {{ end }}
-    {{ if hasKey $modelSpec "runtimeClassName" }}
-      {{ $runtimeClassName = $modelSpec.runtimeClassName }}
-    {{ end }}
+    {{- $commonRouter := $pdCellSpec.router | default dict -}}
+    {{- $modelRouter := $modelSpec.router | default dict -}}
+    {{- $router := mergeOverwrite (deepCopy $commonRouter) $modelRouter -}}
+    {{- if hasKey $router "type" -}}
+      {{- fail (printf "pdCellSpec model %s: router.type was removed; P/D Cell orchestration is fixed to vllm-project/router" $name) -}}
+    {{- end -}}
+    {{- if hasKey $router "args" -}}
+      {{- fail (printf "pdCellSpec model %s: router.args full override was removed; use router.extraArgs with the fixed vLLM P/D contract" $name) -}}
+    {{- end -}}
+    {{- if hasKey $router "kvConnector" -}}
+      {{- fail (printf "pdCellSpec model %s: router.kvConnector was removed; it is derived from models[].kvTransfer.connector" $name) -}}
+    {{- end -}}
 
-    {{ $schedulerName := default "" $root.Values.servingEngineSpec.schedulerName }}
-    {{ if hasKey $pdCellSpec "schedulerName" }}
-      {{ $schedulerName = $pdCellSpec.schedulerName }}
-    {{ end }}
-    {{ if hasKey $modelSpec "schedulerName" }}
-      {{ $schedulerName = $modelSpec.schedulerName }}
-    {{ end }}
+    {{- $routerRepository := required (printf "pdCellSpec model %s: pdCellSpec.router.repository (or models[].router.repository) is required; P/D Cell must use a pinned vllm-project/router image" $name) $router.repository -}}
+    {{- $routerTag := required (printf "pdCellSpec model %s: pdCellSpec.router.tag (or models[].router.tag) is required; pin a validated vllm-router version (Mooncake requires >= v0.1.15 in this chart baseline)" $name) $router.tag -}}
+    {{- $routerPort := int (default 8000 $router.port) -}}
+    {{- $routerHealthInterval := int (default 30 $router.healthCheckInterval) -}}
+    {{- $routerHealthTimeout := int (default 5 $router.healthCheckTimeout) -}}
+    {{- $routerImagePullPolicy := default "IfNotPresent" $router.imagePullPolicy -}}
+    {{- $routerResources := deepCopy ($router.resources | default dict) -}}
+    {{- if empty $routerResources -}}
+      {{- $routerResources = dict "requests" (dict "cpu" "1000m" "memory" "5Gi") -}}
+    {{- end -}}
+    {{- $routerHealthPath := default "/health" $router.healthPath -}}
+    {{- $routerPrometheusPort := 29000 -}}
+    {{- if hasKey $router "prometheusPort" -}}
+      {{- $routerPrometheusPort = int $router.prometheusPort -}}
+    {{- end -}}
+    {{- $routerPolicy := default "consistent_hash" $router.policy -}}
 
-    {{ $nodeName := default "" $pdCellSpec.nodeName }}
-    {{ if hasKey $modelSpec "nodeName" }}
-      {{ $nodeName = $modelSpec.nodeName }}
-    {{ end }}
-    {{ $affinity := $pdCellSpec.affinity | default dict }}
-    {{ if hasKey $modelSpec "affinity" }}
-      {{ $affinity = $modelSpec.affinity }}
-    {{ end }}
-    {{ $nodeSelectorTerms := $pdCellSpec.nodeSelectorTerms | default (list) }}
-    {{ if hasKey $modelSpec "nodeSelectorTerms" }}
-      {{ $nodeSelectorTerms = $modelSpec.nodeSelectorTerms }}
-    {{ end }}
-    {{ $podAnnotations := mergeOverwrite (deepCopy ($pdCellSpec.podAnnotations | default dict)) ($modelSpec.podAnnotations | default dict) }}
-    {{ $imagePullSecret := default "" $pdCellSpec.imagePullSecret }}
-    {{ if hasKey $modelSpec "imagePullSecret" }}
-      {{ $imagePullSecret = $modelSpec.imagePullSecret }}
-    {{ end }}
+    {{- $kv := deepCopy ($modelSpec.kvTransfer | default dict) -}}
+    {{- $kvConnector := required (printf "pdCellSpec model %s: models[].kvTransfer.connector is required" $name) $kv.connector -}}
+    {{- $isMooncakeConnector := eq $kvConnector "MooncakeConnector" -}}
+    {{- $kvBaseConfig := deepCopy ($kv.config | default dict) -}}
+    {{- $bootstrapPortBase := int (default 9001 $kv.bootstrapPortBase) -}}
 
-    {{ $prefillLabel := printf "%s-prefill" $name }}
-    {{ $decodeLabel := printf "%s-decode" $name }}
-    {{ $staticBackends := list }}
-    {{ $staticModels := list }}
-    {{ $staticLabels := list }}
-    {{ $staticTypes := list }}
+    {{- $pGpuCount := int (required (printf "pdCellSpec model %s: prefill.requestGPU is required" $name) $prefill.requestGPU) -}}
+    {{- $dGpuCount := int (required (printf "pdCellSpec model %s: decode.requestGPU is required" $name) $decode.requestGPU) -}}
+    {{- $gpuReservationTotal := 0 -}}
+    {{- $gpuResourceType := default "nvidia.com/gpu" $prefill.requestGPUType -}}
+    {{- $prefillVllmBin := ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") -}}
+    {{- $decodeVllmBin := $prefillVllmBin -}}
 
-    {{ range $i := until $pCount }}
-      {{ $staticBackends = append $staticBackends (printf "http://127.0.0.1:%d" (add $pPortBase $i)) }}
-      {{ $staticModels = append $staticModels $servedModelName }}
-      {{ $staticLabels = append $staticLabels $prefillLabel }}
-      {{ $staticTypes = append $staticTypes $modelType }}
-    {{ end }}
+    {{- if $isMooncakeConnector -}}
+      {{- if ne $gpuResourceType "nvidia.com/gpu" -}}
+        {{- fail (printf "pdCellSpec model %s: MooncakeConnector pod-local reservation requires requestGPUType=nvidia.com/gpu; MIG/time-slicing/shared GPU resources are not supported" $name) -}}
+      {{- end -}}
+      {{- if lt $pGpuCount 1 -}}
+        {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill.requestGPU must be >= 1" $name) -}}
+      {{- end -}}
+      {{- if lt $dGpuCount 1 -}}
+        {{- fail (printf "pdCellSpec model %s: MooncakeConnector decode.requestGPU must be >= 1" $name) -}}
+      {{- end -}}
+      {{- $decodeGpuResourceType := default "nvidia.com/gpu" $decode.requestGPUType -}}
+      {{- if ne $gpuResourceType $decodeGpuResourceType -}}
+        {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill/decode requestGPUType must match because one pod-local reservation owns the full GPU set" $name) -}}
+      {{- end -}}
+      {{- $gpuReservationTotal = add (mul $pCount $pGpuCount) (mul $dCount $dGpuCount) -}}
 
-    {{ range $i := until $dCount }}
-      {{ $staticBackends = append $staticBackends (printf "http://127.0.0.1:%d" (add $dPortBase $i)) }}
-      {{ $staticModels = append $staticModels $servedModelName }}
-      {{ $staticLabels = append $staticLabels $decodeLabel }}
-      {{ $staticTypes = append $staticTypes $modelType }}
-    {{ end }}
+      {{- range $arg := ($prefill.extraArgs | default (list)) -}}
+        {{- $argString := printf "%v" $arg -}}
+        {{- if or (eq $argString "--device-ids") (hasPrefix "--device-ids=" $argString) -}}
+          {{- fail (printf "pdCellSpec model %s: prefill --device-ids is chart-managed for MooncakeConnector" $name) -}}
+        {{- end -}}
+      {{- end -}}
+      {{- range $arg := ($decode.extraArgs | default (list)) -}}
+        {{- $argString := printf "%v" $arg -}}
+        {{- if or (eq $argString "--device-ids") (hasPrefix "--device-ids=" $argString) -}}
+          {{- fail (printf "pdCellSpec model %s: decode --device-ids is chart-managed for MooncakeConnector" $name) -}}
+        {{- end -}}
+      {{- end -}}
 
-    {{ $modelEnvMap := deepCopy $commonEnvMap }}
-    {{ range $e := ($modelSpec.env | default (list)) }}
-      {{ $_ := set $modelEnvMap $e.name $e }}
-    {{ end }}
+      {{- if $prefill.command -}}
+        {{- if or (not (kindIs "slice" $prefill.command)) (ne (len $prefill.command) 2) (ne (printf "%v" (index $prefill.command 1)) "serve") -}}
+          {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
+        {{- end -}}
+        {{- $prefillVllmBin = printf "%v" (index $prefill.command 0) -}}
+      {{- end -}}
+      {{- if $decode.command -}}
+        {{- if or (not (kindIs "slice" $decode.command)) (ne (len $decode.command) 2) (ne (printf "%v" (index $decode.command 1)) "serve") -}}
+          {{- fail (printf "pdCellSpec model %s: MooncakeConnector decode.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
+        {{- end -}}
+        {{- $decodeVllmBin = printf "%v" (index $decode.command 0) -}}
+      {{- end -}}
+    {{- end -}}
+    {{- $guardianTargets := list "pd-router" -}}
+    {{- if $isMooncakeConnector -}}
+      {{- $guardianTargets = append $guardianTargets "gpu-reservation" -}}
+    {{- end -}}
+    {{- range $i := until $pCount -}}
+      {{- $guardianTargets = append $guardianTargets (printf "prefill-%d" $i) -}}
+    {{- end -}}
+    {{- range $i := until $dCount -}}
+      {{- $guardianTargets = append $guardianTargets (printf "decode-%d" $i) -}}
+    {{- end -}}
 
-    {{ $modelMountMap := deepCopy $commonMountMap }}
-    {{ range $e := ($modelSpec.extraVolumeMounts | default (list)) }}
-      {{ $_ := set $modelMountMap $e.name $e }}
-    {{ end }}
+    {{- $abortTimeout := int (default 600 $kv.abortRequestTimeout) -}}
+    {{- $nixlSideChannelEnabled := has $kvConnector (list "NixlConnector" "NixlPullConnector" "NixlPushConnector") -}}
+    {{- if hasKey $kv "nixlSideChannelEnabled" -}}
+      {{- $nixlSideChannelEnabled = $kv.nixlSideChannelEnabled -}}
+    {{- end -}}
 
-    {{ $modelVolumeMap := deepCopy $commonVolumeMap }}
-    {{ range $e := ($modelSpec.extraVolumes | default (list)) }}
-      {{ $_ := set $modelVolumeMap $e.name $e }}
-    {{ end }}
+    {{- $routerKvConnector := "" -}}
+    {{- if contains "Mooncake" $kvConnector -}}
+      {{- $routerKvConnector = "mooncake" -}}
+    {{- else if contains "Nixl" $kvConnector -}}
+      {{- $routerKvConnector = "nixl" -}}
+    {{- else if or (contains "Mori" $kvConnector) (contains "MoRI" $kvConnector) -}}
+      {{- $routerKvConnector = "moriio" -}}
+    {{- else -}}
+      {{- fail (printf "pdCellSpec model %s: connector %s is not supported by the fixed vllm-router P/D contract; supported router backends are nixl, mooncake, and moriio (engine-version compatibility still applies)" $name $kvConnector) -}}
+    {{- end -}}
+
+    {{- $engineImagePullPolicy := default "IfNotPresent" $root.Values.servingEngineSpec.imagePullPolicy -}}
+    {{- if hasKey $pdCellSpec "imagePullPolicy" -}}
+      {{- $engineImagePullPolicy = $pdCellSpec.imagePullPolicy -}}
+    {{- end -}}
+    {{- if hasKey $modelSpec "imagePullPolicy" -}}
+      {{- $engineImagePullPolicy = $modelSpec.imagePullPolicy -}}
+    {{- end -}}
+
+    {{- $runtimeClassName := default "" $root.Values.servingEngineSpec.runtimeClassName -}}
+    {{- if hasKey $pdCellSpec "runtimeClassName" -}}
+      {{- $runtimeClassName = $pdCellSpec.runtimeClassName -}}
+    {{- end -}}
+    {{- if hasKey $modelSpec "runtimeClassName" -}}
+      {{- $runtimeClassName = $modelSpec.runtimeClassName -}}
+    {{- end -}}
+
+    {{- $schedulerName := default "" $root.Values.servingEngineSpec.schedulerName -}}
+    {{- if hasKey $pdCellSpec "schedulerName" -}}
+      {{- $schedulerName = $pdCellSpec.schedulerName -}}
+    {{- end -}}
+    {{- if hasKey $modelSpec "schedulerName" -}}
+      {{- $schedulerName = $modelSpec.schedulerName -}}
+    {{- end -}}
+
+    {{- $nodeName := default "" $pdCellSpec.nodeName -}}
+    {{- if hasKey $modelSpec "nodeName" -}}
+      {{- $nodeName = $modelSpec.nodeName -}}
+    {{- end -}}
+    {{- $affinity := $pdCellSpec.affinity | default dict -}}
+    {{- if hasKey $modelSpec "affinity" -}}
+      {{- $affinity = $modelSpec.affinity -}}
+    {{- end -}}
+    {{- $nodeSelectorTerms := $pdCellSpec.nodeSelectorTerms | default (list) -}}
+    {{- if hasKey $modelSpec "nodeSelectorTerms" -}}
+      {{- $nodeSelectorTerms = $modelSpec.nodeSelectorTerms -}}
+    {{- end -}}
+    {{- $podAnnotations := mergeOverwrite (deepCopy ($pdCellSpec.podAnnotations | default dict)) ($modelSpec.podAnnotations | default dict) -}}
+    {{- $imagePullSecret := default "" $pdCellSpec.imagePullSecret -}}
+    {{- if hasKey $modelSpec "imagePullSecret" -}}
+      {{- $imagePullSecret = $modelSpec.imagePullSecret -}}
+    {{- end -}}
+    {{- $serviceAccountName := default "" $pdCellSpec.serviceAccountName -}}
+    {{- if hasKey $modelSpec "serviceAccountName" -}}
+      {{- $serviceAccountName = $modelSpec.serviceAccountName -}}
+    {{- end -}}
+    {{- if and $guardianEnabled (empty $serviceAccountName) -}}
+      {{- $serviceAccountName = $guardianName -}}
+    {{- end -}}
+    {{- $priorityClassName := default "" $pdCellSpec.priorityClassName -}}
+    {{- if hasKey $modelSpec "priorityClassName" -}}
+      {{- $priorityClassName = $modelSpec.priorityClassName -}}
+    {{- end -}}
+    {{- $strategy := $pdCellSpec.strategy | default dict -}}
+    {{- if hasKey $modelSpec "strategy" -}}
+      {{- $strategy = $modelSpec.strategy -}}
+    {{- end -}}
+    {{- $progressDeadlineSeconds := int (default 1800 $pdCellSpec.progressDeadlineSeconds) -}}
+    {{- if hasKey $modelSpec "progressDeadlineSeconds" -}}
+      {{- $progressDeadlineSeconds = int $modelSpec.progressDeadlineSeconds -}}
+    {{- end -}}
+    {{- $terminationGracePeriodSeconds := int (default 60 $pdCellSpec.terminationGracePeriodSeconds) -}}
+    {{- if hasKey $modelSpec "terminationGracePeriodSeconds" -}}
+      {{- $terminationGracePeriodSeconds = int $modelSpec.terminationGracePeriodSeconds -}}
+    {{- end -}}
+
+    {{- $hostPID := false -}}
+    {{- if hasKey $pdCellSpec "hostPID" -}}
+      {{- $hostPID = $pdCellSpec.hostPID -}}
+    {{- end -}}
+    {{- if hasKey $modelSpec "hostPID" -}}
+      {{- $hostPID = $modelSpec.hostPID -}}
+    {{- end -}}
+
+    {{- $hostIPC := false -}}
+    {{- if hasKey $pdCellSpec "hostIPC" -}}
+      {{- $hostIPC = $pdCellSpec.hostIPC -}}
+    {{- end -}}
+    {{- if hasKey $modelSpec "hostIPC" -}}
+      {{- $hostIPC = $modelSpec.hostIPC -}}
+    {{- end -}}
+
+    {{- $shareProcessNamespace := false -}}
+    {{- if hasKey $pdCellSpec "shareProcessNamespace" -}}
+      {{- $shareProcessNamespace = $pdCellSpec.shareProcessNamespace -}}
+    {{- end -}}
+    {{- if hasKey $modelSpec "shareProcessNamespace" -}}
+      {{- $shareProcessNamespace = $modelSpec.shareProcessNamespace -}}
+    {{- end -}}
+
+    {{- $modelEnvMap := deepCopy $commonEnvMap -}}
+    {{- range $e := ($modelSpec.env | default (list)) -}}
+      {{- $_ := set $modelEnvMap $e.name $e -}}
+    {{- end -}}
+
+    {{- $modelMountMap := deepCopy $commonMountMap -}}
+    {{- range $e := ($modelSpec.extraVolumeMounts | default (list)) -}}
+      {{- $_ := set $modelMountMap $e.name $e -}}
+    {{- end -}}
+
+    {{- $modelVolumeMap := deepCopy $commonVolumeMap -}}
+    {{- range $e := ($modelSpec.extraVolumes | default (list)) -}}
+      {{- $_ := set $modelVolumeMap $e.name $e -}}
+    {{- end -}}
+
+    {{- $routerEnvMap := deepCopy $modelEnvMap -}}
+    {{- range $e := ($commonRouter.env | default (list)) -}}
+      {{- $_ := set $routerEnvMap $e.name $e -}}
+    {{- end -}}
+    {{- range $e := ($modelRouter.env | default (list)) -}}
+      {{- $_ := set $routerEnvMap $e.name $e -}}
+    {{- end -}}
+    {{- if not (hasKey $routerEnvMap "PYTHONHASHSEED") -}}
+      {{- $_ := set $routerEnvMap "PYTHONHASHSEED" (dict "name" "PYTHONHASHSEED" "value" "123") -}}
+    {{- end -}}
+
+    {{- $routerMountMap := deepCopy $modelMountMap -}}
+    {{- range $e := ($commonRouter.extraVolumeMounts | default (list)) -}}
+      {{- $_ := set $routerMountMap $e.name $e -}}
+    {{- end -}}
+    {{- range $e := ($modelRouter.extraVolumeMounts | default (list)) -}}
+      {{- $_ := set $routerMountMap $e.name $e -}}
+    {{- end -}}
+
+    {{- $prefillMountMap := deepCopy $modelMountMap -}}
+    {{- range $e := ($prefill.extraVolumeMounts | default (list)) -}}
+      {{- $_ := set $prefillMountMap $e.name $e -}}
+    {{- end -}}
+
+    {{- $decodeMountMap := deepCopy $modelMountMap -}}
+    {{- range $e := ($decode.extraVolumeMounts | default (list)) -}}
+      {{- $_ := set $decodeMountMap $e.name $e -}}
+    {{- end -}}
+
+    {{- $podVolumeMap := deepCopy $modelVolumeMap -}}
+    {{- range $e := ($commonRouter.extraVolumes | default (list)) -}}
+      {{- $_ := set $podVolumeMap $e.name $e -}}
+    {{- end -}}
+    {{- range $e := ($modelRouter.extraVolumes | default (list)) -}}
+      {{- $_ := set $podVolumeMap $e.name $e -}}
+    {{- end -}}
+    {{- range $e := ($prefill.extraVolumes | default (list)) -}}
+      {{- $_ := set $podVolumeMap $e.name $e -}}
+    {{- end -}}
+    {{- range $e := ($decode.extraVolumes | default (list)) -}}
+      {{- $_ := set $podVolumeMap $e.name $e -}}
+    {{- end -}}
+
+    {{- if $guardianEnabled -}}
+      {{- range $reservedName := (list "pd-cell-guardian-script" "pd-cell-guardian-token" "pd-cell-guardian-log") -}}
+        {{- if hasKey $podVolumeMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: volume name %s is reserved by the P/D Cell guardian" $name $reservedName) -}}
+        {{- end -}}
+        {{- if hasKey $prefillMountMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: prefill volumeMount name %s is reserved by the P/D Cell guardian" $name $reservedName) -}}
+        {{- end -}}
+        {{- if hasKey $decodeMountMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: decode volumeMount name %s is reserved by the P/D Cell guardian" $name $reservedName) -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{- if $isMooncakeConnector -}}
+      {{- range $reservedName := (list "pd-mooncake-gpu-map" "pd-mooncake-gpu-launcher") -}}
+        {{- if hasKey $podVolumeMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: volume name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
+        {{- end -}}
+        {{- if hasKey $prefillMountMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: prefill volumeMount name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
+        {{- end -}}
+        {{- if hasKey $decodeMountMap $reservedName -}}
+          {{- fail (printf "pdCellSpec model %s: decode volumeMount name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{- $podSecurityContext := mergeOverwrite (deepCopy ($root.Values.servingEngineSpec.securityContext | default dict)) ($pdCellSpec.securityContext | default dict) -}}
+    {{- $podSecurityContext = mergeOverwrite $podSecurityContext ($modelSpec.securityContext | default dict) -}}
+    {{- $engineSecurityContext := mergeOverwrite (deepCopy ($root.Values.servingEngineSpec.containerSecurityContext | default dict)) ($pdCellSpec.containerSecurityContext | default dict) -}}
+    {{- $engineSecurityContext = mergeOverwrite $engineSecurityContext ($modelSpec.containerSecurityContext | default dict) -}}
+    {{- $routerSecurityContext := deepCopy ($router.containerSecurityContext | default dict) -}}
+    {{- $prefillSecurityContext := mergeOverwrite (deepCopy $engineSecurityContext) ($prefill.containerSecurityContext | default dict) -}}
+    {{- $decodeSecurityContext := mergeOverwrite (deepCopy $engineSecurityContext) ($decode.containerSecurityContext | default dict) -}}
+
+    {{- $commonEnvFrom := list -}}
+    {{- range $e := ($global.envFrom | default (list)) -}}
+      {{- $commonEnvFrom = append $commonEnvFrom $e -}}
+    {{- end -}}
+    {{- range $e := ($pdCellSpec.envFrom | default (list)) -}}
+      {{- $commonEnvFrom = append $commonEnvFrom $e -}}
+    {{- end -}}
+    {{- $modelEnvFrom := deepCopy $commonEnvFrom -}}
+    {{- range $e := ($modelSpec.envFrom | default (list)) -}}
+      {{- $modelEnvFrom = append $modelEnvFrom $e -}}
+    {{- end -}}
+    {{- if $modelSpec.envFromSecret -}}
+      {{- $modelEnvFrom = append $modelEnvFrom (dict "secretRef" (dict "name" $modelSpec.envFromSecret.name)) -}}
+    {{- end -}}
+    {{- $routerEnvFrom := deepCopy $modelEnvFrom -}}
+    {{- range $e := ($commonRouter.envFrom | default (list)) -}}
+      {{- $routerEnvFrom = append $routerEnvFrom $e -}}
+    {{- end -}}
+    {{- range $e := ($modelRouter.envFrom | default (list)) -}}
+      {{- $routerEnvFrom = append $routerEnvFrom $e -}}
+    {{- end -}}
+    {{- $routerExtraArgs := list -}}
+    {{- range $arg := ($commonRouter.extraArgs | default (list)) -}}
+      {{- $routerExtraArgs = append $routerExtraArgs $arg -}}
+    {{- end -}}
+    {{- range $arg := ($modelRouter.extraArgs | default (list)) -}}
+      {{- $routerExtraArgs = append $routerExtraArgs $arg -}}
+    {{- end -}}
+    {{- $prefillEnvFrom := deepCopy $modelEnvFrom -}}
+    {{- range $e := ($prefill.envFrom | default (list)) -}}
+      {{- $prefillEnvFrom = append $prefillEnvFrom $e -}}
+    {{- end -}}
+    {{- $decodeEnvFrom := deepCopy $modelEnvFrom -}}
+    {{- range $e := ($decode.envFrom | default (list)) -}}
+      {{- $decodeEnvFrom = append $decodeEnvFrom $e -}}
+    {{- end -}}
 
 ---
 apiVersion: apps/v1
@@ -201,8 +475,8 @@ metadata:
 spec:
   replicas: {{ $replicaCount }}
   strategy:
-    {{- if $modelSpec.strategy }}
-      {{- toYaml $modelSpec.strategy | nindent 4 }}
+    {{- if $strategy }}
+      {{- toYaml $strategy | nindent 4 }}
     {{- else }}
     type: RollingUpdate
     rollingUpdate:
@@ -214,7 +488,7 @@ spec:
       model: {{ $name | quote }}
       helm-release-name: {{ $root.Release.Name | quote }}
       pd-cell: "true"
-  progressDeadlineSeconds: {{ default 1800 $modelSpec.progressDeadlineSeconds }}
+  progressDeadlineSeconds: {{ $progressDeadlineSeconds }}
   template:
     metadata:
       labels:
@@ -224,17 +498,39 @@ spec:
         pd-deployment: {{ $name | quote }}
         {{- include "chart.engineLabels" $root | nindent 8 }}
       annotations:
-        pd-served-model: {{ $servedModelName | quote }}
+        {{- if $hasServedModelOverride }}
+        pd-served-model: {{ first $servedModelNames | quote }}
+        pd-served-models: {{ toJson $servedModelNames | quote }}
+        {{- end }}
+        pd-orchestrator: "vllm-router"
+        pd-kv-connector: {{ $routerKvConnector | quote }}
+        {{- if $guardianEnabled }}
+        pd-failure-domain: "whole-cell"
+        {{- end }}
         {{- with $podAnnotations }}
           {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- if $modelSpec.serviceAccountName }}
-      serviceAccountName: {{ $modelSpec.serviceAccountName }}
+      hostPID: {{ $hostPID }}
+      hostIPC: {{ $hostIPC }}
+      shareProcessNamespace: {{ $shareProcessNamespace }}
+      {{- with $podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
 
-      {{- if $modelSpec.priorityClassName }}
-      priorityClassName: {{ $modelSpec.priorityClassName | quote }}
+      {{- if $serviceAccountName }}
+      serviceAccountName: {{ $serviceAccountName }}
+      {{- end }}
+      {{- if $guardianEnabled }}
+      # The guardian receives an explicit projected ServiceAccount token.
+      # Disable the default token mount so router/engine containers do not
+      # inherit Pod delete credentials.
+      automountServiceAccountToken: false
+      {{- end }}
+
+      {{- if $priorityClassName }}
+      priorityClassName: {{ $priorityClassName | quote }}
       {{- end }}
 
       {{- with $runtimeClassName }}
@@ -245,44 +541,115 @@ spec:
       schedulerName: {{ . }}
       {{- end }}
 
-      terminationGracePeriodSeconds: {{ default 60 $modelSpec.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
 
       containers:
+        {{- if $isMooncakeConnector }}
+        - name: gpu-reservation
+          image: "{{ $repository }}:{{ $tag }}"
+          imagePullPolicy: {{ $engineImagePullPolicy | quote }}
+          command:
+            - "/bin/bash"
+            - "-ceu"
+            - |
+              GPU_DIR=/var/run/pd-gpu
+              TMP_FILE="${GPU_DIR}/gpus.tmp"
+              FINAL_FILE="${GPU_DIR}/gpus"
+              mkdir -p "${GPU_DIR}"
+              trap 'rm -f "${TMP_FILE}"' EXIT
+
+              nvidia-smi --query-gpu=pci.bus_id,uuid --format=csv,noheader,nounits |
+                awk -F',' '{
+                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1);
+                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2);
+                  print $1 "," $2
+                }' |
+                sort -t',' -k1,1 |
+                cut -d',' -f2 > "${TMP_FILE}"
+
+              ACTUAL_COUNT="$(grep -cve '^[[:space:]]*$' "${TMP_FILE}" || true)"
+              if [[ "${ACTUAL_COUNT}" != "${PD_GPU_TOTAL}" ]]; then
+                echo "[pd-gpu] reservation mismatch: expected=${PD_GPU_TOTAL} visible=${ACTUAL_COUNT}" >&2
+                cat "${TMP_FILE}" >&2 || true
+                exit 1
+              fi
+
+              mv -f "${TMP_FILE}" "${FINAL_FILE}"
+              trap - EXIT
+              echo "[pd-gpu] reservation ready: $(paste -sd, "${FINAL_FILE}")"
+              exec sleep infinity
+          env:
+            - name: PD_GPU_TOTAL
+              value: {{ $gpuReservationTotal | quote }}
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "64Mi"
+              {{ $gpuResourceType }}: {{ $gpuReservationTotal | quote }}
+            limits:
+              cpu: "100m"
+              memory: "256Mi"
+              {{ $gpuResourceType }}: {{ $gpuReservationTotal | quote }}
+          readinessProbe:
+            exec:
+              command:
+                - "/bin/bash"
+                - "-c"
+                - "test -s /var/run/pd-gpu/gpus"
+            periodSeconds: 2
+            failureThreshold: 150
+          volumeMounts:
+            - name: pd-mooncake-gpu-map
+              mountPath: /var/run/pd-gpu
+        {{- end }}
+
         - name: pd-router
           image: "{{ $routerRepository }}:{{ $routerTag }}"
           imagePullPolicy: {{ $routerImagePullPolicy | quote }}
+          command:
+            {{- if $router.command }}
+              {{- toYaml $router.command | nindent 12 }}
+            {{- else }}
+            - "vllm-router"
+            {{- end }}
           args:
             - "--host"
             - "0.0.0.0"
             - "--port"
             - {{ $routerPort | quote }}
-            - "--service-discovery"
-            - "static"
-            - "--static-backends"
-            - {{ join "," $staticBackends | quote }}
-            - "--static-models"
-            - {{ join "," $staticModels | quote }}
-            - "--static-model-labels"
-            - {{ join "," $staticLabels | quote }}
-            - "--static-model-types"
-            - {{ join "," $staticTypes | quote }}
-            - "--static-backend-health-checks"
-            - "--static-backend-health-check-interval"
+            - "--policy"
+            - {{ $routerPolicy | quote }}
+            - "--vllm-pd-disaggregation"
+            - "--kv-connector"
+            - {{ $routerKvConnector | quote }}
+            - "--health-check-interval-secs"
             - {{ $routerHealthInterval | quote }}
-            - "--static-backend-health-check-timeout-seconds"
+            - "--health-check-timeout-secs"
             - {{ $routerHealthTimeout | quote }}
-            - "--routing-logic"
-            - "disaggregated_prefill_orchestrated"
-            - "--prefill-model-labels"
-            - {{ $prefillLabel | quote }}
-            - "--decode-model-labels"
-            - {{ $decodeLabel | quote }}
-            {{- range ($router.extraArgs | default (list)) }}
+            {{- range $i := until $pCount }}
+            - "--prefill"
+            - {{ printf "http://127.0.0.1:%d" (add $pPortBase $i) | quote }}
+              {{- if eq $routerKvConnector "mooncake" }}
+            - {{ printf "%d" (add $bootstrapPortBase $i) | quote }}
+              {{- end }}
+            {{- end }}
+            {{- range $i := until $dCount }}
+            - "--decode"
+            - {{ printf "http://127.0.0.1:%d" (add $dPortBase $i) | quote }}
+            {{- end }}
+            {{- if gt $routerPrometheusPort 0 }}
+            - "--prometheus-host"
+            - "0.0.0.0"
+            - "--prometheus-port"
+            - {{ $routerPrometheusPort | quote }}
+            {{- end }}
+            {{- range $routerExtraArgs }}
             - {{ . | quote }}
             {{- end }}
           env:
-            - name: PYTHONHASHSEED
-              value: "123"
+            {{- with (values $routerEnvMap) }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
             {{- $vllmApiKey := $root.Values.servingEngineSpec.vllmApiKey }}
             {{- if $vllmApiKey }}
             - name: VLLM_API_KEY
@@ -297,68 +664,125 @@ spec:
                   name: {{ $vllmApiKey.secretName }}
                   key: {{ $vllmApiKey.secretKey }}
               {{- end }}
+            - name: OPENAI_API_KEY
+              {{- if kindIs "string" $vllmApiKey }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Release.Name }}-secrets
+                  key: vllmApiKey
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $vllmApiKey.secretName }}
+                  key: {{ $vllmApiKey.secretKey }}
+              {{- end }}
             {{- end }}
+          {{- with $routerEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: pd-router
               containerPort: {{ $routerPort }}
               protocol: TCP
+            {{- if gt $routerPrometheusPort 0 }}
+            - name: router-metrics
+              containerPort: {{ $routerPrometheusPort }}
+              protocol: TCP
+            {{- end }}
           startupProbe:
             httpGet:
-              path: /health
+              path: {{ $routerHealthPath }}
               port: {{ $routerPort }}
             initialDelaySeconds: {{ default 5 $router.startupProbeInitialDelaySeconds }}
             periodSeconds: {{ default 5 $router.startupProbePeriodSeconds }}
-            failureThreshold: {{ default 60 $router.startupProbeFailureThreshold }}
+            failureThreshold: {{ default 180 $router.startupProbeFailureThreshold }}
           livenessProbe:
             httpGet:
-              path: /health
+              path: {{ $routerHealthPath }}
               port: {{ $routerPort }}
             periodSeconds: {{ default 10 $router.livenessProbePeriodSeconds }}
             failureThreshold: {{ default 3 $router.livenessProbeFailureThreshold }}
           readinessProbe:
             httpGet:
-              path: /health
+              path: {{ $routerHealthPath }}
               port: {{ $routerPort }}
             periodSeconds: {{ default 5 $router.readinessProbePeriodSeconds }}
             failureThreshold: {{ default 3 $router.readinessProbeFailureThreshold }}
           resources:
             {{- toYaml $routerResources | nindent 12 }}
+          {{- with $routerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with (values $routerMountMap) }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 
         {{ range $i := until $pCount }}
-          {{ $enginePort := add $pPortBase $i }}
-          {{ $bootstrapPort := add $bootstrapPortBase $i }}
-          {{ $internalPort := add $pInternalPortBase (mul $pInternalPortStride $i) }}
-          {{ $dpMasterPort := add $pDpMasterPortBase $i }}
-          {{ $sideChannelPort := add $pSideChannelPortBase $i }}
-          {{ $phaseEnvMap := deepCopy $modelEnvMap }}
+          {{- $enginePort := add $pPortBase $i -}}
+          {{- $bootstrapPort := add $bootstrapPortBase $i -}}
+          {{- $internalPort := add $pInternalPortBase (mul $pInternalPortStride $i) -}}
+          {{- $dpMasterPort := add $pDpMasterPortBase $i -}}
+          {{- $sideChannelPort := add $pSideChannelPortBase $i -}}
+          {{- $phaseEnvMap := deepCopy $modelEnvMap -}}
+          {{- $containerGpuIndices := list -}}
+          {{- if $isMooncakeConnector -}}
+            {{- $gpuOffset := mul $i $pGpuCount -}}
+            {{- range $gpuIndex := until $pGpuCount -}}
+              {{- $containerGpuIndices = append $containerGpuIndices (printf "%d" (add $gpuOffset $gpuIndex)) -}}
+            {{- end -}}
+          {{- end -}}
 
-          {{ range $e := ($prefill.env | default (list)) }}
-            {{ $_ := set $phaseEnvMap $e.name $e }}
-          {{ end }}
+          {{- range $e := ($prefill.env | default (list)) -}}
+            {{- $_ := set $phaseEnvMap $e.name $e -}}
+          {{- end -}}
 
-          {{ if eq $pInternalPortMode "vllm" }}
-            {{ $_ := set $phaseEnvMap "VLLM_PORT" (dict "name" "VLLM_PORT" "value" (printf "%d" $internalPort)) }}
-          {{ else if eq $pInternalPortMode "dp" }}
-            {{ $_ := set $phaseEnvMap "VLLM_DP_MASTER_PORT" (dict "name" "VLLM_DP_MASTER_PORT" "value" (printf "%d" $dpMasterPort)) }}
-          {{ end }}
-          {{ if $nixlSideChannelEnabled }}
-            {{ $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_PORT" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_PORT" "value" (printf "%d" $sideChannelPort)) }}
-          {{ end }}
-          {{ if eq $kvConnector "MooncakeConnector" }}
-            {{ $_ := set $phaseEnvMap "VLLM_MOONCAKE_BOOTSTRAP_PORT" (dict "name" "VLLM_MOONCAKE_BOOTSTRAP_PORT" "value" (printf "%d" $bootstrapPort)) }}
-            {{ $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) }}
-          {{ end }}
-          {{ $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp/prometheus_multiproc") }}
-          {{ $kvConfig := mergeOverwrite (deepCopy $kvBaseConfig) ($kv.prefillConfig | default dict) }}
-          {{ $kvConfig = mergeOverwrite $kvConfig ($prefill.kvTransferConfig | default dict) }}
-          {{ $_ := set $kvConfig "kv_connector" $kvConnector }}
-          {{ $_ := set $kvConfig "kv_role" "kv_producer" }}
+          {{- if eq $pInternalPortMode "vllm" -}}
+            {{- $_ := set $phaseEnvMap "VLLM_PORT" (dict "name" "VLLM_PORT" "value" (printf "%d" $internalPort)) -}}
+          {{- else if eq $pInternalPortMode "dp" -}}
+            {{- $_ := set $phaseEnvMap "VLLM_DP_MASTER_PORT" (dict "name" "VLLM_DP_MASTER_PORT" "value" (printf "%d" $dpMasterPort)) -}}
+          {{- end -}}
+          {{- if $nixlSideChannelEnabled -}}
+            {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_PORT" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_PORT" "value" (printf "%d" $sideChannelPort)) -}}
+          {{- end -}}
+          {{- if eq $routerKvConnector "mooncake" -}}
+            {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_BOOTSTRAP_PORT" (dict "name" "VLLM_MOONCAKE_BOOTSTRAP_PORT" "value" (printf "%d" $bootstrapPort)) -}}
+            {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) -}}
+          {{- end -}}
+          {{- if $isMooncakeConnector -}}
+            {{- $_ := set $phaseEnvMap "NVIDIA_VISIBLE_DEVICES" (dict "name" "NVIDIA_VISIBLE_DEVICES" "value" "all") -}}
+            {{- $_ := set $phaseEnvMap "PD_GPU_TOTAL" (dict "name" "PD_GPU_TOTAL" "value" (printf "%d" $gpuReservationTotal)) -}}
+            {{- $_ := set $phaseEnvMap "CNTR_GPU_IDX" (dict "name" "CNTR_GPU_IDX" "value" (join "," $containerGpuIndices)) -}}
+            {{- $_ := set $phaseEnvMap "PD_VLLM_BIN" (dict "name" "PD_VLLM_BIN" "value" $prefillVllmBin) -}}
+          {{- end -}}
+          {{- $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp") -}}
+          {{- $kvConfig := mergeOverwrite (deepCopy $kvBaseConfig) ($kv.prefillConfig | default dict) -}}
+          {{- $kvConfig = mergeOverwrite $kvConfig ($prefill.kvTransferConfig | default dict) -}}
+          {{- if $isMooncakeConnector -}}
+            {{- $extraConfig := deepCopy ($kvConfig.kv_connector_extra_config | default dict) -}}
+            {{- if hasKey $extraConfig "mooncake_protocol" -}}
+              {{- fail (printf "pdCellSpec model %s: mooncake_protocol is chart-managed for node-local P/D Cell; remove it from values (forced to nvlink_intra)" $name) -}}
+            {{- end -}}
+            {{- $_ := set $extraConfig "mooncake_protocol" "nvlink_intra" -}}
+            {{- $_ := set $kvConfig "kv_connector_extra_config" $extraConfig -}}
+          {{- end -}}
+          {{- $_ := set $kvConfig "kv_connector" $kvConnector -}}
+          {{- $_ := set $kvConfig "kv_role" "kv_producer" -}}
         - name: {{ printf "prefill-%d" $i }}
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ $engineImagePullPolicy | quote }}
           command:
+            {{- if $isMooncakeConnector }}
+            - "/bin/bash"
+            - "/opt/pd-cell-gpu/launch-vllm.sh"
+            {{- else if $prefill.command }}
+              {{- toYaml $prefill.command | nindent 12 }}
+            {{- else }}
             - {{ ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") | quote }}
             - "serve"
+            {{- end }}
           args:
             - "--host"
             - "0.0.0.0"
@@ -366,6 +790,12 @@ spec:
             - {{ $enginePort | quote }}
             - "--config"
             - {{ $pProfile | quote }}
+            {{- if $hasServedModelOverride }}
+            - "--served-model-name"
+            {{- range $servedName := $servedModelNames }}
+            - {{ $servedName | quote }}
+            {{- end }}
+            {{- end }}
             - "--kv-transfer-config"
             - {{ toJson $kvConfig | quote }}
             {{- range ($prefill.extraArgs | default (list)) }}
@@ -394,10 +824,9 @@ spec:
                   key: {{ $vllmApiKey.secretKey }}
               {{- end }}
             {{- end }}
-          {{- with $modelSpec.envFromSecret }}
+          {{- with $prefillEnvFrom }}
           envFrom:
-            - secretRef:
-                name: {{ .name }}
+            {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
             - name: {{ printf "pf-%d-http" $i }}
@@ -424,48 +853,93 @@ spec:
             initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
             failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
+          {{- if $isMooncakeConnector }}
+          resources: {{- include "chart.pdEngineResourcesWithoutGpu" $prefill | nindent 12 }}
+          {{- else }}
           resources: {{- include "chart.resources" $prefill | nindent 12 }}
+          {{- end }}
+          {{- with $prefillSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- with (values $modelMountMap) }}
+            {{- if $isMooncakeConnector }}
+            - name: pd-mooncake-gpu-map
+              mountPath: /var/run/pd-gpu
+              readOnly: true
+            - name: pd-mooncake-gpu-launcher
+              mountPath: /opt/pd-cell-gpu
+              readOnly: true
+            {{- end }}
+            {{- with (values $prefillMountMap) }}
               {{- toYaml . | nindent 12 }}
             {{- end }}
         {{ end }}
 
         {{ range $i := until $dCount }}
-          {{ $enginePort := add $dPortBase $i }}
-          {{ $internalPort := add $dInternalPortBase (mul $dInternalPortStride $i) }}
-          {{ $dpMasterPort := add $dDpMasterPortBase $i }}
-          {{ $sideChannelPort := add $dSideChannelPortBase $i }}
-          {{ $phaseEnvMap := deepCopy $modelEnvMap }}
+          {{- $enginePort := add $dPortBase $i -}}
+          {{- $internalPort := add $dInternalPortBase (mul $dInternalPortStride $i) -}}
+          {{- $dpMasterPort := add $dDpMasterPortBase $i -}}
+          {{- $sideChannelPort := add $dSideChannelPortBase $i -}}
+          {{- $phaseEnvMap := deepCopy $modelEnvMap -}}
+          {{- $containerGpuIndices := list -}}
+          {{- if $isMooncakeConnector -}}
+            {{- $decodeGpuBase := mul $pCount $pGpuCount -}}
+            {{- $gpuOffset := add $decodeGpuBase (mul $i $dGpuCount) -}}
+            {{- range $gpuIndex := until $dGpuCount -}}
+              {{- $containerGpuIndices = append $containerGpuIndices (printf "%d" (add $gpuOffset $gpuIndex)) -}}
+            {{- end -}}
+          {{- end -}}
 
-          {{ range $e := ($decode.env | default (list)) }}
-            {{ $_ := set $phaseEnvMap $e.name $e }}
-          {{ end }}
+          {{- range $e := ($decode.env | default (list)) -}}
+            {{- $_ := set $phaseEnvMap $e.name $e -}}
+          {{- end -}}
 
-          {{ if eq $dInternalPortMode "vllm" }}
-            {{ $_ := set $phaseEnvMap "VLLM_PORT" (dict "name" "VLLM_PORT" "value" (printf "%d" $internalPort)) }}
-          {{ else if eq $dInternalPortMode "dp" }}
-            {{ $_ := set $phaseEnvMap "VLLM_DP_MASTER_PORT" (dict "name" "VLLM_DP_MASTER_PORT" "value" (printf "%d" $dpMasterPort)) }}
-          {{ end }}
-          {{ if $nixlSideChannelEnabled }}
-            {{ $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_PORT" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_PORT" "value" (printf "%d" $sideChannelPort)) }}
-          {{ end }}
-          {{ if eq $kvConnector "MooncakeConnector" }}
-            {{ $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) }}
-          {{ end }}
-          {{ $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp/prometheus_multiproc") }}
-          {{ $kvConfig := mergeOverwrite (deepCopy $kvBaseConfig) ($kv.decodeConfig | default dict) }}
-          {{ $kvConfig = mergeOverwrite $kvConfig ($decode.kvTransferConfig | default dict) }}
-          {{ $_ := set $kvConfig "kv_connector" $kvConnector }}
-          {{ $_ := set $kvConfig "kv_role" "kv_consumer" }}
+          {{- if eq $dInternalPortMode "vllm" -}}
+            {{- $_ := set $phaseEnvMap "VLLM_PORT" (dict "name" "VLLM_PORT" "value" (printf "%d" $internalPort)) -}}
+          {{- else if eq $dInternalPortMode "dp" -}}
+            {{- $_ := set $phaseEnvMap "VLLM_DP_MASTER_PORT" (dict "name" "VLLM_DP_MASTER_PORT" "value" (printf "%d" $dpMasterPort)) -}}
+          {{- end -}}
+          {{- if $nixlSideChannelEnabled -}}
+            {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_PORT" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_PORT" "value" (printf "%d" $sideChannelPort)) -}}
+          {{- end -}}
+          {{- if eq $routerKvConnector "mooncake" -}}
+            {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) -}}
+          {{- end -}}
+          {{- if $isMooncakeConnector -}}
+            {{- $_ := set $phaseEnvMap "NVIDIA_VISIBLE_DEVICES" (dict "name" "NVIDIA_VISIBLE_DEVICES" "value" "all") -}}
+            {{- $_ := set $phaseEnvMap "PD_GPU_TOTAL" (dict "name" "PD_GPU_TOTAL" "value" (printf "%d" $gpuReservationTotal)) -}}
+            {{- $_ := set $phaseEnvMap "CNTR_GPU_IDX" (dict "name" "CNTR_GPU_IDX" "value" (join "," $containerGpuIndices)) -}}
+            {{- $_ := set $phaseEnvMap "PD_VLLM_BIN" (dict "name" "PD_VLLM_BIN" "value" $decodeVllmBin) -}}
+          {{- end -}}
+          {{- $_ := set $phaseEnvMap "PROMETHEUS_MULTIPROC_DIR" (dict "name" "PROMETHEUS_MULTIPROC_DIR" "value" "/tmp") -}}
+          {{- $kvConfig := mergeOverwrite (deepCopy $kvBaseConfig) ($kv.decodeConfig | default dict) -}}
+          {{- $kvConfig = mergeOverwrite $kvConfig ($decode.kvTransferConfig | default dict) -}}
+          {{- if $isMooncakeConnector -}}
+            {{- $extraConfig := deepCopy ($kvConfig.kv_connector_extra_config | default dict) -}}
+            {{- if hasKey $extraConfig "mooncake_protocol" -}}
+              {{- fail (printf "pdCellSpec model %s: mooncake_protocol is chart-managed for node-local P/D Cell; remove it from values (forced to nvlink_intra)" $name) -}}
+            {{- end -}}
+            {{- $_ := set $extraConfig "mooncake_protocol" "nvlink_intra" -}}
+            {{- $_ := set $kvConfig "kv_connector_extra_config" $extraConfig -}}
+          {{- end -}}
+          {{- $_ := set $kvConfig "kv_connector" $kvConnector -}}
+          {{- $_ := set $kvConfig "kv_role" "kv_consumer" -}}
         - name: {{ printf "decode-%d" $i }}
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ $engineImagePullPolicy | quote }}
           command:
+            {{- if $isMooncakeConnector }}
+            - "/bin/bash"
+            - "/opt/pd-cell-gpu/launch-vllm.sh"
+            {{- else if $decode.command }}
+              {{- toYaml $decode.command | nindent 12 }}
+            {{- else }}
             - {{ ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") | quote }}
             - "serve"
+            {{- end }}
           args:
             - "--host"
             - "0.0.0.0"
@@ -473,6 +947,12 @@ spec:
             - {{ $enginePort | quote }}
             - "--config"
             - {{ $dProfile | quote }}
+            {{- if $hasServedModelOverride }}
+            - "--served-model-name"
+            {{- range $servedName := $servedModelNames }}
+            - {{ $servedName | quote }}
+            {{- end }}
+            {{- end }}
             - "--kv-transfer-config"
             - {{ toJson $kvConfig | quote }}
             {{- range ($decode.extraArgs | default (list)) }}
@@ -501,10 +981,9 @@ spec:
                   key: {{ $vllmApiKey.secretKey }}
               {{- end }}
             {{- end }}
-          {{- with $modelSpec.envFromSecret }}
+          {{- with $decodeEnvFrom }}
           envFrom:
-            - secretRef:
-                name: {{ .name }}
+            {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
             - name: {{ printf "dc-%d-http" $i }}
@@ -531,14 +1010,79 @@ spec:
             initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
             failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
+          {{- if $isMooncakeConnector }}
+          resources: {{- include "chart.pdEngineResourcesWithoutGpu" $decode | nindent 12 }}
+          {{- else }}
           resources: {{- include "chart.resources" $decode | nindent 12 }}
+          {{- end }}
+          {{- with $decodeSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- with (values $modelMountMap) }}
+            {{- if $isMooncakeConnector }}
+            - name: pd-mooncake-gpu-map
+              mountPath: /var/run/pd-gpu
+              readOnly: true
+            - name: pd-mooncake-gpu-launcher
+              mountPath: /opt/pd-cell-gpu
+              readOnly: true
+            {{- end }}
+            {{- with (values $decodeMountMap) }}
               {{- toYaml . | nindent 12 }}
             {{- end }}
         {{ end }}
+
+        {{- if $guardianEnabled }}
+        - name: pd-cell-guardian
+          image: "{{ $repository }}:{{ $tag }}"
+          imagePullPolicy: {{ $engineImagePullPolicy | quote }}
+          command:
+            - "python3"
+            - "/opt/pd-cell-guardian/guardian.py"
+          env:
+            # Never expose GPUs to the lifecycle guardian itself.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "void"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: PD_GUARDIAN_TARGETS
+              value: {{ join "," $guardianTargets | quote }}
+            - name: PD_GUARDIAN_POLL_SECONDS
+              value: {{ $guardianPollSeconds | quote }}
+            - name: PD_GUARDIAN_DELETE_GRACE_SECONDS
+              value: {{ $guardianDeleteGraceSeconds | quote }}
+            - name: PD_GUARDIAN_LOG_DIR
+              value: {{ $guardianLogMountPath | quote }}
+          resources:
+            requests:
+              cpu: {{ default "20m" $guardianRequests.cpu | quote }}
+              memory: {{ default "64Mi" $guardianRequests.memory | quote }}
+            limits:
+              cpu: {{ default "100m" $guardianLimits.cpu | quote }}
+              memory: {{ default "128Mi" $guardianLimits.memory | quote }}
+          volumeMounts:
+            - name: pd-cell-guardian-script
+              mountPath: /opt/pd-cell-guardian
+              readOnly: true
+            - name: pd-cell-guardian-token
+              mountPath: /var/run/secrets/pd-cell-guardian
+              readOnly: true
+            - name: pd-cell-guardian-log
+              mountPath: {{ $guardianLogMountPath | quote }}
+        {{- end }}
 
       {{- with $imagePullSecret }}
       imagePullSecrets:
@@ -550,7 +1094,37 @@ spec:
           hostPath:
             path: /dev/shm
             type: Directory
-        {{- with (values $modelVolumeMap) }}
+        {{- if $guardianEnabled }}
+        - name: pd-cell-guardian-script
+          configMap:
+            name: {{ $guardianName }}
+            defaultMode: 0555
+        - name: pd-cell-guardian-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: pd-cell-guardian-log
+          hostPath:
+            path: {{ $guardianLogHostPath | quote }}
+            type: DirectoryOrCreate
+        {{- end }}
+        {{- if $isMooncakeConnector }}
+        - name: pd-mooncake-gpu-map
+          emptyDir: {}
+        - name: pd-mooncake-gpu-launcher
+          configMap:
+            name: "{{ $root.Release.Name }}-pd-cell-gpu-launcher"
+            defaultMode: 0555
+        {{- end }}
+        {{- with (values $podVolumeMap) }}
           {{- toYaml . | nindent 8 }}
         {{- end }}
 

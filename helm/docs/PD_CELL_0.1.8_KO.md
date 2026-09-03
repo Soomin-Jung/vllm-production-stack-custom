@@ -1,947 +1,1048 @@
-# vLLM Production Stack 0.1.8 - Node-local P/D Cell 구현 가이드
+# vLLM Production Stack 0.1.8 Custom — P/D Cell 설계 및 운영 가이드
 
-이 문서는 `agent/production-0.1.8-baseline-final`을 기준으로 추가된 단기 P/D Cell 확장의 구조와 values → template → Kubernetes resource → runtime 연결 관계를 설명한다.
+## 1. 문서 목적
 
-> 목표는 기존 integrated/Ray 배포를 건드리지 않고, 0.1.12 전면 이관 전에 실제 P/D Disaggregation을 node-local Cell 단위로 배포·확장·관측할 수 있게 만드는 것이다.
+이 문서는 custom vLLM Production Stack 0.1.8에서 단기 운영하는 **node-local Prefill/Decode Cell**의 확정 설계를 설명한다.
 
----
+2026-08-25 기준 핵심 결정은 다음과 같다.
 
-## 1. 왜 별도 `pdCellSpec`인가
+- **Global Router**: 기존 LMStack Router 유지 가능
+- **P/D Cell Orchestrator**: `vllm-project/router`의 **vLLM Router로 고정**
+- **Cell 내부 LMStack Router 지원 제거**
+- KV connector는 `models[].kvTransfer.connector`에서 모델별 선언
+- vLLM Router가 connector에 맞는 P/D control-plane metadata를 생성
+- 고객사 우선 검증 backend는 **MooncakeConnector**
+- 현재 검증 baseline은 vLLM `0.26.0-cu129` + source-built `mooncake-transfer-engine 0.3.10-post2`
+- P/D Cell은 **단일 Pod/단일 노드 배치**를 contract로 하므로 exact `MooncakeConnector`는 Chart가 `mooncake_protocol=nvlink_intra`를 강제로 주입
+- Mooncake P/D engine은 container별 Device Plugin GPU 격리를 사용하지 않고 **Pod-local GPU reservation + 공통 CUDA namespace + vLLM `--device-ids` 분할**을 사용
 
-현재 0.1.8 baseline의 `servingEngineSpec.modelSpec`은 이미 다음 renderer가 직접 소비한다.
-
-```text
-servingEngineSpec.modelSpec
-  ├─ deployment-vllm-multi.yaml
-  ├─ service-vllm.yaml
-  └─ ray-cluster.yaml
-```
-
-특히 `deployment-vllm-multi.yaml`과 `ray-cluster.yaml`은 `raySpec` 존재 여부를 분기 기준으로 사용한다.
-
-단기 P/D 기능을 같은 배열에 바로 넣으려면 기존 Deployment/Service/Ray template을 함께 수정해야 하고, 운영 중인 integrated 모델 manifest에 regression이 생길 수 있다.
-
-따라서 단기 0.1.8에서는 다음처럼 **additive root**를 사용한다.
-
-```yaml
-pdCellSpec:
-  enabled: true
-  models:
-    - name: example-pd
-      ...
-```
-
-여기서도 **Prefill과 Decode는 별도 모델이 아니다.** 한 모델 block 안에서 실행 topology로 표현한다.
-
-장기 0.1.12+에서는 이 block을 다음 계열로 semantic migration한다.
-
-```yaml
-servingEngineSpec:
-  modelSpec:
-    - name: example
-      deploymentMode: disaggregated
-      disaggregatedServing:
-        topology: nodeLocal
-        ...
-```
-
-즉 0.1.8에서 별도 root를 쓰는 이유는 단기 안전성이지, P/D를 별도 플랫폼으로 만들기 위한 것이 아니다.
+이 문서의 목표는 Helm이 단순히 Pod를 띄우는 수준이 아니라, **Router ↔ Prefill ↔ Decode ↔ KV connector 사이의 실제 protocol contract까지 일치시키는 것**이다.
 
 ---
 
-## 2. 생성되는 전체 구조
-
-실제 운영 values에는 필수값만 적는다.
-
-```yaml
-pdCellSpec:
-  enabled: true
-
-  router:
-    repository: registry.example/lmstack-router
-    tag: validated-0.1.12
-
-  kvTransfer:
-    connector: NixlConnector
-
-  models:
-    - name: example-pd-p2d2
-      servedModelName: example-model
-      repository: vllm/vllm-openai
-      tag: v0.27.1-cu129
-      replicaCount: 1
-
-      prefill:
-        count: 2
-        requestGPU: 2
-        profile: /profiles/example/pd-prefill.yaml
-
-      decode:
-        count: 2
-        requestGPU: 2
-        profile: /profiles/example/pd-decode.yaml
-```
-
-Helm은 모델 block 하나에서 다음 리소스를 만든다.
+## 2. 최종 아키텍처
 
 ```text
-Deployment/<release>-example-pd-p2d2-pd-cell
-Service/<release>-example-pd-p2d2-engine-service
+Client / LiteLLM
+        |
+        v
++-------------------------+
+| Global LMStack Router   |
+| model discovery/routing |
++-------------------------+
+        |
+        | model service
+        v
++------------------------------------------------------+
+| P/D Cell Pod                                         |
+|                                                      |
+|  +----------------------+                            |
+|  | gpu-reservation      |  total GPU resource owner |
+|  | writes sorted UUIDs  |  -> shared emptyDir       |
+|  +----------------------+                            |
+|                                                      |
+|  +----------------------+                            |
+|  | vllm-project/router  |  :8000                    |
+|  | P/D orchestrator     |  metrics :29000           |
+|  +----------+-----------+                            |
+|             |                                        |
+|       +-----+-----+------------------+               |
+|       |                            |                 |
+|       v                            v                 |
+|  Prefill :8101              Decode :8201/8202       |
+|  same Cell CVD              same Cell CVD           |
+|  --device-ids subset        --device-ids subset     |
+|       |                            ^                 |
+|       +--- Mooncake nvlink_intra --+                |
+|                                                      |
++------------------------------------------------------+
 ```
 
-Deployment Pod template은 다음과 같다.
+P/D Cell은 한 Pod 안에 Router/P/D container를 같이 두므로 모든 container가 같은 Pod network namespace를 공유한다.
+
+따라서 Cell 내부 HTTP endpoint는 다음처럼 localhost로 연결한다.
 
 ```text
-P/D Cell Pod
-
-┌──────────────────────────────────────┐
-│ pd-router                  :8000     │
-│                                      │
-│ prefill-0                  :8101     │
-│ prefill-1                  :8102     │
-│                                      │
-│ decode-0                   :8201     │
-│ decode-1                   :8202     │
-│                                      │
-│ connector/internal ports   implicit  │
-└──────────────────────────────────────┘
+Router -> Prefill  http://127.0.0.1:8101
+Router -> Decode   http://127.0.0.1:8201
+Router -> Decode   http://127.0.0.1:8202
 ```
 
-각 P/D engine이 GPU 2개를 요청하면 Pod 전체 request는 8 GPU가 된다.
+Mooncake Prefill bootstrap도 동일하다.
 
 ```text
-P0 2 GPU
-P1 2 GPU
-D0 2 GPU
-D1 2 GPU
-────────
-Cell 8 GPU
+Router -> Mooncake bootstrap http://127.0.0.1:9001/query
 ```
-
-Kubernetes는 Pod를 여러 Node에 나누어 배치하지 않으므로, GPU 8개를 요청한 Cell Pod는 GPU 8개를 수용할 수 있는 한 Node에 통째로 배치된다.
-
-따라서 `replicaCount: 3`이면 Cell 세 개를 scheduler가 서로 가용한 Node에 배치한다. `replicaCount: 0`도 허용하므로 여러 topology를 values에 유지한 채 필요한 topology만 활성화할 수 있다.
-
-기본 운영에서는 `nodeName`을 지정하지 않는다.
 
 ---
 
-## 3. Values와 Template 연결
+## 3. 왜 P/D Cell에서 LMStack Router를 제거했는가
 
-### 3.1 최상위
+### 3.1 LMStack orchestrated P/D의 control-plane contract
 
-```yaml
-pdCellSpec:
-  enabled: true
-  router: {...}
-  kvTransfer: {...}
-  models: [...]
-```
+LMStack Router의 `disaggregated_prefill_orchestrated` path는 Prefill 요청에 일반적인 vLLM `kv_transfer_params`를 넣고, **Prefill HTTP response에 다시 포함된 `kv_transfer_params`를 Decode로 전달**하는 response-driven 방식이다.
 
-연결:
+이 방식은 NxDI/NIXL 계열 orchestration contract와 잘 맞는다.
+
+개념적으로:
 
 ```text
-pdCellSpec.enabled
-   ├─ deployment-pd-cell.yaml 활성화
-   └─ service-pd-cell.yaml 활성화
-
-pdCellSpec.models[]
-   └─ 모델마다 Deployment + Service 1세트 생성
+Router
+  |
+  | do_remote_decode=true
+  v
+Prefill
+  |
+  | response.kv_transfer_params
+  v
+Router
+  |
+  | copied metadata
+  v
+Decode
 ```
 
-`pdCellSpec` 최상위 값은 모든 `models[]`의 공통 기본값이다. 모델 항목에 같은 field를 선언하면 모델 값이 우선한다.
+### 3.2 vLLM 0.26.0 Mooncake contract와의 불일치
+
+vLLM `0.26.0`의 `MooncakeConnector`는 Prefill scheduler에서 `transfer_id`가 없으면 다음 경고를 내고 transfer 대상 요청으로 등록하지 않는다.
 
 ```text
-global / servingEngineSpec 기본값
-  → pdCellSpec 공통값
-    → models[] 모델별 override
-      → prefill/decode phase override
+Missing transfer_id in kv_transfer_params from router!
 ```
 
-공통으로 둘 수 있는 주요 field:
+또한 Decode가 remote KV를 사용하려면 최소 다음 metadata가 필요하다.
 
-| 분류 | `pdCellSpec` 공통 field |
-|---|---|
-| Runtime | `imagePullPolicy`, `runtimeClassName`, `schedulerName`, `imagePullSecret` |
-| Environment | `env`, `extraVolumes`, `extraVolumeMounts` |
-| Scheduling | `nodeName`, `nodeSelectorTerms`, `affinity`, `tolerations` |
-| Service | `serviceType`, `servicePort`, `serviceAnnotations` |
-| Pod metadata | `podAnnotations` |
-| P/D common | `router`, `kvTransfer` |
+```json
+{
+  "do_remote_prefill": true,
+  "remote_engine_id": "...",
+  "remote_bootstrap_addr": "...",
+  "transfer_id": "..."
+}
+```
 
-생략 시 기존 baseline을 재사용한다.
+Mooncake의 Prefill `request_finished()`는 NIXL식 Decode metadata를 HTTP response에 만들어 돌려주지 않는다. 따라서 LMStack Router가 기대하는:
 
-| 생략한 값 | 실제 기본 동작 |
-|---|---|
-| Engine `imagePullPolicy` | `servingEngineSpec.imagePullPolicy` |
-| `runtimeClassName` | `servingEngineSpec.runtimeClassName` |
-| `schedulerName` | `servingEngineSpec.schedulerName` |
-| `tolerations` | `servingEngineSpec.tolerations`를 항상 포함. 현재 GPU `NoSchedule` toleration도 자동 상속 |
-| Engine `requestCPU` | `requestGPU` 1개당 4 CPU, 즉 `4000m × requestGPU` |
-| Engine `requestMemory` | `requestGPU` 1개당 `10Gi` |
-| Router resources | `routerSpec.resources`. 현재 baseline은 request `1000m/5Gi`, memory limit `5Gi` |
-| Engine HTTP port | Prefill `8101+index`, Decode `8201+index` |
-| Router/Service | Router `8000`, Service `ClusterIP`, Service port는 `servingEngineSpec.servicePort` |
+```text
+Prefill response -> kv_transfer_params -> Decode
+```
 
-따라서 `requestGPU: 2`만 적으면 engine container 하나당 CPU `8000m`, memory `20Gi`가 요청된다. 더 필요할 때만 phase의 `requestCPU`, `requestMemory`를 명시한다.
+계약 자체가 Mooncake와 맞지 않는다.
+
+실제 runtime에서도 다음이 확인됐다.
+
+```text
+Router: Prefill responses did not contain kv_transfer_params
+Prefill: Missing transfer_id in kv_transfer_params from router!
+Decode: 정상 응답 생성
+```
+
+이 경우 정상 응답은 P/D 성공 증거가 아니다. Decode가 remote KV 요청을 받지 않았기 때문에 일반 inference처럼 prompt를 자체 Prefill했을 가능성이 높다.
+
+### 3.3 vLLM Router의 connector-specific orchestration
+
+`vllm-project/router`는 NIXL을 기본 backend로 시작했지만 2026-04-17 Mooncake 지원 PR #151을 통해 connector-specific orchestration을 추가했다.
+
+vLLM Router는 Mooncake를 선택하면:
+
+1. Prefill bootstrap server `/query` 호출
+2. Prefill `engine_id`를 DP rank별로 획득
+3. 요청마다 `transfer_id` 생성
+4. Prefill에 Mooncake 전용 params 삽입
+5. Decode에 `remote_engine_id`, `remote_bootstrap_addr`, 동일 `transfer_id` 삽입
+
+즉 Mooncake에서 Prefill HTTP response의 KV metadata에 의존하지 않는다.
+
+이 때문에 **Cell 내부 P/D orchestrator는 vLLM Router로 고정**한다.
 
 ---
 
-### 3.2 모델 identity
+## 4. Router 역할 분리
 
-```yaml
-- name: example-pd-p2d2
-  servedModelName: example-model
-  replicaCount: 2
-```
+### Global LMStack Router
 
-의미:
+Global Router는 다음 역할만 담당한다.
 
-| field | 의미 |
-|---|---|
-| `name` | Kubernetes 리소스 identity / Cell deployment name. 한 Helm release의 `models[]` 안에서 반드시 고유 |
-| `servedModelName` | P/D Router 및 vLLM API에서 사용하는 model ID |
-| `replicaCount` | P/D Cell 개수. `0` 이상 |
+- 여러 model service discovery
+- model-level/global traffic routing
+- 여러 P/D Cell replica를 backend pool로 관리
+- 공개 endpoint 역할
 
-같은 모델을 다른 topology로 동시에 시험할 때는 `name`만 다르게 하고 `servedModelName`과 profile을 공유해도 된다.
+Global LMStack Router는 Cell 내부의 Mooncake/NIXL handoff protocol을 직접 처리하지 않는다.
 
-```yaml
-models:
-  - name: qwen-p1d1
-    servedModelName: qwen-test
-    prefill: {count: 1, requestGPU: 4, profile: /profiles/qwen-p.yaml}
-    decode: {count: 1, requestGPU: 4, profile: /profiles/qwen-d.yaml}
+### Cell-local vLLM Router
 
-  - name: qwen-p2d1
-    servedModelName: qwen-test
-    prefill: {count: 2, requestGPU: 4, profile: /profiles/qwen-p.yaml}
-    decode: {count: 1, requestGPU: 4, profile: /profiles/qwen-d.yaml}
+Cell Router는 다음 역할을 담당한다.
 
-  - name: qwen-p2d2
-    servedModelName: qwen-test
-    prefill: {count: 2, requestGPU: 2, profile: /profiles/qwen-p-tp2.yaml}
-    decode: {count: 2, requestGPU: 2, profile: /profiles/qwen-d-tp2.yaml}
-```
+- Prefill/Decode pair 선택
+- two-stage request orchestration
+- KV connector별 metadata 생성
+- Mooncake bootstrap 조회
+- Prefill/Decode health tracking
+- P/D request metrics
 
-여기서 `count`는 engine container 수이지 TP 크기가 아니다. profile의 TP/PP/DP가 요구하는 GPU 수와 `requestGPU`는 반드시 맞아야 한다.
-
-주의할 routing 의미:
-
-- 각 topology에는 `<release>-<name>-engine-service`가 따로 생기므로 Service로 직접 호출하면 topology별 테스트가 분리된다.
-- Global Router가 같은 `servedModelName`의 Cell을 모두 발견하면 하나의 backend pool처럼 섞어 분산할 수 있다.
-- 따라서 topology별 성능 비교는 각각의 생성 Service를 직접 사용하거나, 비교 기간에만 서로 다른 `servedModelName` alias를 사용한다.
-- 같은 `servedModelName`을 사용하더라도 각 block의 Prefill/Decode profile 안 `served-model-name`은 모두 그 값과 같아야 한다.
-
-Helm은 외부 `/profiles` 파일 내용까지 읽을 수 없으므로 이 일치 여부는 배포 전 검증 항목이다.
-
----
-
-### 3.3 vLLM image
-
-```yaml
-repository: vllm/vllm-openai
-tag: v0.27.1-cu129
-```
-
-Prefill/Decode 모든 engine container가 같은 image를 사용한다.
-
-선택한 connector의 runtime이 image에 포함되어 있어야 한다. 예를 들어 NIXL은 vLLM이 요구하는 NIXL package/build가, Mooncake는 Mooncake runtime/package가 필요하다.
-
----
-
-### 3.4 Cell Router
-
-```yaml
-pdCellSpec:
-  router:
-    repository: registry.example/lmstack-router
-    tag: validated-0.1.12
-```
-
-Router는 보통 모든 topology가 같은 image를 사용하므로 최상위에 한 번만 선언한다. 특정 모델만 다르게 검증할 때 `models[].router`로 일부 field를 override한다. `port`, health check, image policy, resources는 기본값이 있으므로 필요한 경우에만 적는다.
-
-Router resource를 바꿀 때는 Kubernetes 표준 map을 사용한다.
+따라서 Helm에서는 더 이상 다음 선택을 제공하지 않는다.
 
 ```yaml
 router:
-  resources:
-    requests:
-      cpu: "2"
-      memory: 4Gi
-    limits:
-      memory: 4Gi
+  type: lmstack | vllm | custom
 ```
 
-Cell Router는 기존 Global Router와 별도 process다.
+`router.type`, `router.args`, `router.kvConnector`는 제거한다.
 
-```text
-Global LMRouter 0.1.8
-  └─ Cell Router endpoint :8000
-       ├─ Prefill pool
-       └─ Decode pool
-```
-
-Cell Router image는 반드시 다음 기능이 검증된 image를 pin한다.
-
-```text
-disaggregated_prefill_orchestrated
-static service discovery
-static model labels
-static backend health check
-```
-
-`latest` 사용은 권장하지 않는다.
+- Router implementation은 고정: `vllm-router`
+- fixed protocol을 우회하는 full `args` override 제거
+- Router KV mode는 `models[].kvTransfer.connector`에서 자동 파생
 
 ---
 
-## 4. Cell Router의 실제 backend 생성
+## 5. vLLM Router image baseline
+
+Mooncake 지원은 2026-04-17 PR #151에서 들어갔다.
+
+그 뒤 Python launcher에도 `--kv-connector`가 연결되었다. 따라서 너무 오래된 wheel/image를 사용하면 다음 문제가 날 수 있다.
+
+```text
+vllm-router --kv-connector mooncake
+unrecognized arguments: --kv-connector
+```
+
+현재 chart baseline은 다음으로 고정한다.
+
+```text
+vllm-project/router v0.1.15
+```
+
+폐쇄망에서는 upstream image tag를 암묵적으로 사용하지 말고 다음 형태를 권장한다.
+
+```text
+Git tag/SHA
+   -> internal source build
+   -> private registry
+   -> immutable image digest pin
+```
 
 예:
 
 ```yaml
-prefill:
-  count: 2
-  portBase: 8101
-
-decode:
-  count: 2
-  portBase: 8201
-```
-
-Template이 생성하는 backend:
-
-```text
-Prefill
-http://127.0.0.1:8101
-http://127.0.0.1:8102
-
-Decode
-http://127.0.0.1:8201
-http://127.0.0.1:8202
-```
-
-Cell Router에는 다음 의미의 인자가 자동 생성된다.
-
-```text
---service-discovery static
---static-backends <P/D localhost endpoints>
---static-models <servedModelName repeated>
---static-model-labels <prefill/decode role labels>
---routing-logic disaggregated_prefill_orchestrated
---prefill-model-labels <prefill label>
---decode-model-labels <decode label>
-```
-
-따라서 Cell Router는 자기 Pod 안의 P/D engine만 볼 수 있다.
-
-다른 Node의 Prefill과 Decode가 pairing되는 경로가 존재하지 않는다.
-
----
-
-## 5. Profile 연결
-
-기존 운영의 profile 방식을 그대로 사용한다.
-
-```yaml
-prefill:
-  profile: /profiles/example/pd-prefill.yaml
-
-decode:
-  profile: /profiles/example/pd-decode.yaml
-```
-
-Prefill engine 실행:
-
-```text
-vllm serve
-  --host 0.0.0.0
-  --port 8101
-  --config /profiles/example/pd-prefill.yaml
-  --kv-transfer-config <selected connector + kv_producer>
-```
-
-Decode engine 실행:
-
-```text
-vllm serve
-  --host 0.0.0.0
-  --port 8201
-  --config /profiles/example/pd-decode.yaml
-  --kv-transfer-config <selected connector + kv_consumer>
-```
-
-### 책임 경계
-
-Profile:
-
-- model path
-- served-model-name
-- dtype
-- max-model-len
-- kv-cache-dtype
-- batching
-- chunked prefill
-- 기타 vLLM engine option
-
-Helm:
-
-- P/D count
-- engine port
-- GPU resource
-- P/D role
-- KV connector role
-- connector별 side/bootstrap/internal port 충돌 방지
-- Router membership
-- Kubernetes scheduling
-
-`servedModelName`과 profile의 `served-model-name`은 반드시 같은 값이 되도록 운영한다.
-
----
-
-## 6. Global env / volume inheritance
-
-현재 custom 0.1.8 baseline과 동일하게 `global.env`, `global.extraVolumes`, `global.extraVolumeMounts`를 P/D engine에 상속한다. PD Cell 전체 공통값은 `pdCellSpec`에 한 번만 둘 수 있다.
-
-따라서 기존 `/profiles` mount나 공통 cache mount를 그대로 재사용할 수 있다.
-
-우선순위:
-
-```text
-global env
-   ↓
-pdCellSpec env
-   ↓
-model env
-   ↓
-phase(prefill/decode) env
-   ↓
-runtime-required env
-```
-
-volume/mount도 `global → pdCellSpec → model` 순서이며 같은 volume 이름은 뒤 단계가 덮어쓴다.
-
----
-
-## 7. KV Transfer: NIXL / Mooncake / 전체 Config
-
-### 7.1 공통 입력 구조
-
-```yaml
 pdCellSpec:
-  kvTransfer:
-    connector: NixlConnector
-    config: {}
-    prefillConfig: {}
-    decodeConfig: {}
+  router:
+    repository: registry.internal/vllm/vllm-router
+    tag: v0.1.15
 ```
 
-| field | 동작 |
+Global `routerSpec`는 LMStack Router용이므로 Cell Router가 상속하지 않는다.
+
+---
+
+## 6. vLLM Router CLI contract
+
+P1D2 + Mooncake 예시에서 Helm은 다음 의미의 command/args를 생성한다.
+
+```bash
+vllm-router \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --policy consistent_hash \
+  --vllm-pd-disaggregation \
+  --kv-connector mooncake \
+  --health-check-interval-secs 30 \
+  --health-check-timeout-secs 5 \
+  --prefill http://127.0.0.1:8101 9001 \
+  --decode http://127.0.0.1:8201 \
+  --decode http://127.0.0.1:8202 \
+  --prometheus-host 0.0.0.0 \
+  --prometheus-port 29000
+```
+
+Upstream `Dockerfile.router`는 `vllm-router`를 `CMD`로 제공하고 ENTRYPOINT는 고정하지 않으므로 Helm은 안전하게 다음 command를 명시한다.
+
+```yaml
+command:
+  - vllm-router
+```
+
+`router.command`는 사내 image path 차이 같은 실행파일 위치 변경에만 사용한다. Router implementation을 바꾸는 escape hatch로 사용하지 않는다.
+
+---
+
+## 7. KV connector mapping
+
+Helm은 engine connector 이름으로 vLLM Router의 connector mode를 자동 결정한다.
+
+| Engine `kv_connector` | vLLM Router `--kv-connector` |
 |---|---|
-| `connector` | `kv_connector`로 변환. `NixlConnector`, `MooncakeConnector` 외에도 image에 등록된 connector 또는 외부 connector 사용 가능 |
-| `config` | 모든 P/D engine에 공통 적용되는 raw `KVTransferConfig` map |
-| `prefillConfig` | Prefill에만 적용하며 `config`보다 우선 |
-| `decodeConfig` | Decode에만 적용하며 `config`보다 우선 |
-| `prefill.kvTransferConfig` | 특정 모델의 Prefill phase 최종 override |
-| `decode.kvTransferConfig` | 특정 모델의 Decode phase 최종 override |
+| `NixlConnector`, `NixlPullConnector`, `NixlPushConnector` | `nixl` |
+| `MooncakeConnector` | `mooncake` |
+| 이름에 `Mori`/`MoRI`가 포함된 connector | `moriio` |
 
-`config` 계열은 vLLM Python field 이름과 같은 **snake_case**를 그대로 쓴다. Helm이 임의로 connector option을 제한하지 않고 JSON으로 전달하므로 vLLM 0.27.1의 현재 field와 향후 connector-specific field를 사용할 수 있다.
+지원되지 않는 connector는 render 단계에서 fail한다.
 
-`kv_connector`와 `kv_role`은 사용자가 `config`에 넣어도 Helm이 마지막에 다음 값으로 강제한다.
+주의: Router가 `moriio`를 지원한다고 해서 사용하는 vLLM engine version도 해당 connector를 지원한다는 뜻은 아니다. **Router capability와 engine connector capability는 별도로 검증**해야 한다.
+
+현재 고객사 baseline은 Mooncake다.
+
+---
+
+## 8. Mooncake control-plane
+
+### 8.1 Prefill bootstrap
+
+Prefill에는 다음 env가 들어간다.
 
 ```text
-Prefill → kv_connector=<connector>, kv_role=kv_producer
-Decode  → kv_connector=<connector>, kv_role=kv_consumer
+VLLM_MOONCAKE_BOOTSTRAP_PORT=9001+prefill_index
+VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT=600
 ```
 
-이는 P/D role을 잘못 지정해 Cell이 반대로 동작하는 것을 방지하기 위한 contract다.
+P1이면:
 
-### 7.2 vLLM 0.27.1 `KVTransferConfig` field
-
-| `config` key | vLLM 기본값 | 사용 의미 / 주의점 |
-|---|---:|---|
-| `engine_id` | 자동 UUID | 직접 고정하면 replica/engine 간 ID 충돌 위험이 있으므로 일반적으로 생략 |
-| `kv_buffer_device` | 현재 platform device | `cuda`, `cpu`, `xpu`; NIXL host buffer 등 connector가 요구할 때 지정 |
-| `kv_buffer_size` | `1e9` | 주로 TorchDistributedConnector buffer byte 크기 |
-| `kv_rank` | `null` | rank 기반 connector용. vLLM 설명상 이 방식은 현재 1P1D 제약이 있으므로 NIXL/Mooncake에 불필요하게 지정하지 않음 |
-| `kv_parallel_size` | `1` | rank 기반 KV transfer parallel instance 수 |
-| `kv_ip` | `127.0.0.1` | connector가 이 공통 endpoint field를 사용할 때만 지정 |
-| `kv_port` | `14579` | connector가 이 공통 port field를 사용할 때만 지정 |
-| `kv_connector_extra_config` | `{}` | connector-specific option 전체 |
-| `kv_connector_module_path` | `null` | V1 외부 connector Python module path |
-| `enable_permute_local_kv` | `false` | NIXL HND↔NHD layout permute 실험 옵션 |
-| `kv_load_failure_policy` | `fail` | `fail` 또는 `recompute` |
-
-정확한 기준은 [vLLM v0.27.1 `KVTransferConfig` source](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/config/kv_transfer.py)다.
-
-### 7.3 NixlConnector
-
-최소값:
-
-```yaml
-kvTransfer:
-  connector: NixlConnector
+```text
+P0 bootstrap :9001
 ```
 
-명시적 운영 예:
+P2면:
 
-```yaml
-kvTransfer:
-  connector: NixlConnector
-  config:
-    kv_buffer_device: cuda
-    kv_load_failure_policy: recompute
-    kv_connector_extra_config:
-      backends:
-        - UCX
-      enforce_handshake_compat: true
-      # enable_cross_layers_blocks: "True"
+```text
+P0 bootstrap :9001
+P1 bootstrap :9002
 ```
 
-주요 NIXL extra option:
+### 8.2 Router startup
 
-| key | 의미 |
-|---|---|
-| `backends` | NIXL plugin 목록. 기본은 UCX이며 build에 따라 UCX/GDS/LIBFABRIC 등을 선택 |
-| `enforce_handshake_compat` | P/D model·dtype·attention·KV layout 호환성 검사. 안전상 `false`로 끄지 않음 |
-| `enable_cross_layers_blocks` | 지원 attention backend에서 cross-layer contiguous block transfer 활성화 |
-| `bidirectional_kv_xfer` | multi-turn 등의 양방향 KV 전송 기능을 실제로 사용할 때만 활성화 |
+Mooncake direct URL mode에서 Router는 시작 시 Prefill bootstrap을 조회한다.
 
-P와 D는 최소한 vLLM/NIXL connector 버전, model architecture, dtype, attention backend, KV cache dtype이 맞아야 한다. TP와 block size는 모델/feature 제약 안에서 다를 수 있다. 자세한 호환성은 [vLLM NixlConnector guide](https://docs.vllm.ai/en/v0.27.1/features/nixl_connector_usage/)와 [compatibility matrix](https://docs.vllm.ai/en/v0.27.1/features/nixl_connector_compatibility/)를 따른다.
+정상 로그 기대값:
 
-NIXL의 UCX 전송은 NCCL 설정을 재사용하지 않는다. `UCX_TLS`, `UCX_NET_DEVICES` 같은 UCX 환경변수는 실제 Network A/B의 NIC·transport 검증 결과에 맞춰 `pdCellSpec.env` 또는 모델 env로 선언한다.
-
-### 7.4 MooncakeConnector
-
-Network B처럼 RDMA를 쓰지 않는 검증 예:
-
-```yaml
-kvTransfer:
-  connector: MooncakeConnector
-  config:
-    kv_load_failure_policy: recompute
-    kv_connector_extra_config:
-      mooncake_protocol: tcp
-      num_workers: 16
-  bootstrapPortBase: 9001
-  abortRequestTimeout: 600
+```text
+kv_connector: Mooncake
+Mooncake connector enabled, querying prefill bootstrap servers...
+Querying Mooncake bootstrap at http://127.0.0.1:9001
+Got Mooncake engine_ids for http://127.0.0.1:8101: {...}
+Mooncake bootstrap query complete for all prefill nodes
 ```
 
-vLLM 0.27.1 자체 기본은 `mooncake_protocol=rdma`, `num_workers=10`이다. 그러므로 TCP를 의도하면 반드시 `config.kv_connector_extra_config.mooncake_protocol: tcp`를 적는다.
+이 단계가 실패하면 inference smoke test를 진행하지 않는다.
 
-Prefill/Decode에 렌더되는 핵심 JSON:
+### 8.3 Router -> Prefill
+
+정상 request metadata:
 
 ```json
 {
-  "kv_connector": "MooncakeConnector",
-  "kv_role": "kv_producer | kv_consumer",
-  "kv_load_failure_policy": "recompute",
-  "kv_connector_extra_config": {
-    "mooncake_protocol": "tcp",
-    "num_workers": 16
+  "kv_transfer_params": {
+    "do_remote_decode": true,
+    "do_remote_prefill": false,
+    "transfer_id": "xfer-<uuid>"
   }
 }
 ```
 
-Mooncake 전용 환경변수는 connector를 선택했을 때만 자동 생성한다.
+다음 경고는 절대 정상 상태가 아니다.
 
 ```text
-Prefill bootstrap: VLLM_MOONCAKE_BOOTSTRAP_PORT=9001+index
-P/D timeout:       VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT=600
+Missing transfer_id in kv_transfer_params from router!
 ```
 
-### 7.5 같은 Pod 안의 port 충돌 방지
+### 8.4 Router -> Decode
 
-P2D2처럼 여러 vLLM server가 한 Pod network namespace를 공유하면 HTTP port뿐 아니라 vLLM internal/DP/NIXL side-channel port도 고유해야 한다. Template이 다음 값을 자동 할당한다.
+정상 request metadata:
 
-| 목적 | Prefill 기본값 | Decode 기본값 | override field |
-|---|---:|---:|---|
-| HTTP | `8101+index` | `8201+index` | `portBase` |
-| vLLM internal | `20000 + 100×index` | `30000 + 100×index` | `internalPortMode: vllm`, `internalPortBase`, `internalPortStride` |
-| DP master | `24000+index` | `34000+index` | `internalPortMode: dp`, `dpMasterPortBase` |
-| NIXL side channel | `5600+index` | `5700+index` | `sideChannelPortBase` |
-| Mooncake bootstrap | `9001+index` | 해당 없음 | `kvTransfer.bootstrapPortBase` |
+```json
+{
+  "kv_transfer_params": {
+    "do_remote_decode": false,
+    "do_remote_prefill": true,
+    "transfer_id": "xfer-<same uuid>",
+    "remote_bootstrap_addr": "http://127.0.0.1:9001",
+    "remote_engine_id": "<prefill engine id>"
+  }
+}
+```
 
-`internalPortMode`는 phase profile의 parallelism에 맞춘다.
-
-| mode | 자동 env | 사용 시점 |
-|---|---|---|
-| `vllm` | `VLLM_PORT` | 기본값. TP/PP 등 non-DP engine |
-| `dp` | `VLLM_DP_MASTER_PORT` | profile이 vLLM data parallel engine을 구성할 때 |
-| `auto` | 둘 다 주입하지 않음 | vLLM의 동적 port 선택에 맡길 때 |
-
-vLLM 공식 NIXL integration도 non-DP에는 `VLLM_PORT`, DP에는 `VLLM_DP_MASTER_PORT`를 구분한다. 두 값을 동시에 강제하지 않는다. 자동 생성 env는 phase의 사용자 env보다 우선하므로 포트를 변경할 때는 env를 직접 덮기보다 위 field를 사용한다.
-
-NIXL side-channel env는 `NixlConnector`, `NixlPullConnector`, `NixlPushConnector`일 때만 자동 생성한다. `MultiConnector`의 child로 NIXL을 넣는 경우에는 `kvTransfer.nixlSideChannelEnabled: true`를 명시한다.
-
-### 7.6 지원 범위의 경계
-
-Chart는 raw `KVTransferConfig`를 전달하므로 `MultiConnector`, external connector 등도 표현할 수 있다. 다만 다음은 Helm이 보장하지 않는다.
-
-- 선택한 image에 connector 및 native library가 실제 포함되어 있는지
-- connector가 `disaggregated_prefill_orchestrated`의 `kv_transfer_params` flow를 지원하는지
-- connector/model/attention backend/TP layout 조합이 호환되는지
-- `MultiConnector` 내부 child connector가 요구하는 별도 env/bootstrap lifecycle
-
-현재 이 PR의 runtime acceptance target은 `NixlConnector`와 `MooncakeConnector` 두 가지다.
+이 metadata가 없으면 Decode가 정상 응답을 반환해도 실제 P/D KV handoff가 아닌 local recompute일 수 있다.
 
 ---
 
-## 8. Service / LiteLLM / Global Router 연결
+## 9. Mooncake transport와 GPU namespace contract
 
-P/D Cell Service는 **Router만 노출**한다.
-
-```text
-Service/<release>-<name>-engine-service
-        │
-        └─ Pod :8000 / pd-router
-```
-
-P/D engine port는 ClusterIP Service로 노출하지 않는다.
-
-따라서 LiteLLM은 기존 모델별 Service endpoint 패턴을 유지할 수 있다.
+현재 source-built image baseline:
 
 ```text
-LiteLLM
-  ↓
-<release>-<name>-engine-service
-  ↓
-Cell Router replica
-  ↓
-Prefill → Decode
+vLLM          0.26.0 CUDA 12.9
+Mooncake      0.3.10-post2
 ```
 
-Cell replica를 늘려도 LiteLLM config는 변경하지 않는다.
-
-### Global Router discovery
-
-PD Cell Pod에는 기존 `servingEngineSpec.labels`가 그대로 붙는다.
-
-Global LMRouter 0.1.8은 기존과 같은 namespace/label selector로 Pod를 찾고 `:8000`을 호출한다.
-
-PD Cell Pod의 `:8000`은 Cell Router이므로 Global Router는 Cell을 일반 serving endpoint처럼 볼 수 있다.
+Mooncake `nvlink_intra`의 실제 data plane은 Mooncake Transfer Engine의
+`IntraNodeNvlinkTransport`다.
 
 ```text
-Global Router
-  ├─ 기존 integrated vLLM Pod :8000
-  └─ PD Cell Pod             :8000 → Cell Router
+Decode KV allocation
+  -> cudaIpcGetMemHandle()
+  -> serialized cudaIpcMemHandle_t
+  -> Mooncake metadata
+  -> Prefill cudaIpcOpenMemHandle()
+  -> mapped remote VA
+  -> cudaMemcpy / NVLink
 ```
 
-Global Router는 Cell 내부 P/D topology를 알 필요가 없다.
+CUDA IPC 자체는 POSIX `/dev/shm` 파일을 다시 여는 방식은 아니지만,
+container runtime의 PID/device namespace 경계와는 별개의 상호작용이 존재할 수 있다.
+기존 실험의 `shareProcessNamespace=true`는 **host PID namespace 사용이 아니다**.
 
----
+Issue #6 final A/B에서는 `hostPID=false` 상태에서 Runtime API
+`cudaIpcOpenMemHandle`와 Driver API `cuIpcOpenMemHandle` 모두 intermittent
+`201 (invalid device context)`를 재현했다.
 
-## 9. Prometheus Metrics
+이후 **`hostPID=true`만 추가**한 상태에서 반복 Pod/engine recycle과 Helm reinstall을
+통과했고, 최종적으로 pristine Mooncake v0.3.10 Runtime API source에서도 동일하게
+정상 동작했다. 따라서 현재 deployment contract에서는 `hostPID=true`를 CUDA IPC
+runtime prerequisite로 취급한다. `hostIPC=true`는 final fix 요구사항이 아니다.
 
-vLLM engine metrics endpoint는 `/metrics`다.
+### 9.1 왜 기존 container별 GPU request를 제거했는가
 
-Cell 예:
+NVIDIA Device Plugin의 legacy allocation은 container 단위다.
+
+예를 들어 P2/D2를 각각 직접 요청하면:
 
 ```text
-PodIP:8101/metrics → prefill-0
-PodIP:8102/metrics → prefill-1
-PodIP:8201/metrics → decode-0
-PodIP:8202/metrics → decode-1
+Prefill container
+  physical GPU A,B
+  local CUDA ordinal 0,1
+
+Decode container
+  physical GPU C,D
+  local CUDA ordinal 0,1
 ```
 
-현재 `8000`만 keep하는 기존 job은 일반 vLLM/Router용으로 남겨두고 P/D engine 전용 job을 추가하는 것을 권장한다.
+처럼 서로 다른 physical GPU가 각 container에서 동일 local ordinal로 재매핑될 수
+있다. Mooncake 0.3.10 `nvlink_intra`의 CUDA IPC 경로에서 이 분리된 device
+namespace가 실제 runtime blocker로 관찰되었다.
 
-예시:
-
-```yaml
-- job_name: kubernetes-vllm-pd-engine
-  metrics_path: /metrics
-
-  kubernetes_sd_configs:
-    - role: pod
-      namespaces:
-        names:
-          - inference
-
-  relabel_configs:
-    - source_labels: [__meta_kubernetes_pod_label_pd_cell]
-      regex: 'true'
-      action: keep
-
-    - source_labels: [__meta_kubernetes_pod_container_name]
-      regex: '(prefill-[0-9]+|decode-[0-9]+)'
-      action: keep
-
-    - source_labels: [__meta_kubernetes_pod_phase]
-      regex: Running
-      action: keep
-
-    - source_labels: [__meta_kubernetes_pod_name]
-      target_label: pd_cell
-
-    - source_labels: [__meta_kubernetes_pod_label_pd_deployment]
-      target_label: pd_deployment
-
-    - source_labels: [__meta_kubernetes_pod_node_name]
-      target_label: node
-
-    - source_labels: [__meta_kubernetes_pod_container_name]
-      target_label: container
-
-    - source_labels: [__meta_kubernetes_pod_container_name]
-      regex: 'prefill-.*'
-      replacement: prefill
-      target_label: pd_role
-
-    - source_labels: [__meta_kubernetes_pod_container_name]
-      regex: 'decode-.*'
-      replacement: decode
-      target_label: pd_role
-
-    - source_labels:
-        - __meta_kubernetes_pod_name
-        - __meta_kubernetes_pod_container_name
-      separator: '/'
-      target_label: instance
-```
-
-### 왜 `instance=PodIP`만 쓰면 안 되는가
-
-PD Cell은 하나의 Pod 안에 여러 vLLM process가 있다.
+MooncakeConnector P/D Cell에서는 이 문제를 피하기 위해 다음 contract를 사용한다.
 
 ```text
-10.0.0.10:8101
-10.0.0.10:8102
-10.0.0.10:8201
-10.0.0.10:8202
+requestGPU topology
+  P0: 2
+  P1: 2
+  D0: 4
+       |
+       v
+Chart total = 8
+       |
+       v
+gpu-reservation container
+  nvidia.com/gpu: 8
+       |
+       +--> allocated GPU UUIDs sorted by PCI bus
+       +--> /var/run/pd-gpu/gpus
+                    |
+        +-----------+-----------+
+        |           |           |
+       P0          P1          D0
+ NVD=all      NVD=all      NVD=all
+ CVD=A..H     CVD=A..H     CVD=A..H
+ ids=0,1     ids=2,3      ids=4,5,6,7
 ```
 
-port를 제거해 모두 `instance=10.0.0.10`으로 만들면 engine identity가 사라진다.
+운영자는 GPU index/range를 values에 적지 않는다. Chart가 기존
+`count * requestGPU`만으로 자동 계산한다.
 
-P/D Cell에서는 `pod/container` 또는 `PodIP:port`를 instance로 유지한다.
+### 9.2 runtime 변수 역할
 
----
-
-## 10. 장애 정책
-
-단기 첫 버전은 strict Cell readiness다.
+Engine manifest에는 다음을 명시한다.
 
 ```text
-pd-router READY
-AND prefill-0..N READY
-AND decode-0..M READY
-→ Pod READY
-→ Service endpoint 포함
+NVIDIA_VISIBLE_DEVICES=all
 ```
 
-예: P2:D2에서 P0 crash
+이는 container 생성 시 NVIDIA runtime이 peer GPU device를 inject할 수 있게 한다.
 
-```text
-P0 crash
-  ↓
-Pod NotReady
-  ↓
-해당 Cell이 Service endpoint에서 제거
-  ↓
-다른 Cell replica가 신규 요청 처리
-  ↓
-Kubelet이 P0 restart
-  ↓
-model / Mooncake 초기화
-  ↓
-P0 Ready
-  ↓
-Pod Ready
-  ↓
-Cell 자동 재가입
-```
-
-이 방식은 Cell 내부 degraded serving보다 단순하지만 장애 의미가 명확하다.
-
-장기에는 다음을 별도 구현한다.
-
-```text
-minReadyPrefill >= 1
-AND minReadyDecode >= 1
-→ degraded Cell serving
-```
-
----
-
-## 11. Deployment 전략
-
-Cell 하나가 Node GPU 전체를 점유할 수 있으므로 기본 RollingUpdate는 다음으로 설정한다.
-
-```yaml
-maxSurge: 0
-maxUnavailable: 1
-```
-
-이유:
-
-`maxSurge: 1`이면 기존 Cell이 GPU를 점유한 상태에서 신규 Cell 하나를 추가로 스케줄해야 하므로 spare GPU Node가 없으면 rollout이 Pending될 수 있다.
-
-모델별 `strategy`로 override 가능하다.
-
----
-
-## 12. 개발/테스트 순서
-
-### 12.1 Static
+Chart-owned launcher는 reservation file을 읽은 다음 **모든 P/D engine에서 동일하게**:
 
 ```bash
-helm lint ./helm
-helm template <release> ./helm \
-  -f <existing-global-values> \
-  -f ./helm/examples/pd-cell-values.yaml
+CUDA_VISIBLE_DEVICES=<reservation 전체 UUID 목록>
 ```
 
-확인:
-
-- 기존 integrated model manifest 변화 없음
-- P/D Cell Deployment/Service만 추가
-- container 수량
-- port
-- GPU requests
-- CPU/memory inherited defaults
-- static router backend list
-- NIXL/Mooncake connector와 producer/consumer role
-
-### 12.2 P1:D1
-
-최초 runtime 검증은 P1:D1로 시작한다.
-
-확인:
-
-- Router health
-- P health
-- D health
-- `/v1/models`
-- `/metrics`
-- non-streaming
-- streaming
-- long-context request
-- 선택한 connector의 handshake/transfer log
-
-### 12.3 P2:D2 / P3:D1
-
-`count` 값만 변경해 topology가 자동 생성되는지 확인한다.
-
-같은 `servedModelName`으로 P1D1/P2D1/P2D2/P1D3를 동시에 선언할 수 있다. topology별 결과를 분리할 때는 각 `<release>-<name>-engine-service`를 직접 호출한다.
-
-### 12.4 Replica scale
+을 설정한다. 이후 engine별 자동 index를:
 
 ```bash
-kubectl scale deployment <release>-<name>-pd-cell --replicas=2
+vllm serve --device-ids <CNTR_GPU_IDX> ...
 ```
 
-또는 values의 `replicaCount`를 변경한다.
+로 전달한다.
 
-확인:
+vLLM 0.26.0은 `CUDA_VISIBLE_DEVICES`가 있을 때 integer `--device-ids`를
+그 visible list의 index로 resolve하고, UUID CVD도 NVML physical ID로 변환한다.
+따라서 모든 engine은 동일 CUDA ordinal namespace를 유지하면서 실제 compute GPU는
+서로 겹치지 않게 고정된다.
 
-- Node 이름을 지정하지 않아도 scheduler가 배치
-- GPU 8개 Cell은 8 GPU가 가용한 Node에 원자적으로 배치
-- Service endpoint 증가
-- LiteLLM config 변화 없음
+### 9.3 isolation trade-off
 
-### 12.5 Failure
+이 방식은 Kubernetes scheduler accounting은 유지한다. 실제 GPU extended resource는
+`gpu-reservation` container가 Cell 전체 합계를 독점하므로 다른 정상 workload가 그
+GPU를 재할당받지 않는다.
 
-각각 테스트한다.
+다만 P/D engine container는 `NVIDIA_VISIBLE_DEVICES=all`이므로 Linux device-level
+hard isolation은 아니다. Chart-owned launcher가 CVD를 reservation UUID로 좁혀
+정상 CUDA application의 runtime visibility를 제한한다.
 
 ```text
-prefill container kill
-decode container kill
-router container kill
-Pod delete
-Node drain
+Scheduler GPU accounting                 YES
+Cell 내부 compute partition              YES
+CUDA runtime에서 다른 workload GPU 숨김  YES
+/dev/nvidia* hard security boundary       NO
 ```
 
-Cell이 제거되고 복구 후 자동 재가입하는지 확인한다.
+driver/device-plugin을 DRA로 전환할 수 없는 현재 환경의 bridge contract이며,
+strict device security boundary가 필요하면 향후 DRA/NRI 계층으로 재설계한다.
+
+### 9.4 강제 protocol
+
+P/D Cell은 동일 Pod이므로 exact `MooncakeConnector`에서는 Chart가 최종
+KVTransferConfig에 다음을 강제한다.
+
+```json
+{
+  "kv_connector_extra_config": {
+    "mooncake_protocol": "nvlink_intra"
+  }
+}
+```
+
+values의 공통/Prefill/Decode 어느 merge layer에서든 사용자가
+`mooncake_protocol`을 지정하면 Helm render를 fail한다.
+
+Mooncake Transfer Engine binary가 `nvlink_intra` support 없이 build되었다면
+runtime startup/transfer가 실패하는 것이 의도된 fail-fast 동작이다.
+
+Mooncake `nvlink_intra`의 현재 cross-container CUDA IPC baseline:
+
+```yaml
+pdCellSpec:
+  hostPID: true
+```
+
+`hostIPC`와 `shareProcessNamespace`는 Issue #6 final fix에 필요하지 않았다.
+`shareProcessNamespace`는 `hostPID`와 다른 Kubernetes 옵션이며 이를 켰다고 host
+PID namespace 조건이 충족되는 것은 아니다. 보안상 `hostPID`는 process isolation을
+약화시키므로 Mooncake profile에서 명시적으로 사용하고 일반 connector 기본값은 false로
+유지한다. Engine의 기존 `/dev/shm` mount는 vLLM/NCCL/multiprocessing 용도로 유지한다.
+
+## 10. KVTransferConfig
+
+모델별 설정:
+
+```yaml
+kvTransfer:
+  connector: MooncakeConnector
+  bootstrapPortBase: 9001
+  abortRequestTimeout: 600
+  config:
+    kv_load_failure_policy: fail
+    kv_connector_extra_config:
+      num_workers: 16
+
+# mooncake_protocol은 values에 쓰지 않는다.
+# Chart가 exact MooncakeConnector에 nvlink_intra를 강제한다.
+```
+
+Helm은 phase별로 최종 설정을 merge한 뒤 다음 필드를 강제로 설정한다.
+
+Prefill:
+
+```json
+{
+  "kv_connector": "MooncakeConnector",
+  "kv_role": "kv_producer"
+}
+```
+
+Decode:
+
+```json
+{
+  "kv_connector": "MooncakeConnector",
+  "kv_role": "kv_consumer"
+}
+```
+
+`kv_load_failure_policy` 기본 운영 권장은 `fail`이다.
+
+`recompute`는 Decode에서 긴 Prefill fallback을 유발해 tail latency isolation을 깨뜨릴 수 있고, connector 실패를 정상 응답으로 가릴 수 있으므로 certification에서는 사용하지 않는다.
 
 ---
 
-## 13. 현재 초안에서 의도적으로 하지 않는 것
+## 11. served model / alias
 
-- P와 D 독립 Deployment
-- P와 D 독립 autoscaling
-- Cross-node P/D KV transfer
-- degraded Cell serving
-- multi-node engine
-- Fabric P/D
-- Native MP/LWS
-- cache-aware P/D routing
+P/D engine에는 모든 공개 이름을 vLLM `--served-model-name`으로 전달한다.
 
-이들은 0.1.12+ 범용 Disaggregated Serving 트랙에서 구현한다.
+```yaml
+servedModelNames:
+  - Qwen3.6-27B-PD
+  - test-alias
+```
+
+렌더 결과 의미:
+
+```bash
+vllm serve ... \
+  --served-model-name Qwen3.6-27B-PD test-alias
+```
+
+vLLM Router의 `/v1/models`는 자체 LMStack-style static alias catalog를 만들지 않고 Prefill의 `/v1/models`를 proxy한다.
+
+따라서 기대 contract는:
+
+```text
+Prefill /v1/models
+  primary + alias
+        |
+        v
+Cell vLLM Router /v1/models
+  primary + alias
+        |
+        v
+Global Router discovery
+  primary + alias
+```
+
+Runtime certification에서 반드시 다음 둘을 확인한다.
+
+- Cell Router `/v1/models`에 primary + alias 모두 노출
+- Global Router에서도 alias discovery 및 alias 요청 성공
 
 ---
 
-## 14. 장기 흡수 포인트
+## 12. API surface
 
-단기 `pdCellSpec.models[]`에서 장기적으로 가져갈 field:
+vLLM Router는 명시적인 OpenAI endpoint 외에도 transparent proxy를 활성화하며 unmatched POST request를 P/D two-stage pipeline으로 보낼 수 있다.
+
+따라서 underlying vLLM server가 지원하는 경우 다음도 runtime 검증 대상이다.
 
 ```text
-name / servedModelName
-prefill/decode topology
-profile
-resource contract
-KV connector
-Router contract
-metrics identity
-failure semantics
+/v1/chat/completions
+/v1/responses
+/v1/messages
 ```
 
-장기적으로 packaging만 바뀐다.
+특히 `/v1/messages`는 전용 Router endpoint라서 지원되는 것이 아니라 **transparent P/D proxy path**를 타는 것이므로 streaming/tool-use까지 실제 사용 패턴으로 검증한다.
+
+---
+
+## 13. API key contract
+
+기존 stack의 engine secret이 `servingEngineSpec.vllmApiKey`로 설정되면 P/D engine에는 `VLLM_API_KEY`가 전달된다.
+
+vLLM Router direct-URL P/D path는 backend Authorization을 `OPENAI_API_KEY`에서 읽는 코드 path가 있으므로 Cell Router에는 같은 secret을 두 이름으로 주입한다.
 
 ```text
-0.1.8
-pdCellSpec.models[]
+VLLM_API_KEY=<same secret>
+OPENAI_API_KEY=<same secret>
+```
 
-          ↓
+이렇게 해야 engine API-key 인증을 활성화한 환경에서도 Router -> P/D 요청이 401로 실패하지 않는다.
 
-0.1.12+
-modelSpec
-  deploymentMode: disaggregated
-  disaggregatedServing:
-    topology: nodeLocal | fabric
+---
+
+## 14. Port model
+
+기본 port layout:
+
+| Component | 기본 port |
+|---|---:|
+| Cell Router API | 8000 |
+| Cell Router Prometheus | 29000 |
+| Prefill HTTP | 8101 + index |
+| Decode HTTP | 8201 + index |
+| Prefill Mooncake bootstrap | 9001 + index |
+| Prefill vLLM internal | 20000 + stride |
+| Decode vLLM internal | 30000 + stride |
+| Prefill DP master | 24000 + index |
+| Decode DP master | 34000 + index |
+| Prefill NIXL side channel | 5600 + index |
+| Decode NIXL side channel | 5700 + index |
+
+한 Pod에서 모든 container가 network namespace를 공유하므로 port collision은 금지한다.
+
+---
+
+## 15. Health / startup
+
+vLLM Router Mooncake direct mode는 Router listener가 준비되기 전에 P/D health와 bootstrap query를 기다릴 수 있다.
+
+대형 모델 startup 때문에 Router를 조기 재시작하지 않도록 기본 Router startup budget을 늘렸다.
+
+```yaml
+startupProbePeriodSeconds: 5
+startupProbeFailureThreshold: 180
+```
+
+즉 약 15분이다.
+
+Router health values는 실제 vLLM Router CLI로 전달한다.
+
+```text
+healthCheckInterval -> --health-check-interval-secs
+healthCheckTimeout  -> --health-check-timeout-secs
 ```
 
 ---
 
-## 15. 구현 파일
+## 15.1 Mooncake GPU reservation runtime 검증 완료 — 2026-08-28
+
+PR #4의 node-local Mooncake GPU reservation 구조는 실제 GPU node에서 성공 검증했다.
+
+검증 topology:
 
 ```text
-helm/templates/deployment-pd-cell.yaml
-  → Cell Pod / Router / P / D 생성
-
-helm/templates/service-pd-cell.yaml
-  → Cell Router를 모델 Service로 노출
-
-helm/examples/pd-cell-values.yaml
-  → values 예제
-
-helm/tests/pdCell_test.yaml
-  → P2:D2, P3:D1, replica 0, 동일 servedModelName, disabled renderer 테스트
-
-helm/docs/PD_CELL_0.1.8_KO.md
-  → 본 문서
+P1D1
+Prefill TP2 = 2 GPU
+Decode  TP2 = 2 GPU
+Cell total  = 4 GPU
 ```
+
+관측 결과:
+
+```text
+gpu-reservation
+  -> Chart 계산대로 nvidia.com/gpu 4개 요청
+  -> 할당 GPU UUID 파일 생성 성공
+
+Prefill / Decode container
+  -> nvidia-smi에서 node GPU 8개 전체 접근 가능
+  -> vLLM PID1 environment의 CUDA_VISIBLE_DEVICES는
+     reservation container가 확보한 GPU UUID 4개로 제한
+  -> Chart가 계산한 --device-ids가 P/D에 비중복으로 주입
+  -> 실제 engine 초기화/메모리 점유도 지정 GPU에서만 발생
+  -> "Using Intra-Node NVLink transport" 확인
+```
+
+실제 추론에서 Prefill Mooncake Transfer Engine:
+
+```text
+[REQUEST] submitTransferTask
+[CTX] relocateSharedMemoryAddress:before-ipc-open
+[IMPORT_SUCCESS]
+...
+KV Transfer metrics:
+  Num successful transfers = 4
+  Num failed transfers     = 0
+  Avg xfer time            ~= 0.77 ms
+  Avg MB per transfer      ~= 122.5 MB
+  Throughput               ~= 159 GB/s
+  Avg descriptors          ~= 112
+```
+
+Decode engine은 INFO level에서 transfer metric이 동일하게 보이지 않았지만,
+`VLLM_LOGGING_LEVEL=DEBUG`로 검증했을 때 Prefill producer TP rank별 remote KV
+receive/load가 실제 수행되는 것을 확인했다.
+
+따라서 다음 항목은 runtime validated 상태다.
+
+```text
+Pod-local aggregate GPU reservation          PASS
+reservation UUID discovery                   PASS
+all-GPU device injection                     PASS
+Cell-wide common CUDA namespace              PASS
+automatic non-overlapping --device-ids       PASS
+vLLM compute GPU partition                   PASS
+Mooncake nvlink_intra initialization         PASS
+hostPID=true CUDA IPC baseline               PASS
+cudaIpcOpenMemHandle                         PASS (pristine v0.3.10 + recycle/reinstall)
+actual KV transfer                           PASS
+Decode remote KV receive/load                PASS
+```
+
+중요: 이 검증은 **cold-start 정상 topology**에 대한 것이다.
+Partial engine restart는 현재 지원 목표가 아니며, P/D Cell 전체를 하나의 failure
+domain으로 recycle하는 운영 정책을 사용한다.
 
 ---
 
-## 핵심 요약
+## 16. Failure domain / automatic whole-cell recycle
+
+P/D Cell은 **Pod 전체를 하나의 failure domain**으로 취급한다.
+
+이 결정의 배경:
+
+- Prefill-only restart에서 vllm-router의 stale Prefill `engine_id` 가능성이 확인됨
+- Mooncake 0.3.10 `nvlink_intra`에서 partial restart 후 CUDA IPC context lifecycle
+  문제가 실제 재현됨
+- 현재 운영 contract에서는 단일 노드 P/D Cell 전체 재기동으로 복구되면 충분함
+
+따라서 partial engine restart를 복구하려고 Router/Mooncake state를 억지로 이어가지 않는다.
+
+### 16.1 `pd-cell-guardian`
+
+Chart는 기본적으로 각 P/D Cell Pod에 `pd-cell-guardian` sidecar를 추가한다.
+
+감시 대상:
 
 ```text
-한 모델
-  ↓
-pdCellSpec.models[] 한 block
-  ↓
-Deployment replica = Cell count
-  ↓
-한 Pod 안에 Router + P×N + D×M
-  ↓
-Pod GPU request 합계로 Kubernetes 자동 scheduling
-  ↓
-Service는 Router :8000만 노출
-  ↓
-Cell Router가 localhost P/D를 orchestration
-  ↓
-Global Router는 Cell 자체만 discover
+pd-router
+gpu-reservation    # MooncakeConnector인 경우
+prefill-*
+decode-*
 ```
 
-운영 values는 `name / servedModelName / image / topology / GPU / profile` 중심으로 유지하고, 공통 Router·KV·스케줄링 정책은 `pdCellSpec` 최상위에 한 번만 둔다.
+동작:
 
-단기 목표는 이 구조를 **기존 0.1.8 운영 경로에 영향 없이 실제로 검증하는 것**이다.
+```text
+1. Pod 시작
+2. 모든 감시 대상 container status가 관찰될 때까지 대기
+3. 아직 하나라도 NotReady이면 kubelet startup/CrashLoopBackOff에 맡기고 대기
+4. 모든 target이 Ready로 회복된 시점에 restartCount > 0이면 stale generation으로 판정
+5. guardian이 자기 Pod를 UID precondition으로 한 번 DELETE
+6. restart 없이 모든 target이 Ready가 되면 restartCount=0 baseline으로 ARMED
+7. 이후 어느 하나라도 restartCount 증가
+8. guardian이 자기 Pod를 UID precondition으로 DELETE
+9. Deployment가 fresh Pod 생성
+10. reservation / Router / P / D / Mooncake state가 모두 새 generation으로 시작
+```
+
+즉 **초기 startup 중 발생한 core container restart도 정상 generation에 흡수하지 않는다.**
+다만 아직 full Ready에 도달하지 못한 CrashLooping Pod를 즉시 delete하지는 않는다.
+잘못된 image/profile 같은 영구 startup failure는 kubelet의 CrashLoopBackOff를 유지하고,
+일단 모든 target이 Ready로 회복된 경우에만 dirty generation을 한 번 recycle한다.
+
+P/D Cell의 lifecycle contract는 최종적으로 "ARMED되는 Pod generation 안에서는 core
+container restart가 0이어야 한다"로 고정한다.
+
+guardian은 restart/recycle 판단을 stdout뿐 아니라 node-local hostPath에도 JSONL로 남긴다.
+
+```text
+host:      /var/log/vllm-pd-cell/guardian
+container: /var/log/pd-cell-guardian
+
+<namespace>_<pod>_<pod-uid>.jsonl
+```
+
+기록에는 UTC timestamp, Pod UID, trigger container, restartCount, container
+`state/lastState`, exit reason/code/time, Pod phase/reason, DELETE 수락 여부가 포함된다.
+따라서 Pod가 recycle되어 이전 container log가 사라져도 node-local audit trail을
+Alloy 같은 node log collector가 수집할 수 있다.
+
+단, node 자체가 hard-fail하여 guardian이 failure를 관찰하지 못한 경우까지 이 파일이
+보장하는 것은 아니다. 그 경우 Kubernetes event/kubelet/node telemetry를 함께 본다.
+
+### 16.2 Kubernetes API / RBAC
+
+guardian은 자기 Pod status를 `GET`하고 자기 Pod를 `DELETE`할 수 있어야 한다.
+
+Chart는:
+
+- release 전용 ServiceAccount
+- namespace Role: `pods/get, pods/delete`
+- RoleBinding
+- projected ServiceAccount token
+
+을 생성한다.
+
+사용자가 기존 `serviceAccountName`을 지정하면 해당 SA에도 RoleBinding을 추가한다.
+
+보안상 Pod의 기본 ServiceAccount token 자동 mount는 끄고, delete credential은
+guardian container에만 projected volume으로 mount한다.
+
+### 16.3 현재 acceptance
+
+partial restart continuity는 현재 지원 contract가 아니며, whole-cell recycle을 표준 복구 경로로 사용한다.
+
+production acceptance는:
+
+```text
+engine/router failure
+  -> whole Cell recycle
+  -> fresh startup
+  -> actual Mooncake KV transfer 다시 PASS
+```
+
+를 P1D1/P1D2에서 검증하는 것이다.
+
+---
+
+## 17. Metrics
+
+Cell Router metrics:
+
+```text
+:29000/metrics
+```
+
+P/D engine metrics:
+
+```text
+Prefill :8101/metrics
+Decode  :8201/metrics
+Decode1 :8202/metrics
+```
+
+기존 Prometheus discovery가 `container_port == 8000`만 선택하면 다음이 누락된다.
+
+- Router metrics :29000
+- Prefill metrics :8101+
+- Decode metrics :8201+
+
+따라서 production readiness 전에 scrape discovery를 수정해야 한다.
+
+Mooncake actual transfer 검증에서는 단순 request 성공뿐 아니라 producer-side transfer latency/bytes/descriptors 또는 equivalent connector metrics/log를 확인한다.
+
+---
+
+## 18. P1D2 비대칭 topology
+
+예:
+
+```text
+8 GPU node
+
+Prefill  TP4 -> 4 GPU
+Decode0  TP2 -> 2 GPU
+Decode1  TP2 -> 2 GPU
+```
+
+합계 8 GPU이므로 Kubernetes resource 예약은 가능하다.
+
+```yaml
+prefill:
+  count: 1
+  requestGPU: 4
+
+decode:
+  count: 2
+  requestGPU: 2
+```
+
+`requestGPU`는 Mooncake P/D에서 **topology sizing source-of-truth**다. 실제 GPU
+extended resource는 engine container가 아니라 reservation sidecar에 합산된다.
+
+또한 각 engine의 `requestGPU`는 profile이 생성하는 **local GPU worker 수**와 반드시
+일치해야 한다. 예를 들어 TP4 단일 local engine이면 requestGPU=4여야 한다.
+
+heterogeneous TP의 KV connector 지원 여부는 vLLM/Mooncake 버전과 model architecture에 종속되므로 별도 runtime 검증 대상이다.
+
+---
+
+## 19. Runtime certification 순서
+
+### Gate 1 — image
+
+- vLLM version
+- Mooncake package version
+- import
+- shared library
+- CUDA ABI
+- Mooncake init
+
+### Gate 2 — Helm / GPU contract
+
+- Cell Router image가 vllm-router인지
+- command가 `vllm-router`인지
+- `--vllm-pd-disaggregation`
+- `--kv-connector mooncake`
+- `--prefill URL BOOTSTRAP_PORT`
+- `--decode URL`
+- `kv_producer` / `kv_consumer`
+- `gpu-reservation`만 `nvidia.com/gpu = total`을 갖는지
+- P/D engine resource에는 `nvidia.com/gpu`가 없는지
+- P/D engine에 `NVIDIA_VISIBLE_DEVICES=all`이 있는지
+- 자동 `CNTR_GPU_IDX`가 중복 없이 전체 reservation range를 정확히 분할하는지
+- 최종 KV JSON에 `mooncake_protocol=nvlink_intra`가 주입되는지
+
+### Gate 3 — startup / device namespace
+
+각 P/D engine에서:
+
+```text
+reservation UUID list 동일
+CUDA_VISIBLE_DEVICES 동일
+selected CNTR_GPU_IDX는 engine별 비중복
+selected UUID가 기대 topology와 일치
+```
+
+를 먼저 확인한다.
+
+그 다음 Router log에서:
+
+```text
+Querying Mooncake bootstrap
+Got Mooncake engine_ids
+```
+
+확인.
+
+### Gate 4 — API/catalog
+
+- Router `/health`
+- P/D `/health`
+- P/D `/v1/models`
+- Cell Router `/v1/models`
+- 기본 contract에서는 profile에 정의한 model name/alias가 노출되는지 확인
+- `servedModelNames`를 명시한 경우에만 Chart CLI override 결과 확인
+
+### Gate 5 — actual P/D
+
+한 요청에서:
+
+```text
+same transfer_id
+P do_remote_decode=true
+D do_remote_prefill=true
+D remote_engine_id present
+D remote_bootstrap_addr present
+```
+
+확인.
+
+그리고:
+
+- P actual KV send
+- D actual KV receive/load
+- prolonged `WAITING_FOR_REMOTE_KVS` 없음
+- Decode prompt recompute 없음
+- stream interruption 없음
+
+### Gate 6 — Global Router
+
+- primary discovery
+- alias discovery
+- primary request
+- alias request
+
+### Gate 7 — resilience
+
+- 최초 full Ready 이전 Prefill/Decode restartCount > 0 감지 및 whole-cell recycle
+- 정상 Ready 상태에서 Prefill restartCount 증가 감지
+- guardian JSONL audit에 trigger container / lastState.terminated / delete outcome 기록
+- guardian whole-Pod DELETE
+- fresh reservation/Router/P/D generation 확인
+- whole-cell restart 후 actual KV transfer 재검증
+- P1D1 반복 recycle soak
+- P1D2 whole-cell recycle
+
+### Gate 8 — metrics/performance
+
+- Router/P/D scrape
+- transfer metrics
+- TTFT/TPOT/ITL
+- concurrency
+- long prompt
+- soak
+
+Gate 5 전에는 성능 benchmark로 넘어가지 않는다.
+
+---
+
+## 20. 결론
+
+P/D Cell의 Router abstraction을 단순화한다.
+
+```text
+Global routing     = LMStack Router 가능
+Cell orchestration = vllm-project/router 고정
+KV transfer        = model-local connector
+```
+
+이 구조는 Global routing concern과 connector-aware P/D orchestration concern을 분리한다.
+
+특히 Mooncake의 `transfer_id + bootstrap + engine_id` control-plane을 Router가 직접 이해하므로, LMStack의 generic response-driven orchestration에서 발생했던 silent Decode recompute 위험을 제거한다.

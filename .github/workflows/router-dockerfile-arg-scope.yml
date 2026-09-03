@@ -1,0 +1,70 @@
+name: Validate Router Dockerfile ARG scope
+
+on:
+  pull_request:
+    paths:
+      - 'docker/vllm-router/Dockerfile.rust-proxy'
+      - '.github/workflows/router-dockerfile-arg-scope.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-from-args:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure every FROM build arg is global and non-empty by default
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path('docker/vllm-router/Dockerfile.rust-proxy')
+          lines = path.read_text().splitlines()
+
+          first_from = next(
+              i for i, line in enumerate(lines)
+              if re.match(r'^\s*FROM\s+', line, flags=re.IGNORECASE)
+          )
+          global_lines = lines[:first_from]
+
+          declared = {}
+          for i, line in enumerate(global_lines, start=1):
+              match = re.match(r'^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)\s*$', line)
+              if match:
+                  name, default = match.groups()
+                  if not default:
+                      raise SystemExit(
+                          f'{path}:{i}: global ARG {name} has an empty default'
+                      )
+                  declared[name] = i
+
+          from_vars = set()
+          for i, line in enumerate(lines, start=1):
+              if re.match(r'^\s*FROM\s+', line, flags=re.IGNORECASE):
+                  from_vars.update(re.findall(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}', line))
+
+          missing = sorted(from_vars - declared.keys())
+          if missing:
+              raise SystemExit(
+                  'ARG variables used by FROM must be declared before the first FROM: '
+                  + ', '.join(missing)
+              )
+
+          required = {'DOCKER_REGISTRY', 'RUST_BUILDER_IMAGE', 'RUNTIME_IMAGE'}
+          missing_required = sorted(required - declared.keys())
+          if missing_required:
+              raise SystemExit(
+                  'Required image ARGs are not global: ' + ', '.join(missing_required)
+              )
+
+          print('FROM ARG scope OK:')
+          for name in sorted(from_vars):
+              print(f'  {name}: global ARG at line {declared[name]}')
+          PY

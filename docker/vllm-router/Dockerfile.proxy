@@ -1,0 +1,43 @@
+ARG DOCKER_REGISTRY=docker.io
+
+# Closed-network convenience image for environments with an internal PyPI proxy.
+# Keep baseline Dockerfile syntax only so BuildKit does not need to resolve an
+# external Dockerfile frontend image.
+#
+# The build context is expected to provide:
+#   ./pip.conf    -> internal PyPI/Artifactory configuration
+#   ./certs/*.crt -> corporate CA certificates
+#
+# No Rust/Cargo toolchain is required. --only-binary=:all: deliberately prevents
+# an accidental source build when the release wheel is unavailable in the proxy.
+ARG BASE_IMAGE=library/python:3.12-slim-bookworm
+FROM ${DOCKER_REGISTRY}/${BASE_IMAGE}
+
+ARG VLLM_ROUTER_VERSION=0.1.15
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY ./certs /opt/certs
+RUN set -eux; \
+    find /opt/certs -type f -name '*.crt' \
+        -exec cp -v '{}' /usr/local/share/ca-certificates/ ';'; \
+    update-ca-certificates; \
+    rm -rf /opt/certs
+
+COPY ./pip.conf /etc/pip.conf
+
+WORKDIR /app
+
+RUN set -eux; \
+    python -m pip install \
+        --no-cache-dir \
+        --only-binary=:all: \
+        "vllm-router==${VLLM_ROUTER_VERSION}"; \
+    python -c "import importlib.metadata as m; assert m.version('vllm-router') == '${VLLM_ROUTER_VERSION}'"; \
+    vllm-router --help >/dev/null
+
+EXPOSE 8000
+EXPOSE 29000
+
+CMD ["vllm-router", "--host", "0.0.0.0", "--port", "8000"]
