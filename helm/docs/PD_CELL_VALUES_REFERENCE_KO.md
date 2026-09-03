@@ -101,9 +101,11 @@ pdCellSpec:
 
 ```text
 모든 target status 관찰
-  -> full Ready 이전 restartCount > 0
-  -> partial-restart generation으로 판정
-  -> whole-cell DELETE
+  -> 하나라도 NotReady이면 kubelet startup/CrashLoopBackOff 유지
+
+모든 target이 Ready로 회복
+  -> restartCount > 0이면 partial-restart generation으로 판정
+  -> ARMED 전에 whole-cell DELETE
 
 restart 없이 P/D/Router/(Mooncake gpu-reservation) 모두 Ready
   -> restartCount=0 baseline 저장
@@ -589,7 +591,7 @@ Cell 내부 LMStack orchestrator는 Mooncake contract mismatch 때문에 제거�
 
 Mooncake direct URL Router와 Mooncake CUDA IPC state는 partial engine restart에서 stale generation 문제가 발생할 수 있다.
 
-현재 운영 contract는 partial restart 복구가 아니라 **P/D Cell 전체를 하나의 failure domain으로 취급**하는 것이다. Chart guardian은 최초 full Ready 전의 restartCount > 0도 stale generation으로 처리하고, ARMED 이후 P/D/Router/gpu-reservation의 restartCount 증가 역시 자기 Pod 전체 recycle로 연결한다.
+현재 운영 contract는 partial restart 복구가 아니라 **P/D Cell 전체를 하나의 failure domain으로 취급**하는 것이다. Chart guardian은 startup 중 restart가 있었더라도 아직 NotReady인 동안에는 kubelet backoff를 방해하지 않고, 모든 target이 Ready로 회복된 시점에 restartCount > 0이면 ARMED 전에 stale generation을 recycle한다. ARMED 이후 P/D/Router/gpu-reservation의 restartCount 증가 역시 자기 Pod 전체 recycle로 연결한다.
 
 ---
 

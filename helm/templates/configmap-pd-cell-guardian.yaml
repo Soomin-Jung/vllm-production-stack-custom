@@ -210,25 +210,31 @@ data:
                 time.sleep(POLL_SECONDS)
                 continue
 
+            not_ready = sorted(
+                name for name in TARGETS if not current[name].get("ready", False)
+            )
+            if not_ready:
+                # Do not turn a permanent startup failure into a Pod recycle
+                # storm. Kubelet keeps CrashLoopBackOff/backoff semantics until
+                # every target can become Ready again.
+                time.sleep(POLL_SECONDS)
+                continue
+
             restarted_before_ready = {
                 name: int(current[name].get("restartCount", 0))
                 for name in sorted(TARGETS)
                 if int(current[name].get("restartCount", 0)) > 0
             }
             if restarted_before_ready:
+                # The Pod recovered to full Ready, but this generation has
+                # already experienced a partial core-container restart. Recycle
+                # once before ARMED so Router/Mooncake generation state is clean.
                 delete_self(
                     "target restarted before initial full readiness: "
                     + json.dumps(restarted_before_ready, sort_keys=True),
                     pod=pod,
                     trigger_container=next(iter(restarted_before_ready)),
                 )
-
-            not_ready = sorted(
-                name for name in TARGETS if not current[name].get("ready", False)
-            )
-            if not_ready:
-                time.sleep(POLL_SECONDS)
-                continue
 
             baseline = {
                 name: int(current[name].get("restartCount", 0))

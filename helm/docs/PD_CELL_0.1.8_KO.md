@@ -791,20 +791,23 @@ decode-*
 ```text
 1. Pod 시작
 2. 모든 감시 대상 container status가 관찰될 때까지 대기
-3. 최초 full Ready 이전이라도 target restartCount > 0이면 stale generation으로 판정
-4. guardian이 자기 Pod를 UID precondition으로 DELETE
-5. restart 없이 모든 target이 Ready가 되면 restartCount=0 baseline으로 ARMED
-6. 이후 어느 하나라도 restartCount 증가
-7. guardian이 자기 Pod를 UID precondition으로 DELETE
-8. Deployment가 fresh Pod 생성
-9. reservation / Router / P / D / Mooncake state가 모두 새 generation으로 시작
+3. 아직 하나라도 NotReady이면 kubelet startup/CrashLoopBackOff에 맡기고 대기
+4. 모든 target이 Ready로 회복된 시점에 restartCount > 0이면 stale generation으로 판정
+5. guardian이 자기 Pod를 UID precondition으로 한 번 DELETE
+6. restart 없이 모든 target이 Ready가 되면 restartCount=0 baseline으로 ARMED
+7. 이후 어느 하나라도 restartCount 증가
+8. guardian이 자기 Pod를 UID precondition으로 DELETE
+9. Deployment가 fresh Pod 생성
+10. reservation / Router / P / D / Mooncake state가 모두 새 generation으로 시작
 ```
 
 즉 **초기 startup 중 발생한 core container restart도 정상 generation에 흡수하지 않는다.**
-P/D Cell의 lifecycle contract는 "한 Pod generation 안에서는 core container restart가
-0이어야 한다"로 고정한다. 잘못된 image/profile 때문에 반복 실패하는 경우에는
-Deployment/Kubernetes의 backoff와 운영 알람으로 처리하며, 부분 재시작된 generation을
-정상 상태로 승격시키지는 않는다.
+다만 아직 full Ready에 도달하지 못한 CrashLooping Pod를 즉시 delete하지는 않는다.
+잘못된 image/profile 같은 영구 startup failure는 kubelet의 CrashLoopBackOff를 유지하고,
+일단 모든 target이 Ready로 회복된 경우에만 dirty generation을 한 번 recycle한다.
+
+P/D Cell의 lifecycle contract는 최종적으로 "ARMED되는 Pod generation 안에서는 core
+container restart가 0이어야 한다"로 고정한다.
 
 guardian은 restart/recycle 판단을 stdout뿐 아니라 node-local hostPath에도 JSONL로 남긴다.
 
