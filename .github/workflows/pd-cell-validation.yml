@@ -54,6 +54,59 @@ jobs:
             -f helm/examples/pd-cell-values.yaml \
             > /tmp/pd-cell.yaml
 
+      - name: Verify multi-model Deployment document boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/pd-cell-multi-values.yaml <<'EOF'
+          pdCellSpec:
+            enabled: true
+            router:
+              repository: registry.example/lmstack-router
+              tag: test
+            kvTransfer:
+              connector: NixlConnector
+            models:
+              - name: pd-a
+                repository: vllm/vllm-openai
+                tag: test
+                prefill:
+                  count: 1
+                  requestGPU: 1
+                  profile: /profiles/prefill.yaml
+                decode:
+                  count: 1
+                  requestGPU: 1
+                  profile: /profiles/decode.yaml
+              - name: pd-b
+                repository: vllm/vllm-openai
+                tag: test
+                prefill:
+                  count: 1
+                  requestGPU: 1
+                  profile: /profiles/prefill.yaml
+                decode:
+                  count: 1
+                  requestGPU: 1
+                  profile: /profiles/decode.yaml
+          EOF
+
+          helm template pd-multi ./helm -n inference \
+            -f global-values.yaml \
+            -f /tmp/pd-cell-multi-values.yaml \
+            --show-only templates/deployment-pd-cell.yaml \
+            > /tmp/pd-cell-multi.yaml
+
+          grep -Fq -- 'name: "pd-multi-pd-a-pd-cell"' /tmp/pd-cell-multi.yaml
+          grep -Fq -- 'name: "pd-multi-pd-b-pd-cell"' /tmp/pd-cell-multi.yaml
+
+          if grep -Eq '^[[:space:]]+---[[:space:]]*$' /tmp/pd-cell-multi.yaml; then
+            echo 'Multi-model render contains an indented YAML document separator'
+            cat /tmp/pd-cell-multi.yaml
+            exit 1
+          fi
+
       - name: Verify rendered P-D Cell invariants
         shell: bash
         run: |
