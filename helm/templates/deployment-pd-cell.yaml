@@ -1155,5 +1155,5 @@ spec:
             nodeSelectorTerms:
               {{- toYaml $nodeSelectorTerms | nindent 14 }}
       {{- end }}
-  {{ end }}
+{{ end }}
 {{- end }}
