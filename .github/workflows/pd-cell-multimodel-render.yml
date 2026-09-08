@@ -1,0 +1,90 @@
+name: Validate P-D Cell multi-model document rendering
+
+on:
+  push:
+    branches:
+      - agent/pd-cell-0.1.8-template-audit
+    paths:
+      - 'helm/templates/deployment-pd-cell.yaml'
+      - '.github/workflows/pd-cell-multimodel-render.yml'
+  pull_request:
+    paths:
+      - 'helm/templates/deployment-pd-cell.yaml'
+      - '.github/workflows/pd-cell-multimodel-render.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  multi-model-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Render two P-D Cell models
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/pd-multi-values.yaml <<'YAML'
+          pdCellSpec:
+            enabled: true
+            router:
+              repository: internal-registry/vllm/vllm-router
+              tag: v0.1.15
+            models:
+              - name: pd-one
+                repository: vllm/vllm-openai
+                tag: v0.26.0-cu129
+                kvTransfer:
+                  connector: NixlConnector
+                prefill:
+                  count: 1
+                  requestGPU: 1
+                  profile: /profiles/prefill.yaml
+                decode:
+                  count: 1
+                  requestGPU: 1
+                  profile: /profiles/decode.yaml
+              - name: pd-two
+                repository: vllm/vllm-openai
+                tag: v0.26.0-cu129
+                kvTransfer:
+                  connector: NixlConnector
+                prefill:
+                  count: 1
+                  requestGPU: 1
+                  profile: /profiles/prefill.yaml
+                decode:
+                  count: 1
+                  requestGPU: 1
+                  profile: /profiles/decode.yaml
+          YAML
+
+          helm template pd-multi ./helm -n inference \
+            -f global-values.yaml \
+            -f /tmp/pd-multi-values.yaml \
+            --show-only templates/deployment-pd-cell.yaml \
+            > /tmp/pd-multi-model.yaml
+
+          if [[ "$(grep -c '^kind: Deployment$' /tmp/pd-multi-model.yaml)" != "2" ]]; then
+            echo 'Expected exactly two P/D Cell Deployments from models[]'
+            cat /tmp/pd-multi-model.yaml
+            exit 1
+          fi
+
+          grep -Fq -- 'pd-multi-pd-one-pd-cell' /tmp/pd-multi-model.yaml
+          grep -Fq -- 'pd-multi-pd-two-pd-cell' /tmp/pd-multi-model.yaml
+
+          if grep -Eq '^  ---[[:space:]]*$' /tmp/pd-multi-model.yaml; then
+            echo 'Found an indented YAML document separator between models[] Deployments'
+            cat /tmp/pd-multi-model.yaml
+            exit 1
+          fi

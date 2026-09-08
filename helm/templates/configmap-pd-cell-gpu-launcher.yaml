@@ -1,0 +1,122 @@
+{{- $root := . -}}
+{{- $pdCellSpec := $root.Values.pdCellSpec | default dict -}}
+{{- $needsMooncakeGpuLauncher := false -}}
+{{- if ($pdCellSpec.enabled | default false) -}}
+  {{- range $modelSpec := ($pdCellSpec.models | default (list)) -}}
+    {{- $kv := $modelSpec.kvTransfer | default dict -}}
+    {{- if eq ($kv.connector | default "") "MooncakeConnector" -}}
+      {{- $needsMooncakeGpuLauncher = true -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+
+{{- if $needsMooncakeGpuLauncher }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ $root.Release.Name }}-pd-cell-gpu-launcher"
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    helm-release-name: {{ $root.Release.Name | quote }}
+    pd-cell: "true"
+data:
+  launch-vllm.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    GPU_FILE="${PD_GPU_FILE:-/var/run/pd-gpu/gpus}"
+    WAIT_SECONDS="${PD_GPU_WAIT_SECONDS:-300}"
+    EXPECTED_TOTAL="${PD_GPU_TOTAL:?PD_GPU_TOTAL is required}"
+    ENGINE_GPU_IDX="${CNTR_GPU_IDX:?CNTR_GPU_IDX is required}"
+    VLLM_BIN="${PD_VLLM_BIN:-vllm}"
+
+    deadline=$((SECONDS + WAIT_SECONDS))
+    while [[ ! -s "${GPU_FILE}" ]]; do
+      if (( SECONDS >= deadline )); then
+        echo "[pd-gpu] timed out waiting for ${GPU_FILE}" >&2
+        exit 1
+      fi
+      sleep 1
+    done
+
+    mapfile -t RESERVED_GPUS < "${GPU_FILE}"
+    if (( ${#RESERVED_GPUS[@]} != EXPECTED_TOTAL )); then
+      echo "[pd-gpu] reservation count mismatch: expected=${EXPECTED_TOTAL} actual=${#RESERVED_GPUS[@]}" >&2
+      exit 1
+    fi
+
+    declare -A RESERVED_SEEN=()
+    for gpu in "${RESERVED_GPUS[@]}"; do
+      if [[ -z "${gpu}" ]]; then
+        echo "[pd-gpu] empty GPU id found in reservation map" >&2
+        exit 1
+      fi
+      if [[ -n "${RESERVED_SEEN[${gpu}]:-}" ]]; then
+        echo "[pd-gpu] duplicate GPU id in reservation map: ${gpu}" >&2
+        exit 1
+      fi
+      RESERVED_SEEN["${gpu}"]=1
+    done
+
+    # NVIDIA_VISIBLE_DEVICES=all is consumed by the NVIDIA container runtime
+    # before this script starts. Verify that every reservation GPU is actually
+    # visible at the device/NVML layer before narrowing CUDA runtime visibility.
+    mapfile -t RUNTIME_GPUS < <(
+      nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits |
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    )
+    declare -A RUNTIME_SEEN=()
+    for gpu in "${RUNTIME_GPUS[@]}"; do
+      [[ -n "${gpu}" ]] && RUNTIME_SEEN["${gpu}"]=1
+    done
+    for gpu in "${RESERVED_GPUS[@]}"; do
+      if [[ -z "${RUNTIME_SEEN[${gpu}]:-}" ]]; then
+        echo "[pd-gpu] reserved GPU is not visible in this engine container: ${gpu}" >&2
+        echo "[pd-gpu] check NVIDIA_VISIBLE_DEVICES=all and the Pod NVIDIA runtime configuration" >&2
+        exit 1
+      fi
+    done
+
+    export CUDA_VISIBLE_DEVICES="$(IFS=,; echo "${RESERVED_GPUS[*]}")"
+
+    IFS=',' read -r -a ENGINE_INDICES <<< "${ENGINE_GPU_IDX}"
+    if (( ${#ENGINE_INDICES[@]} == 0 )); then
+      echo "[pd-gpu] CNTR_GPU_IDX is empty" >&2
+      exit 1
+    fi
+
+    declare -A INDEX_SEEN=()
+    SELECTED_UUIDS=()
+    for idx in "${ENGINE_INDICES[@]}"; do
+      if [[ ! "${idx}" =~ ^[0-9]+$ ]]; then
+        echo "[pd-gpu] invalid GPU index: ${idx}" >&2
+        exit 1
+      fi
+      if (( idx < 0 || idx >= EXPECTED_TOTAL )); then
+        echo "[pd-gpu] GPU index out of reservation range: ${idx} / total=${EXPECTED_TOTAL}" >&2
+        exit 1
+      fi
+      if [[ -n "${INDEX_SEEN[${idx}]:-}" ]]; then
+        echo "[pd-gpu] duplicate GPU index: ${idx}" >&2
+        exit 1
+      fi
+      INDEX_SEEN["${idx}"]=1
+      SELECTED_UUIDS+=("${RESERVED_GPUS[${idx}]}")
+    done
+
+    for arg in "$@"; do
+      case "${arg}" in
+        --device-ids|--device-ids=*)
+          echo "[pd-gpu] --device-ids is chart-managed for MooncakeConnector" >&2
+          exit 1
+          ;;
+      esac
+    done
+
+    echo "[pd-gpu] reserved-cvd=${CUDA_VISIBLE_DEVICES}"
+    echo "[pd-gpu] selected-indices=${ENGINE_GPU_IDX}"
+    echo "[pd-gpu] selected-uuids=$(IFS=,; echo "${SELECTED_UUIDS[*]}")"
+    echo "[pd-gpu] exec=${VLLM_BIN} serve --device-ids ${ENGINE_GPU_IDX}"
+
+    exec "${VLLM_BIN}" serve --device-ids "${ENGINE_GPU_IDX}" "$@"
+{{- end }}

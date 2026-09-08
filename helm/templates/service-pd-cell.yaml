@@ -20,7 +20,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: "{{ $.Release.Name }}-{{ $name }}-engine-service"
+  name: "{{ $.Release.Name }}-{{ $name }}-pd-engine-service"
   namespace: {{ $.Release.Namespace }}
   labels:
     pd-cell: "true"
@@ -41,5 +41,6 @@ spec:
     model: {{ $name | quote }}
     helm-release-name: {{ $.Release.Name | quote }}
     pd-cell: "true"
+    pd-deployment: {{ $name | quote }}
 {{ end }}
 {{- end }}
