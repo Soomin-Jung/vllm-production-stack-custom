@@ -1,35 +1,60 @@
 # Minimal P/D Cell values for custom vLLM Production Stack 0.1.8.
 #
-# Inherited defaults are intentionally omitted. See PD_CELL_0.1.8_KO.md for
-# shared scheduling overrides and the complete KVTransferConfig guide.
+# Global traffic routing may continue to use LMStack Router. The router inside
+# every P/D Cell is intentionally fixed to vllm-project/router because the
+# orchestrator must understand the selected KV connector contract.
+#
+# vllm/vllm-router does not currently publish release-tagged Docker images.
+# Package the official vllm-router release wheel into the internal registry by
+# following docker/vllm-router/README.md, then pin that internal image here.
 
 pdCellSpec:
   enabled: true
 
-  # Shared by every models[] item unless overridden at model level.
-  router:
-    repository: registry.example/lmstack-router
-    tag: validated-0.1.12
+  # Mooncake nvlink_intra uses CUDA IPC across Prefill/Decode containers.
+  # In the validated container topology, omitting hostPID intermittently caused
+  # cudaIpcOpenMemHandle -> 201 (invalid device context).
+  # hostIPC was not required by the final hostPID-only A/B.
+  hostPID: true
 
-  # The chart injects kv_producer/kv_consumer automatically.
-  kvTransfer:
-    connector: NixlConnector
+  router:
+    repository: internal-registry/vllm/vllm-router
+    tag: v0.1.15
+    port: 8000
+    policy: consistent_hash
+    prometheusPort: 29000
 
   models:
-    - name: example-pd-p2d2
-      servedModelName: example-model
+    - name: example-pd-p1d1
+      # 기본적으로 served model name은 각 vLLM profile(--config)에서 관리한다.
+      # Chart에서 명시적으로 덮어써야 할 때만 servedModelNames를 사용한다.
+      #
+      # servedModelNames:
+      #   - example-model
+      #   - example-alias
       repository: vllm/vllm-openai
-      tag: v0.27.1-cu129
+      tag: v0.26.0-cu129
       replicaCount: 1
 
+      # The chart injects kv_producer / kv_consumer automatically and derives
+      # vllm-router --kv-connector=mooncake from this connector.
+      kvTransfer:
+        connector: MooncakeConnector
+        bootstrapPortBase: 9001
+        abortRequestTimeout: 600
+        # Node-local P/D Cell forces Mooncake nvlink_intra in the chart.
+        # Do not set kv_connector_extra_config.mooncake_protocol in values.
+        config:
+          kv_load_failure_policy: fail
+
       prefill:
-        count: 2
-        requestGPU: 2
+        count: 1
+        requestGPU: 4
         profile: /profiles/example/pd-prefill.yaml
 
       decode:
-        count: 2
-        requestGPU: 2
+        count: 1
+        requestGPU: 4
         profile: /profiles/example/pd-decode.yaml
 
       nodeSelectorTerms:
