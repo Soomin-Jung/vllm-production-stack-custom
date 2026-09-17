@@ -4,12 +4,68 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 MOONCAKE_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 
-# shellcheck disable=SC1091
-. "${MOONCAKE_DIR}/SOURCE_LOCK.env"
+PROFILE=${MOONCAKE_PROFILE:-0.3.12.post1}
+OUTPUT_DIR=${MOONCAKE_DIR}/vendor
 
-OUTPUT_DIR=${1:-${MOONCAKE_DIR}/vendor}
+usage() {
+  cat <<'EOF'
+Usage:
+  prepare-offline-inputs.sh [--profile VERSION] [--output-dir DIR]
+  prepare-offline-inputs.sh DIR
+
+Examples:
+  prepare-offline-inputs.sh --profile 0.3.12.post1
+  prepare-offline-inputs.sh --profile 0.3.10.post2 --output-dir /tmp/vendor
+
+The legacy single positional argument is still accepted as OUTPUT_DIR.
+EOF
+}
+
+positional_seen=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)
+      [[ $# -ge 2 ]] || { echo "--profile requires a value" >&2; exit 2; }
+      PROFILE=$2
+      shift 2
+      ;;
+    --output-dir)
+      [[ $# -ge 2 ]] || { echo "--output-dir requires a value" >&2; exit 2; }
+      OUTPUT_DIR=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [[ "${positional_seen}" -ne 0 ]]; then
+        echo "Only one positional OUTPUT_DIR is supported" >&2
+        exit 2
+      fi
+      OUTPUT_DIR=$1
+      positional_seen=1
+      shift
+      ;;
+  esac
+done
+
+LOCK_FILE=${MOONCAKE_LOCK_FILE:-${MOONCAKE_DIR}/locks/${PROFILE}.env}
+if [[ ! -f "${LOCK_FILE}" ]]; then
+  echo "Unknown Mooncake profile ${PROFILE}: ${LOCK_FILE} not found" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+. "${LOCK_FILE}"
+
 BUNDLE_PATH=${OUTPUT_DIR}/${MOONCAKE_SOURCE_ARCHIVE}
-CHECKSUMS=${OUTPUT_DIR}/SHA256SUMS
+CHECKSUM_FILE=${BUNDLE_PATH}.sha256
 
 for command_name in git tar sha256sum; do
   command -v "${command_name}" >/dev/null 2>&1 || {
@@ -18,8 +74,8 @@ for command_name in git tar sha256sum; do
   }
 done
 
-if [[ -e "${BUNDLE_PATH}" || -e "${CHECKSUMS}" ]]; then
-  echo "Offline inputs already exist under ${OUTPUT_DIR}; move them before regenerating" >&2
+if [[ -e "${BUNDLE_PATH}" || -e "${CHECKSUM_FILE}" ]]; then
+  echo "Offline inputs already exist for profile ${PROFILE} under ${OUTPUT_DIR}" >&2
   exit 1
 fi
 
@@ -61,9 +117,11 @@ tar \
 
 (
   cd "${OUTPUT_DIR}"
-  sha256sum "${MOONCAKE_SOURCE_ARCHIVE}" > SHA256SUMS
-  sha256sum --check SHA256SUMS
+  sha256sum "${MOONCAKE_SOURCE_ARCHIVE}" > "$(basename "${CHECKSUM_FILE}")"
+  sha256sum --check "$(basename "${CHECKSUM_FILE}")"
 )
 
-echo "Prepared Mooncake source closure in ${OUTPUT_DIR}"
-echo "Transfer ${MOONCAKE_SOURCE_ARCHIVE} and SHA256SUMS together"
+echo "Prepared Mooncake profile ${PROFILE} in ${OUTPUT_DIR}"
+echo "Transfer both files:"
+echo "  ${MOONCAKE_SOURCE_ARCHIVE}"
+echo "  ${MOONCAKE_SOURCE_ARCHIVE}.sha256"

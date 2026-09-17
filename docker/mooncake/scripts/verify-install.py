@@ -6,16 +6,52 @@ import importlib
 import importlib.metadata
 import importlib.util
 import pathlib
+import re
 import subprocess
 import sys
 
-EXPECTED_VERSION = "0.3.10.post2"
 PACKAGE_NAMES = (
     "mooncake-transfer-engine",
     "mooncake-transfer-engine-cuda13",
 )
 EXPECTED_TOKENS = (b"nvlink_intra", b"nvlink")
 ALLOWED_BUILD_TIME_MISSING_LIBRARIES = {"libcuda.so.1", "libnvidia-ml.so.1"}
+DEFAULT_LOCK_FILE = pathlib.Path("/opt/mooncake-build-info/SOURCE_LOCK.env")
+
+
+def read_shell_env(path: pathlib.Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def cuda_contract() -> tuple[str, int, str]:
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("torch is required to identify the vLLM CUDA ABI") from exc
+
+    cuda_version = torch.version.cuda
+    if not cuda_version:
+        raise RuntimeError("torch.version.cuda is empty")
+    try:
+        cuda_major = int(cuda_version.split(".", 1)[0])
+    except ValueError as exc:
+        raise RuntimeError(f"cannot parse torch CUDA version: {cuda_version}") from exc
+
+    if cuda_major == 12:
+        expected_package = "mooncake-transfer-engine"
+    elif cuda_major == 13:
+        expected_package = "mooncake-transfer-engine-cuda13"
+    else:
+        raise RuntimeError(f"unsupported CUDA major {cuda_major}")
+
+    return cuda_version, cuda_major, expected_package
 
 
 def installed_distribution() -> tuple[str, str]:
@@ -43,7 +79,17 @@ def engine_path() -> pathlib.Path:
     return candidates[0]
 
 
-def verify_linkage(path: pathlib.Path) -> list[str]:
+def verify_runtime_dependencies(lock: dict[str, str]) -> None:
+    deps = lock.get("MOONCAKE_RUNTIME_DEPS", "").split()
+    missing: list[str] = []
+    for module_name in deps:
+        if importlib.util.find_spec(module_name) is None:
+            missing.append(module_name)
+    if missing:
+        raise RuntimeError(f"missing Mooncake runtime dependencies: {missing}")
+
+
+def verify_linkage(path: pathlib.Path, cuda_major: int) -> tuple[list[str], str]:
     result = subprocess.run(
         ["ldd", str(path)],
         check=True,
@@ -57,7 +103,17 @@ def verify_linkage(path: pathlib.Path) -> list[str]:
     unexpected = sorted(set(missing) - ALLOWED_BUILD_TIME_MISSING_LIBRARIES)
     if unexpected:
         raise RuntimeError(f"unexpected unresolved libraries: {unexpected}")
-    return sorted(set(missing))
+
+    cudart = re.findall(r"libcudart\.so\.(\d+)", result.stdout)
+    if not cudart:
+        raise RuntimeError(f"libcudart dependency not found in ldd output for {path}")
+    linked_majors = sorted(set(int(value) for value in cudart))
+    if linked_majors != [cuda_major]:
+        raise RuntimeError(
+            f"CUDA ABI mismatch: vLLM/torch CUDA major={cuda_major}, "
+            f"Mooncake libcudart majors={linked_majors}"
+        )
+    return sorted(set(missing)), f"libcudart.so.{cuda_major}"
 
 
 def main() -> int:
@@ -67,11 +123,32 @@ def main() -> int:
         action="store_true",
         help="Import mooncake.engine; use this in a GPU-enabled runtime pod.",
     )
+    parser.add_argument(
+        "--lock-file",
+        type=pathlib.Path,
+        default=DEFAULT_LOCK_FILE,
+        help="Source profile copied into the image at build time.",
+    )
     args = parser.parse_args()
 
+    if not args.lock_file.is_file():
+        raise RuntimeError(f"Mooncake source lock not found: {args.lock_file}")
+    lock = read_shell_env(args.lock_file)
+    expected_version = lock.get("MOONCAKE_VERSION")
+    if not expected_version:
+        raise RuntimeError(f"MOONCAKE_VERSION missing from {args.lock_file}")
+
+    cuda_version, cuda_major, expected_package = cuda_contract()
     package_name, version = installed_distribution()
-    if version != EXPECTED_VERSION:
-        raise RuntimeError(f"expected {EXPECTED_VERSION}, got {version}")
+    if package_name != expected_package:
+        raise RuntimeError(
+            f"expected distribution {expected_package} for CUDA {cuda_version}, "
+            f"got {package_name}"
+        )
+    if version != expected_version:
+        raise RuntimeError(f"expected Mooncake {expected_version}, got {version}")
+
+    verify_runtime_dependencies(lock)
 
     path = engine_path()
     payload = path.read_bytes()
@@ -81,13 +158,15 @@ def main() -> int:
     if missing_tokens:
         raise RuntimeError(f"transport markers missing from {path}: {missing_tokens}")
 
-    missing_libraries = verify_linkage(path)
+    missing_libraries, cudart = verify_linkage(path, cuda_major)
 
     if args.load_extension:
         importlib.import_module("mooncake.engine")
 
     print(f"distribution={package_name}")
     print(f"version={version}")
+    print(f"torch_cuda={cuda_version}")
+    print(f"linked_cudart={cudart}")
     print(f"engine={path}")
     print("transports=nvlink,nvlink_intra")
     print(f"build_time_missing_libraries={','.join(missing_libraries) or 'none'}")
