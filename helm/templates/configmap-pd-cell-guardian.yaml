@@ -1,10 +1,5 @@
 {{- $pdCellSpec := .Values.pdCellSpec | default dict -}}
-{{- $guardian := $pdCellSpec.guardian | default dict -}}
-{{- $guardianEnabled := true -}}
-{{- if hasKey $guardian "enabled" -}}
-  {{- $guardianEnabled = $guardian.enabled -}}
-{{- end -}}
-{{- if and ($pdCellSpec.enabled | default false) $guardianEnabled }}
+{{- if ($pdCellSpec.enabled | default false) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
