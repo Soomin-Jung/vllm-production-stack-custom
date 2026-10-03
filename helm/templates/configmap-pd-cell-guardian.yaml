@@ -16,6 +16,7 @@ data:
     import ssl
     import sys
     import time
+    import urllib.parse
     import urllib.error
     import urllib.request
     from datetime import datetime, timezone
@@ -23,6 +24,11 @@ data:
     POD_NAME = os.environ["POD_NAME"]
     POD_NAMESPACE = os.environ["POD_NAMESPACE"]
     POD_UID = os.environ["POD_UID"]
+    NODE_NAME = os.environ["NODE_NAME"]
+    LOG_TAIL_LINES = 200
+    LOG_LIMIT_BYTES = 65536
+    DIAGNOSTIC_BUDGET_SECONDS = 10
+    observed_failures = {}
     TARGETS = {x for x in os.environ["PD_GUARDIAN_TARGETS"].split(",") if x}
     POLL_SECONDS = float(os.environ.get("PD_GUARDIAN_POLL_SECONDS", "2"))
     DELETE_GRACE_SECONDS = int(os.environ.get("PD_GUARDIAN_DELETE_GRACE_SECONDS", "5"))
@@ -53,8 +59,10 @@ data:
             "namespace": POD_NAMESPACE,
             "pod": POD_NAME,
             "pod_uid": POD_UID,
+            "node": NODE_NAME,
             **fields,
         }
+        print(json.dumps(record, ensure_ascii=False, separators=(",", ":")), flush=True)
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
             with open(LOG_FILE, "a", encoding="utf-8") as fh:
@@ -82,6 +90,7 @@ data:
     def pod_context(pod):
         current = statuses(pod)
         return {
+            "node": pod.get("spec", {}).get("nodeName", NODE_NAME),
             "phase": pod.get("status", {}).get("phase"),
             "reason": pod.get("status", {}).get("reason"),
             "message": pod.get("status", {}).get("message"),
@@ -97,10 +106,10 @@ data:
         with open(TOKEN_FILE, "r", encoding="utf-8") as f:
             return f.read().strip()
 
-    def request(method, payload=None):
+    def request(method, payload=None, url=None, raw=False, timeout=5, read_limit=None):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            POD_URL,
+            url or POD_URL,
             method=method,
             data=data,
             headers={
@@ -109,20 +118,135 @@ data:
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(req, context=SSL_CONTEXT, timeout=5) as resp:
-            body = resp.read()
+        with urllib.request.urlopen(req, context=SSL_CONTEXT, timeout=timeout) as resp:
+            body = resp.read() if read_limit is None else resp.read(read_limit + 1)
+            if raw:
+                return body
+            if read_limit is not None and len(body) > read_limit:
+                raise ValueError("API response exceeds diagnostic size limit")
             return json.loads(body) if body else {}
 
     def get_pod():
         return request("GET")
 
+    def termination_details(status):
+        state = status.get("state", {})
+        last_state = status.get("lastState", {})
+        if state.get("terminated"):
+            return "state.terminated", state["terminated"]
+        if last_state.get("terminated"):
+            return "lastState.terminated", last_state["terminated"]
+        return None, {}
+
+
+    def diagnostic_timeout(deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("diagnostic collection budget exhausted")
+        return min(2, remaining)
+
+
+    def capture_logs(name, status, deadline):
+        source, terminated = termination_details(status)
+        # A currently terminated instance is available as current logs. Once it has
+        # restarted, previous=true is the instance described by lastState.
+        previous = source != "state.terminated"
+        query = urllib.parse.urlencode({
+            "container": name,
+            "previous": str(previous).lower(),
+            "timestamps": "true",
+            "tailLines": LOG_TAIL_LINES,
+            "limitBytes": LOG_LIMIT_BYTES,
+        })
+        fields = {
+            "container": name,
+            "restart_count": int(status.get("restartCount", 0)),
+            "termination_source": source,
+            "terminated_container_id": terminated.get("containerID"),
+            "log_source": "previous" if previous else "current",
+            "tail_lines": LOG_TAIL_LINES,
+            "limit_bytes": LOG_LIMIT_BYTES,
+        }
+        try:
+            raw = request("GET", url=POD_URL + "/log?" + query, raw=True,
+                          timeout=diagnostic_timeout(deadline), read_limit=LOG_LIMIT_BYTES)
+            audit("container_log_snapshot", **fields,
+                  log_tail=raw[:LOG_LIMIT_BYTES].decode("utf-8", errors="replace"),
+                  at_limit=len(raw) >= LOG_LIMIT_BYTES)
+        except Exception as exc:
+            # Never silently substitute logs of the restarted/live instance for the
+            # failed instance, and never stop lifecycle protection on an API failure.
+            audit("container_log_unavailable", **fields, error=str(exc),
+                  http_status=getattr(exc, "code", None))
+
+
+    def capture_events(deadline):
+        query = urllib.parse.urlencode({"fieldSelector": "involvedObject.uid=" + POD_UID})
+        url = POD_URL.rsplit("/pods/", 1)[0] + "/events?" + query
+        try:
+            result = request("GET", url=url, timeout=diagnostic_timeout(deadline),
+                             read_limit=1048576)
+            items = [item for item in result.get("items", [])
+                     if item.get("involvedObject", {}).get("uid") == POD_UID]
+            def event_time(item):
+                return (item.get("series", {}).get("lastObservedTime")
+                        or item.get("lastTimestamp") or item.get("eventTime")
+                        or item.get("metadata", {}).get("creationTimestamp") or "")
+            events = [{
+                "type": item.get("type"), "reason": item.get("reason"),
+                "message": item.get("message"),
+                "container_field_path": item.get("involvedObject", {}).get("fieldPath"),
+                "last_timestamp": event_time(item),
+                "count": item.get("series", {}).get("count", item.get("count")),
+                "source": item.get("source", {}),
+                "reporting_controller": item.get("reportingComponent"),
+            } for item in sorted(items, key=event_time)[-20:]]
+            audit("pod_event_snapshot", events=events)
+        except Exception as exc:
+            audit("pod_events_unavailable", error=str(exc),
+                  http_status=getattr(exc, "code", None))
+
+
+    def diagnose_failures(pod):
+        failures = []
+        for name, status in sorted(statuses(pod).items()):
+            if name not in TARGETS:
+                continue
+            source, terminated = termination_details(status)
+            restart_count = int(status.get("restartCount", 0))
+            waiting = status.get("state", {}).get("waiting", {})
+            if not (terminated or restart_count or waiting.get("reason") == "CrashLoopBackOff"):
+                continue
+            # Same termination moving from state to lastState is one incident.
+            signature = json.dumps([restart_count, terminated,
+                                    waiting if not terminated else {}], sort_keys=True)
+            if observed_failures.get(name) == signature:
+                continue
+            observed_failures[name] = signature
+            audit("container_failure_detected", container=name,
+                  restart_count=restart_count, termination_source=source,
+                  exit_code=terminated.get("exitCode"), signal=terminated.get("signal"),
+                  reason=terminated.get("reason") or waiting.get("reason"),
+                  message=terminated.get("message") or waiting.get("message"),
+                  started_at=terminated.get("startedAt"),
+                  finished_at=terminated.get("finishedAt"), status=compact_status(status))
+            failures.append((name, status))
+        if failures:
+            deadline = time.monotonic() + DIAGNOSTIC_BUDGET_SECONDS
+            for name, status in failures:
+                capture_logs(name, status, deadline)
+            capture_events(deadline)
+
+
     def delete_self(reason, pod=None, trigger_container=None):
+        if pod:
+            diagnose_failures(pod)
         log(f"whole-cell recycle requested: {reason}")
         audit(
             "whole_cell_recycle_requested",
             reason=reason,
             trigger_container=trigger_container,
-            pod=pod_context(pod) if pod else None,
+            pod_status=pod_context(pod) if pod else None,
         )
         payload = {
             "apiVersion": "v1",
@@ -197,6 +321,7 @@ data:
             sys.exit(0)
 
         current = statuses(pod)
+        diagnose_failures(pod)
 
         if baseline is None:
             missing = sorted(TARGETS - set(current))
@@ -239,7 +364,7 @@ data:
                 "armed after all targets became Ready; restart baseline="
                 + json.dumps(baseline, sort_keys=True)
             )
-            audit("guardian_armed", restart_baseline=baseline, pod=pod_context(pod))
+            audit("guardian_armed", restart_baseline=baseline, pod_status=pod_context(pod))
             time.sleep(POLL_SECONDS)
             continue
 
@@ -248,6 +373,7 @@ data:
             delete_self(
                 "target status disappeared: " + ",".join(missing),
                 pod=pod,
+                trigger_container=missing[0],
             )
 
         for name in sorted(TARGETS):

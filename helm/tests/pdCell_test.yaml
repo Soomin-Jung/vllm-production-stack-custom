@@ -75,6 +75,38 @@ tests:
               profile: /profiles/decode.yaml
     asserts:
       - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[6].env
+          content:
+            name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+      - template: rbac-pd-cell-guardian.yaml
+        documentIndex: 1
+        contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["pods/log"]
+            verbs: ["get"]
+      - template: rbac-pd-cell-guardian.yaml
+        documentIndex: 1
+        contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["events"]
+            verbs: ["list"]
+      - template: deployment-pd-cell.yaml
         equal:
           path: spec.template.metadata.annotations.pd-orchestrator
           value: vllm-router
