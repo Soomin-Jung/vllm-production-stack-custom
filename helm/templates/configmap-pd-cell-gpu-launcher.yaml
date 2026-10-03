@@ -4,8 +4,7 @@
 {{- if ($pdCellSpec.enabled | default false) -}}
   {{- range $modelSpec := ($pdCellSpec.models | default (list)) -}}
     {{- $kv := $modelSpec.kvTransfer | default dict -}}
-    {{- $nixl := $kv.nixl | default dict -}}
-    {{- if or (eq ($kv.connector | default "") "MooncakeConnector") (and (contains "Nixl" ($kv.connector | default "")) ($nixl.sharedGpuReservation | default false)) -}}
+    {{- if or (eq ($kv.connector | default "") "MooncakeConnector") (contains "Nixl" ($kv.connector | default "")) -}}
       {{- $needsGpuLauncher = true -}}
     {{- end -}}
   {{- end -}}

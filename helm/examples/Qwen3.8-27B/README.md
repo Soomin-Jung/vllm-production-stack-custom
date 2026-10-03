@@ -141,7 +141,7 @@ NIXL side-channel 등을 넣지 않는다. 환경변수 역시 Helm env로 주�
 | Attention KV layout | 자동 | HND 명시; NIXL도 자동으로 LBHNC/HND 계열 선호 |
 | Router | v0.1.15, chart 기본 정책 | v0.1.15-pr234, round_robin |
 | hostPID | true | true |
-| GPU 할당 | pod-local aggregate reservation/launcher | 동일 구조; `sharedGpuReservation: true`, 합계 4GPU |
+| GPU 할당 | pod-local aggregate reservation/launcher | 동일한 aggregate reservation/launcher, 합계 4GPU |
 
 ### DS 필수조건 정정
 

@@ -53,7 +53,7 @@ pdCellSpec:
 | `strategy` | RollingUpdate, maxSurge 0/maxUnavailable 1 | Deployment strategy |
 | `podAnnotations` | `{}` | Pod annotations |
 | `securityContext` | `{}` | Pod securityContext |
-| `hostPID` | `false` | Pod가 host PID namespace를 사용. 현재 Mooncake `nvlink_intra` 검증 baseline에서는 `true` 필요 |
+| `hostPID` | `true` (Mooncake/NIXL), 그 외 `false` | Pod가 host PID namespace를 사용. 현재 Mooncake `nvlink_intra` 검증 baseline에서는 `true` 필요 |
 | `hostIPC` | `false` | Pod가 host IPC namespace를 사용. Issue #6 final A/B에서는 요구되지 않음 |
 | `shareProcessNamespace` | `false` | Pod 내부 container끼리 process namespace 공유. `hostPID`와는 별개이며 Issue #6 fix가 아님 |
 | `containerSecurityContext` | `{}` | P/D engine common container securityContext |
@@ -386,7 +386,7 @@ Decode에는 bootstrap server를 띄우지 않는다.
 
 ---
 
-## 공유 GPU reservation / launcher (Mooncake 및 NIXL 옵션)
+## 공유 GPU reservation / launcher (Mooncake 및 NIXL 공통)
 
 exact `MooncakeConnector`에서는 GPU allocation semantics가 다른 connector와 다르다.
 
@@ -516,8 +516,8 @@ kvTransfer:
 
 ### NIXL CUDA IPC와 공유 GPU reservation
 
-`kvTransfer.nixl.sharedGpuReservation`은 기본 `false`이며, 기존 NIXL container별
-GPU 할당을 보존한다. 제공하는 node-local UCX/NVLink 예제는 `true`로 설정한다.
+NIXL은 Mooncake와 동일하게 Cell 전체 GPU reservation/launcher를 항상 사용한다.
+별도의 GPU 할당 방식 옵션은 없다.
 
 ```yaml
 pdCellSpec:
@@ -527,18 +527,17 @@ pdCellSpec:
     - name: example
       kvTransfer:
         connector: NixlConnector
-        nixl:
-          sharedGpuReservation: true
 ```
 
-활성화 시 Mooncake와 같은 예약/노출 계약을 사용한다. reservation container만
+두 connector는 같은 예약/노출 계약을 사용한다. reservation container만
 `sum(count * requestGPU)` GPU를 요청하고 P/D engine은 전체 예약 UUID를 공통으로
 보며, launcher의 `--device-ids`로 서로 겹치지 않는 compute GPU를 선택한다.
 NIXL backend, side-channel, connector role과 UCX 설정은 유지되며 Mooncake protocol은
 주입하지 않는다. guardian도 reservation container를 감시한다.
 
-`hostPID=true` 또는 `shareProcessNamespace=true`가 필요하며 둘 다 false이면
-렌더링을 거부한다. 제공 예제는 기존 Mooncake 현장 A/B가 검증한 `hostPID=true`를
+공유 reservation의 `hostPID` 기본값은 `true`이다. `shareProcessNamespace=true`만
+지정하면 hostPID 기본값은 false가 되어 Pod-scoped PID 공유를 사용한다.
+`hostPID=true` 또는 `shareProcessNamespace=true`가 필요하며 둘 다 false이면 렌더링을 거부한다. 제공 예제는 기존 Mooncake 현장 A/B가 검증한 `hostPID=true`를
 유지한다. Pod-scoped PID 공유는 대안으로 지원하지만 이 환경에서 NIXL 검증은 필요하다.
 `hostIPC`나 `privileged`를 자동 활성화하지 않는다.
 
@@ -610,9 +609,9 @@ OPENAI_API_KEY
 | `containerSecurityContext` | `{}` | phase security |
 | `kvTransferConfig` | `{}` | final phase KV override |
 
-NIXL `sharedGpuReservation=false`와 기타 connector는 기존 `chart.resources` helper를 사용한다.
+기타 connector는 기존 `chart.resources` helper를 사용한다.
 
-MooncakeConnector와 NIXL `sharedGpuReservation=true`는 `requestGPU`에 비례한 CPU/memory sizing은 유지하지만 engine
+MooncakeConnector와 NIXL은 `requestGPU`에 비례한 CPU/memory sizing은 유지하지만 engine
 container의 GPU extended resource를 제거하고, 모든 P/D GPU 합계를
 `gpu-reservation` container에 한 번만 요청한다.
 

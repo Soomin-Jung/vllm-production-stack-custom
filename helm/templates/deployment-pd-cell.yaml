@@ -172,8 +172,7 @@
     {{- $kvBaseConfig := deepCopy ($kv.config | default dict) -}}
     {{- $bootstrapPortBase := int (default 9001 $kv.bootstrapPortBase) -}}
     {{- $nixl := deepCopy ($kv.nixl | default dict) -}}
-    {{- $sharedNixlGpuReservation := and $isNixlConnector ($nixl.sharedGpuReservation | default false) -}}
-    {{- $useGpuReservation := or $isMooncakeConnector $sharedNixlGpuReservation -}}
+    {{- $useGpuReservation := or $isMooncakeConnector $isNixlConnector -}}
     {{- $gpuMapVolume := ternary "pd-mooncake-gpu-map" "pd-shared-gpu-map" $isMooncakeConnector -}}
     {{- $gpuLauncherVolume := ternary "pd-mooncake-gpu-launcher" "pd-shared-gpu-launcher" $isMooncakeConnector -}}
     {{- $nixlSideChannelHost := default "localhost" $nixl.sideChannelHost -}}
@@ -325,7 +324,7 @@
       {{- $terminationGracePeriodSeconds = int $modelSpec.terminationGracePeriodSeconds -}}
     {{- end -}}
 
-    {{- $hostPID := false -}}
+    {{- $hostPID := $useGpuReservation -}}
     {{- if hasKey $pdCellSpec "hostPID" -}}
       {{- $hostPID = $pdCellSpec.hostPID -}}
     {{- end -}}
@@ -349,8 +348,11 @@
       {{- $shareProcessNamespace = $modelSpec.shareProcessNamespace -}}
     {{- end -}}
 
-    {{- if and $sharedNixlGpuReservation (not (or $hostPID $shareProcessNamespace)) -}}
-      {{- fail (printf "pdCellSpec model %s: NIXL sharedGpuReservation requires hostPID=true or shareProcessNamespace=true for CUDA IPC process visibility" $name) -}}
+    {{- if and $shareProcessNamespace (not (hasKey $pdCellSpec "hostPID")) (not (hasKey $modelSpec "hostPID")) -}}
+      {{- $hostPID = false -}}
+    {{- end -}}
+    {{- if and $useGpuReservation (not (or $hostPID $shareProcessNamespace)) -}}
+      {{- fail (printf "pdCellSpec model %s: shared GPU reservation requires hostPID=true or shareProcessNamespace=true for CUDA IPC process visibility" $name) -}}
     {{- end -}}
 
     {{- $modelEnvMap := deepCopy $commonEnvMap -}}

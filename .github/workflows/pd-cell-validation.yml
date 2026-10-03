@@ -376,6 +376,9 @@ jobs:
             -f /tmp/pd-nixl-p3d5-values.yaml \
             > /tmp/pd-nixl-p3d5.yaml
 
+          grep -Fq -- 'name: gpu-reservation' /tmp/pd-nixl-p3d5.yaml
+          grep -Fq -- 'hostPID: true' /tmp/pd-nixl-p3d5.yaml
+          [[ "$(grep -Fc -- 'nvidia.com/gpu: "8"' /tmp/pd-nixl-p3d5.yaml)" == "2" ]]
           [[ "$(grep -Fc -- '--prefill' /tmp/pd-nixl-p3d5.yaml)" == "3" ]]
           [[ "$(grep -Fc -- '--decode' /tmp/pd-nixl-p3d5.yaml)" == "5" ]]
 

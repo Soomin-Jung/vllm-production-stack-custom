@@ -84,75 +84,75 @@ tests:
           value: nixl
       - template: deployment-pd-cell.yaml
         equal:
-          path: spec.template.spec.containers[0].command[0]
+          path: spec.template.spec.containers[1].command[0]
           value: vllm-router
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: --vllm-pd-disaggregation
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: --kv-connector
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: nixl
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: --health-check-interval-secs
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: --health-check-timeout-secs
       - template: deployment-pd-cell.yaml
         equal:
-          path: spec.template.spec.containers[0].ports[1].containerPort
+          path: spec.template.spec.containers[1].ports[1].containerPort
           value: 29000
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[1].args
+          path: spec.template.spec.containers[2].args
           content: pd-test-alias
-      - template: deployment-pd-cell.yaml
-        contains:
-          path: spec.template.spec.containers[1].env
-          content:
-            name: VLLM_NIXL_SIDE_CHANNEL_PORT
-            value: "5600"
-      - template: deployment-pd-cell.yaml
-        contains:
-          path: spec.template.spec.containers[1].env
-          content:
-            name: VLLM_NIXL_SIDE_CHANNEL_HOST
-            value: localhost
-      - template: deployment-pd-cell.yaml
-        contains:
-          path: spec.template.spec.containers[1].env
-          content:
-            name: UCX_TLS
-            value: cuda_ipc,cuda_copy,sm,self,tcp
-      - template: deployment-pd-cell.yaml
-        contains:
-          path: spec.template.spec.containers[1].env
-          content:
-            name: UCX_NET_DEVICES
-            value: lo
       - template: deployment-pd-cell.yaml
         contains:
           path: spec.template.spec.containers[2].env
           content:
             name: VLLM_NIXL_SIDE_CHANNEL_PORT
-            value: "5610"
+            value: "5600"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_HOST
+            value: localhost
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
+          content:
+            name: UCX_TLS
+            value: cuda_ipc,cuda_copy,sm,self,tcp
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
+          content:
+            name: UCX_NET_DEVICES
+            value: lo
       - template: deployment-pd-cell.yaml
         contains:
           path: spec.template.spec.containers[3].env
           content:
             name: VLLM_NIXL_SIDE_CHANNEL_PORT
-            value: "5700"
+            value: "5610"
       - template: deployment-pd-cell.yaml
         contains:
           path: spec.template.spec.containers[4].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_PORT
+            value: "5700"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[5].env
           content:
             name: VLLM_NIXL_SIDE_CHANNEL_PORT
             value: "5710"
@@ -458,33 +458,32 @@ tests:
     asserts:
       - template: deployment-pd-cell.yaml
         notExists:
-          path: spec.template.spec.containers[0].ports[1]
+          path: spec.template.spec.containers[1].ports[1]
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].env
+          path: spec.template.spec.containers[1].env
           content:
             name: ROUTER_ENV
             value: router
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[1].env
+          path: spec.template.spec.containers[2].env
           content:
             name: PREFILL_ENV
             value: prefill
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[2].env
+          path: spec.template.spec.containers[3].env
           content:
             name: DECODE_ENV
             value: decode
       - template: deployment-pd-cell.yaml
         equal:
-          path: spec.template.spec.containers[1].resources.requests["nvidia.com/gpu"]
-          value: "4"
+          path: spec.template.spec.containers[0].resources.requests["nvidia.com/gpu"]
+          value: "8"
       - template: deployment-pd-cell.yaml
-        equal:
-          path: spec.template.spec.containers[2].resources.requests["nvidia.com/gpu"]
-          value: "2"
+        notExists:
+          path: spec.template.spec.containers[3].resources.requests["nvidia.com/gpu"]
 
   - it: should retain inert guardian support resources when guardian is disabled
     set:
@@ -547,8 +546,7 @@ tests:
         hasDocuments:
           count: 0
 
-  - it: should share the reserved GPU set for NIXL CUDA IPC without Mooncake protocol
-      injection
+  - it: should reserve the shared GPU set for NIXL by default
     set:
       pdCellSpec:
         enabled: true
@@ -569,7 +567,6 @@ tests:
               sideChannelHost: localhost
               ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
               ucxNetDevices: lo
-              sharedGpuReservation: true
             config:
               kv_buffer_device: cuda
               kv_load_failure_policy: fail
@@ -590,7 +587,6 @@ tests:
             sideChannelPortBase: 5700
             sideChannelPortStride: 10
             profile: /profiles/decode.yaml
-        hostPID: true
     asserts:
     - template: deployment-pd-cell.yaml
       equal:
@@ -802,7 +798,6 @@ tests:
               sideChannelHost: localhost
               ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
               ucxNetDevices: lo
-              sharedGpuReservation: true
             config:
               kv_buffer_device: cuda
               kv_load_failure_policy: fail
@@ -851,7 +846,6 @@ tests:
               sideChannelHost: localhost
               ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
               ucxNetDevices: lo
-              sharedGpuReservation: true
             config:
               kv_buffer_device: cuda
               kv_load_failure_policy: fail
@@ -877,5 +871,5 @@ tests:
     asserts:
     - template: deployment-pd-cell.yaml
       failedTemplate:
-        errorMessage: 'pdCellSpec model pd-test: NIXL sharedGpuReservation requires
+        errorMessage: 'pdCellSpec model pd-test: shared GPU reservation requires
           hostPID=true or shareProcessNamespace=true for CUDA IPC process visibility'
