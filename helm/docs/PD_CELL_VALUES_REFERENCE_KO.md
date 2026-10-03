@@ -173,9 +173,10 @@ Cell Router는 vLLM Router 전용 설정이다.
 ```yaml
 router:
   repository: registry.internal/vllm/vllm-router
-  tag: v0.1.15
+  # NIXL rollout에서는 v0.1.15 + upstream PR #234가 반영된 사내 image를 pin한다.
+  tag: v0.1.15-pr234
   port: 8000
-  policy: consistent_hash
+  policy: round_robin
   prometheusPort: 29000
 ```
 
@@ -184,7 +185,7 @@ router:
 | field | 설명 |
 |---|---|
 | `repository` | vllm-project/router 기반 image repository |
-| `tag` | 검증한 version/tag. Mooncake baseline은 `v0.1.15` |
+| `tag` | 검증한 version/tag. Mooncake baseline은 `v0.1.15`; NIXL rollout에서는 `v0.1.15 + PR #234` 소스 build를 별도 immutable tag/digest로 pin |
 
 ### 선택
 
@@ -258,6 +259,30 @@ command: [vllm-router]
 
 NIXL에서는 bootstrap port를 `--prefill` 뒤에 붙이지 않는다.
 
+NIXL P1D1에서 `router.policy: round_robin`을 지정하면 고객사 공유 command와
+핵심 orchestration argument가 동일하게 렌더된다.
+
+```text
+--policy round_robin
+--vllm-pd-disaggregation
+--kv-connector nixl
+--prefill http://127.0.0.1:8101
+--decode http://127.0.0.1:8201
+--host 0.0.0.0
+--port 8000
+```
+
+`prefill.count` / `decode.count`가 증가하면 동일한 `--prefill` /
+`--decode` option을 반복 생성하므로 P1D3, P3D5 등 비대칭 topology도
+manifest 수준에서 지원한다. 단, 이 Chart의 P/D Cell은 한 Pod/한 Node이므로
+`P_count * P_requestGPU + D_count * D_requestGPU`에 해당하는 전체 GPU resource가
+한 Node에 실제로 존재해야 schedule된다.
+
+Router upstream issue #233 / PR #234는 NIXL protocol bug가 아니다. Router가
+`reasoning_effort`를 역직렬화할 때 `none/minimal/xhigh/max`를 enum에 포함하지 않아
+backend 도달 전에 HTTP 400을 반환하던 protocol parsing 문제다. 따라서
+KV connector 전환과 Router patch는 독립적인 변경축으로 관리한다.
+
 ---
 
 ## `models[]`
@@ -310,7 +335,10 @@ kvTransfer:
 | `decodeConfig` | `{}` | Decode merge override |
 | `bootstrapPortBase` | `9001` | Mooncake Prefill bootstrap base |
 | `abortRequestTimeout` | `600` | Mooncake abort timeout env |
-| `nixlSideChannelEnabled` | connector 자동 판정 | MultiConnector 등에서 NIXL side channel 강제 시 사용 |
+| `nixlSideChannelEnabled` | connector 자동 판정 | MultiConnector 등에서 NIXL side channel 강제 시 사용. NIXL connector 자체에서는 `false` 금지 |
+| `nixl.sideChannelHost` | `localhost` | `VLLM_NIXL_SIDE_CHANNEL_HOST`. 현재 node-local/same-Pod Cell에서는 localhost 권장 |
+| `nixl.ucxTls` | 미설정 | 설정 시 `UCX_TLS`를 모든 P/D NIXL engine에 주입 |
+| `nixl.ucxNetDevices` | 미설정 | 설정 시 `UCX_NET_DEVICES`를 모든 P/D NIXL engine에 주입 |
 
 Helm이 마지막에 강제로 설정:
 
@@ -445,15 +473,52 @@ native multiprocessing 기준이다.
 
 ---
 
-## NIXL 전용 env
+## NIXL 전용 env / UCX contract
 
-NIXL connector일 때:
+NIXL connector일 때 Chart는 각 P/D engine에 최소 다음 값을 주입한다.
 
 ```text
 VLLM_NIXL_SIDE_CHANNEL_PORT
+VLLM_NIXL_SIDE_CHANNEL_HOST
 ```
 
-을 phase/index별로 고유하게 생성한다.
+side-channel port는 phase/index별로 고유하게 생성한다.
+
+```text
+Prefill i = prefill.sideChannelPortBase + i * prefill.sideChannelPortStride
+Decode  i = decode.sideChannelPortBase  + i * decode.sideChannelPortStride
+```
+
+기본값은 각각 `5600/5700`, stride는 `1`이다. vLLM DP를 한 engine process 안에서
+사용하면 NIXL이 base port에서 DP rank만큼 추가 port를 사용할 수 있으므로,
+**다음 engine의 base port와 겹치지 않도록 stride를 DP rank span 이상으로 잡는다.**
+예를 들어 DP=8이면 stride 16처럼 여유 있게 둔다.
+
+현재 DS Cloud처럼 **single-node / non-IB / NVLink-capable** 환경을 우선 검증할 때는
+다음 값을 명시적으로 사용할 수 있다.
+
+```yaml
+kvTransfer:
+  connector: NixlConnector
+  nixl:
+    sideChannelHost: localhost
+    ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+    ucxNetDevices: lo
+```
+
+이 설정은 UCX의 IB RC transport를 목록에서 제외하고 node-local CUDA IPC 경로를
+허용하기 위한 검증 profile이다. `cuda_ipc`는 같은 node의 GPU P2P 전송에 사용되며
+실제 물리 경로는 topology에 따라 NVLink 또는 PCIe가 될 수 있다.
+따라서 `UCX_NET_DEVICES=lo` 또는 NIXL log에 특정 문자열이 없다는 사실만으로
+"NVLink를 강제/증명했다"고 해석하지 않는다. 실제 경로 확인은
+`nvidia-smi topo -m`, UCX/NIXL debug log, 그리고 동일 payload 전송 성능으로
+교차 검증한다.
+
+Docker 검증에서 사용한 `--privileged`, `--ipc=host`, 수동
+`CUDA_VISIBLE_DEVICES`는 NIXL Chart 기본 contract로 승격하지 않는다.
+Kubernetes에서는 NIXL engine container가 각각 `nvidia.com/gpu` resource를 직접
+요청하고 NVIDIA device plugin이 container별 device visibility를 제공한다.
+Mooncake의 shared reservation/CVD/`--device-ids` workaround는 NIXL에 적용하지 않는다.
 
 `internalPortMode`:
 
@@ -500,7 +565,8 @@ OPENAI_API_KEY
 | `internalPortBase` | P 20000 / D 30000 | internal port |
 | `internalPortStride` | `100` | index stride |
 | `dpMasterPortBase` | P 24000 / D 34000 | DP master |
-| `sideChannelPortBase` | P 5600 / D 5700 | NIXL side channel |
+| `sideChannelPortBase` | P 5600 / D 5700 | NIXL side-channel base port |
+| `sideChannelPortStride` | `1` | engine index 간 NIXL side-channel base port 간격. DP 사용 시 DP rank port span보다 크게 설정 |
 | `command` | `[vllm, serve]` 계열 | engine command override. Mooncake에서는 `[<binary>, serve]`만 허용 |
 | `extraArgs` | `[]` | engine extra flags |
 | `env` | `[]` | phase env |
