@@ -50,6 +50,10 @@ tests:
             tag: test
             kvTransfer:
               connector: NixlConnector
+              nixl:
+                sideChannelHost: localhost
+                ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+                ucxNetDevices: lo
               config:
                 kv_buffer_device: cuda
                 kv_load_failure_policy: fail
@@ -59,11 +63,15 @@ tests:
               count: 2
               requestGPU: 2
               portBase: 8101
+              sideChannelPortBase: 5600
+              sideChannelPortStride: 10
               profile: /profiles/prefill.yaml
             decode:
               count: 2
               requestGPU: 2
               portBase: 8201
+              sideChannelPortBase: 5700
+              sideChannelPortStride: 10
               profile: /profiles/decode.yaml
     asserts:
       - template: deployment-pd-cell.yaml
@@ -112,6 +120,42 @@ tests:
           content:
             name: VLLM_NIXL_SIDE_CHANNEL_PORT
             value: "5600"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_HOST
+            value: localhost
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: UCX_TLS
+            value: cuda_ipc,cuda_copy,sm,self,tcp
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[1].env
+          content:
+            name: UCX_NET_DEVICES
+            value: lo
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_PORT
+            value: "5610"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[3].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_PORT
+            value: "5700"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[4].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_PORT
+            value: "5710"
       - template: service-pd-cell.yaml
         equal:
           path: metadata.name
