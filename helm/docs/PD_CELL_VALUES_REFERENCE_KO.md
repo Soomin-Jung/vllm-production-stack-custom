@@ -137,6 +137,22 @@ container에 mount한다. Engine/Router에는 Pod delete token을 자동 mount�
 `serviceAccountName`을 생략하면 Chart가 release 전용 guardian ServiceAccount를 만들고,
 명시한 경우 해당 ServiceAccount에 Pod `get/delete` RoleBinding을 추가한다.
 
+### Guardian 비활성화와 Helm upgrade
+
+`guardian.enabled=false`는 guardian sidecar, projected token, `pd-failure-domain` annotation,
+Role/RoleBinding을 비활성화한다.
+
+단, `pdCellSpec.enabled=true`인 동안에는 Chart 전용 guardian ServiceAccount와
+guardian script ConfigMap을 **inert compatibility resource**로 유지한다. 이유는
+`guardian=true -> false` RollingUpdate 중 old ReplicaSet이 잠시 기존 Pod template을
+사용할 수 있기 때문이다. 이 두 리소스를 같은 Helm upgrade에서 즉시 삭제하면 old RS가
+`ServiceAccount not found` 또는 ConfigMap mount 실패로 `FailedCreate`에 걸려 새
+generation으로 전환하지 못할 수 있다.
+
+비활성 상태의 전용 ServiceAccount는 `automountServiceAccountToken: false`이며
+Role/RoleBinding이 렌더되지 않으므로 Pod delete 권한을 갖지 않는다. 해당 compatibility
+리소스는 `pdCellSpec.enabled=false` 또는 release uninstall 시 제거된다.
+
 상속 우선순위는 일반적으로:
 
 ```text

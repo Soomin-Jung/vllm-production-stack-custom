@@ -3,6 +3,7 @@ templates:
   - configmap-pd-cell-gpu-launcher.yaml
   - configmap-pd-cell-guardian.yaml
   - deployment-pd-cell.yaml
+  - rbac-pd-cell-guardian.yaml
   - service-pd-cell.yaml
 
 set:
@@ -440,6 +441,55 @@ tests:
         equal:
           path: spec.template.spec.containers[2].resources.requests["nvidia.com/gpu"]
           value: "2"
+
+  - it: should retain inert guardian support resources when guardian is disabled
+    set:
+      pdCellSpec:
+        enabled: true
+        guardian:
+          enabled: false
+        router:
+          repository: registry.example/vllm-router
+          tag: v0.1.15
+        models:
+          - name: guardian-disabled
+            repository: vllm/vllm-openai
+            tag: test
+            kvTransfer:
+              connector: NixlConnector
+            prefill:
+              count: 1
+              requestGPU: 1
+              profile: /profiles/prefill.yaml
+            decode:
+              count: 1
+              requestGPU: 1
+              profile: /profiles/decode.yaml
+    asserts:
+      - template: configmap-pd-cell-guardian.yaml
+        isKind:
+          of: ConfigMap
+      - template: rbac-pd-cell-guardian.yaml
+        hasDocuments:
+          count: 1
+      - template: rbac-pd-cell-guardian.yaml
+        documentIndex: 0
+        isKind:
+          of: ServiceAccount
+      - template: deployment-pd-cell.yaml
+        notExists:
+          path: spec.template.spec.serviceAccountName
+      - template: deployment-pd-cell.yaml
+        notExists:
+          path: spec.template.spec.automountServiceAccountToken
+      - template: deployment-pd-cell.yaml
+        notExists:
+          path: spec.template.metadata.annotations.pd-failure-domain
+      - template: deployment-pd-cell.yaml
+        notContains:
+          path: spec.template.spec.containers
+          content:
+            name: pd-cell-guardian
 
   - it: should not render P/D Cell resources when feature is disabled
     set:
