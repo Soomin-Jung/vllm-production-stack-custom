@@ -169,7 +169,10 @@ MTP3가 Mooncake에서 동작했다고 NIXL의 hybrid state+MTP도 검증된 것
 
 P/D에서 vLLM/NIXL connector 버전, 모델/실제 dtype, attention backend, KV dtype,
 EAGLE/MTP method 및 draft model 설정, push/pull 모드가 호환돼야 한다.
-Hybrid SSM은 **P TP == D TP**, 같은 block size를 유지한다. 이 예제는 TP2/TP2다.
+이 예제는 **TP2/TP2와 같은 block size**로 비교한다. 공식 matrix는 hybrid homogeneous TP를
+요구한다고 기술하지만, v0.30.0 `base_worker.py`에는 Mamba 3-read heterogeneous-TP
+전송 구현도 존재한다. 문서와 구현의 진척이 다르므로 이를 단순히 “heterogeneous TP 불가능”으로
+단정하지 않는다. 이번 예제/검증 범위는 homogeneous TP2/TP2다.
 현재 프로파일의 P/D GPU memory utilization, MBT, max-num-seqs, CUDA graph mode 차이는
 동일할 필요가 없다. GPU memory 비율 차이는 cache block 수와 동시성에 영향을 준다.
 default로 남긴 backend/dtype/block size도 실제 시작 로그와 NIXL handshake에서 확인한다.
