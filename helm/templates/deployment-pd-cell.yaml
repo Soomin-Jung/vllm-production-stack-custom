@@ -116,6 +116,14 @@
     {{- $dDpMasterPortBase := int (default 34000 $decode.dpMasterPortBase) -}}
     {{- $pSideChannelPortBase := int (default 5600 $prefill.sideChannelPortBase) -}}
     {{- $dSideChannelPortBase := int (default 5700 $decode.sideChannelPortBase) -}}
+    {{- $pSideChannelPortStride := int (default 1 $prefill.sideChannelPortStride) -}}
+    {{- $dSideChannelPortStride := int (default 1 $decode.sideChannelPortStride) -}}
+    {{- if lt $pSideChannelPortStride 1 -}}
+      {{- fail (printf "pdCellSpec model %s: prefill.sideChannelPortStride must be >= 1" $name) -}}
+    {{- end -}}
+    {{- if lt $dSideChannelPortStride 1 -}}
+      {{- fail (printf "pdCellSpec model %s: decode.sideChannelPortStride must be >= 1" $name) -}}
+    {{- end -}}
     {{- $pInternalPortStride := int (default 100 $prefill.internalPortStride) -}}
     {{- $dInternalPortStride := int (default 100 $decode.internalPortStride) -}}
     {{- $pInternalPortMode := default "vllm" $prefill.internalPortMode -}}
@@ -160,8 +168,13 @@
     {{- $kv := deepCopy ($modelSpec.kvTransfer | default dict) -}}
     {{- $kvConnector := required (printf "pdCellSpec model %s: models[].kvTransfer.connector is required" $name) $kv.connector -}}
     {{- $isMooncakeConnector := eq $kvConnector "MooncakeConnector" -}}
+    {{- $isNixlConnector := contains "Nixl" $kvConnector -}}
     {{- $kvBaseConfig := deepCopy ($kv.config | default dict) -}}
     {{- $bootstrapPortBase := int (default 9001 $kv.bootstrapPortBase) -}}
+    {{- $nixl := deepCopy ($kv.nixl | default dict) -}}
+    {{- $nixlSideChannelHost := default "localhost" $nixl.sideChannelHost -}}
+    {{- $nixlUcxTls := default "" $nixl.ucxTls -}}
+    {{- $nixlUcxNetDevices := default "" $nixl.ucxNetDevices -}}
 
     {{- $pGpuCount := int (required (printf "pdCellSpec model %s: prefill.requestGPU is required" $name) $prefill.requestGPU) -}}
     {{- $dGpuCount := int (required (printf "pdCellSpec model %s: decode.requestGPU is required" $name) $decode.requestGPU) -}}
@@ -226,6 +239,9 @@
     {{- $abortTimeout := int (default 600 $kv.abortRequestTimeout) -}}
     {{- $nixlSideChannelEnabled := has $kvConnector (list "NixlConnector" "NixlPullConnector" "NixlPushConnector") -}}
     {{- if hasKey $kv "nixlSideChannelEnabled" -}}
+      {{- if and $isNixlConnector (not $kv.nixlSideChannelEnabled) -}}
+        {{- fail (printf "pdCellSpec model %s: nixlSideChannelEnabled=false is invalid for a NIXL connector; each engine requires a unique NIXL side-channel endpoint" $name) -}}
+      {{- end -}}
       {{- $nixlSideChannelEnabled = $kv.nixlSideChannelEnabled -}}
     {{- end -}}
 
@@ -725,7 +741,7 @@ spec:
           {{- $bootstrapPort := add $bootstrapPortBase $i -}}
           {{- $internalPort := add $pInternalPortBase (mul $pInternalPortStride $i) -}}
           {{- $dpMasterPort := add $pDpMasterPortBase $i -}}
-          {{- $sideChannelPort := add $pSideChannelPortBase $i -}}
+          {{- $sideChannelPort := add $pSideChannelPortBase (mul $pSideChannelPortStride $i) -}}
           {{- $phaseEnvMap := deepCopy $modelEnvMap -}}
           {{- $containerGpuIndices := list -}}
           {{- if $isMooncakeConnector -}}
@@ -746,6 +762,13 @@ spec:
           {{- end -}}
           {{- if $nixlSideChannelEnabled -}}
             {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_PORT" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_PORT" "value" (printf "%d" $sideChannelPort)) -}}
+            {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_HOST" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_HOST" "value" $nixlSideChannelHost) -}}
+            {{- if $nixlUcxTls -}}
+              {{- $_ := set $phaseEnvMap "UCX_TLS" (dict "name" "UCX_TLS" "value" $nixlUcxTls) -}}
+            {{- end -}}
+            {{- if $nixlUcxNetDevices -}}
+              {{- $_ := set $phaseEnvMap "UCX_NET_DEVICES" (dict "name" "UCX_NET_DEVICES" "value" $nixlUcxNetDevices) -}}
+            {{- end -}}
           {{- end -}}
           {{- if eq $routerKvConnector "mooncake" -}}
             {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_BOOTSTRAP_PORT" (dict "name" "VLLM_MOONCAKE_BOOTSTRAP_PORT" "value" (printf "%d" $bootstrapPort)) -}}
@@ -882,7 +905,7 @@ spec:
           {{- $enginePort := add $dPortBase $i -}}
           {{- $internalPort := add $dInternalPortBase (mul $dInternalPortStride $i) -}}
           {{- $dpMasterPort := add $dDpMasterPortBase $i -}}
-          {{- $sideChannelPort := add $dSideChannelPortBase $i -}}
+          {{- $sideChannelPort := add $dSideChannelPortBase (mul $dSideChannelPortStride $i) -}}
           {{- $phaseEnvMap := deepCopy $modelEnvMap -}}
           {{- $containerGpuIndices := list -}}
           {{- if $isMooncakeConnector -}}
@@ -904,6 +927,13 @@ spec:
           {{- end -}}
           {{- if $nixlSideChannelEnabled -}}
             {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_PORT" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_PORT" "value" (printf "%d" $sideChannelPort)) -}}
+            {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_HOST" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_HOST" "value" $nixlSideChannelHost) -}}
+            {{- if $nixlUcxTls -}}
+              {{- $_ := set $phaseEnvMap "UCX_TLS" (dict "name" "UCX_TLS" "value" $nixlUcxTls) -}}
+            {{- end -}}
+            {{- if $nixlUcxNetDevices -}}
+              {{- $_ := set $phaseEnvMap "UCX_NET_DEVICES" (dict "name" "UCX_NET_DEVICES" "value" $nixlUcxNetDevices) -}}
+            {{- end -}}
           {{- end -}}
           {{- if eq $routerKvConnector "mooncake" -}}
             {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) -}}
