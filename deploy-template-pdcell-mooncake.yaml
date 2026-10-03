@@ -14,7 +14,7 @@ pdCellSpec:
       - "86400"
 
   models:
-    - name: qwen37-27b-test
+    - name: qwen38-27b-test
       repository: "vllm/vllm-openai"
       tag: "v0.30.0-cu129-torch-family"
 
