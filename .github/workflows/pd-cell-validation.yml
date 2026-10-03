@@ -12,6 +12,7 @@ on:
       - 'helm/templates/service-pd-cell.yaml'
       - 'helm/examples/pd-cell-values.yaml'
       - 'helm/examples/pd-cell-values-full.yaml'
+      - 'helm/examples/pd-cell-nixl-qwen38-values.yaml'
       - 'helm/tests/pdCell_test.yaml'
       - 'helm/docs/PD_CELL_0.1.8_KO.md'
       - 'helm/docs/PD_CELL_VALUES_REFERENCE_KO.md'
@@ -147,6 +148,8 @@ jobs:
             -f helm/examples/pd-cell-values.yaml
           helm lint ./helm \
             -f helm/examples/pd-cell-values-full.yaml
+          helm lint ./helm \
+            -f helm/examples/pd-cell-nixl-qwen38-values.yaml
 
       - name: Render Mooncake P-D Cell baseline
         shell: bash
@@ -292,25 +295,36 @@ jobs:
             exit 1
           fi
 
-      - name: Verify NIXL mapping still uses vLLM Router
+      - name: Verify NIXL Qwen3.8 P1D1 rollout contract
         shell: bash
         run: |
           set -euo pipefail
-          helm template pd-test ./helm -n inference \
-            -f global-values.yaml \
-            -f helm/examples/pd-cell-values.yaml \
-            --set-string 'pdCellSpec.models[0].kvTransfer.connector=NixlConnector' \
-            --set-string 'pdCellSpec.models[0].kvTransfer.config.kv_connector_extra_config.backends[0]=UCX' \
+          helm template pd-nixl ./helm -n inference \
+            -f helm/examples/pd-cell-nixl-qwen38-values.yaml \
             > /tmp/pd-nixl.yaml
 
           grep -Fq -- 'pd-orchestrator: "vllm-router"' /tmp/pd-nixl.yaml
           grep -Fq -- 'pd-kv-connector: "nixl"' /tmp/pd-nixl.yaml
           grep -Fq -- '--vllm-pd-disaggregation' /tmp/pd-nixl.yaml
+          grep -Fq -- '--policy' /tmp/pd-nixl.yaml
+          grep -Fq -- 'round_robin' /tmp/pd-nixl.yaml
           grep -Fq -- 'NixlConnector' /tmp/pd-nixl.yaml
           grep -Fq -- 'name: VLLM_NIXL_SIDE_CHANNEL_PORT' /tmp/pd-nixl.yaml
+          grep -Fq -- 'value: "8998"' /tmp/pd-nixl.yaml
+          grep -Fq -- 'value: "9889"' /tmp/pd-nixl.yaml
+          grep -Fq -- 'name: VLLM_NIXL_SIDE_CHANNEL_HOST' /tmp/pd-nixl.yaml
+          grep -Fq -- 'value: localhost' /tmp/pd-nixl.yaml
+          grep -Fq -- 'name: UCX_TLS' /tmp/pd-nixl.yaml
+          grep -Fq -- 'value: cuda_ipc,cuda_copy,sm,self,tcp' /tmp/pd-nixl.yaml
+          grep -Fq -- 'name: UCX_NET_DEVICES' /tmp/pd-nixl.yaml
+          grep -Fq -- 'value: lo' /tmp/pd-nixl.yaml
+          grep -Fq -- 'name: VLLM_SSM_CONV_STATE_LAYOUT' /tmp/pd-nixl.yaml
+          grep -Fq -- 'value: DS' /tmp/pd-nixl.yaml
+          grep -Fq -- 'name: VLLM_KV_CACHE_LAYOUT' /tmp/pd-nixl.yaml
+          grep -Fq -- 'value: HND' /tmp/pd-nixl.yaml
 
-          # NIXL remains on the legacy per-engine GPU allocation path. The
-          # Mooncake GPU reservation wrapper must not leak into this render.
+          # NIXL remains on the normal per-engine GPU allocation path. The
+          # Mooncake GPU reservation wrapper must never leak into this render.
           if grep -Fq -- 'name: gpu-reservation' /tmp/pd-nixl.yaml; then
             echo 'NIXL render must not contain Mooncake gpu-reservation'
             exit 1
@@ -319,22 +333,79 @@ jobs:
             echo 'NIXL render must not contain Mooncake GPU launcher'
             exit 1
           fi
-          # Guardian is connector-independent and intentionally renders
-          # NVIDIA_VISIBLE_DEVICES=void. What must not leak into NIXL engines is
-          # the Mooncake shared-GPU contract (NVIDIA_VISIBLE_DEVICES=all).
           if grep -A1 -F -- 'name: NVIDIA_VISIBLE_DEVICES' /tmp/pd-nixl.yaml | grep -Fq -- 'value: all'; then
             echo 'NIXL engine render must not inherit Mooncake NVIDIA_VISIBLE_DEVICES=all'
             exit 1
           fi
-          grep -A1 -F -- 'name: NVIDIA_VISIBLE_DEVICES' /tmp/pd-nixl.yaml | grep -Fq -- 'value: "void"'
 
-          # P1D1 minimal example: per-engine GPU resources remain 4 + 4, each
-          # rendered under requests and limits.
+          # P1D1 TP4 baseline: Prefill and Decode independently request 4 GPUs,
+          # each under requests and limits.
           nixl_gpu_resource_count="$(grep -Fc -- 'nvidia.com/gpu: "4"' /tmp/pd-nixl.yaml || true)"
           if [[ "${nixl_gpu_resource_count}" != "4" ]]; then
             echo "Expected four NIXL per-engine GPU resource lines, got ${nixl_gpu_resource_count}"
             exit 1
           fi
+
+      - name: Verify arbitrary NIXL P3D5 topology rendering
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/pd-nixl-p3d5-values.yaml <<'YAML'
+          pdCellSpec:
+            enabled: true
+            guardian:
+              enabled: false
+            router:
+              repository: internal-registry/vllm/vllm-router
+              tag: v0.1.15-pr234
+              policy: round_robin
+            models:
+              - name: nixl-p3d5
+                repository: vllm/vllm-openai
+                tag: v0.30.0
+                kvTransfer:
+                  connector: NixlConnector
+                  nixl:
+                    sideChannelHost: localhost
+                    ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+                    ucxNetDevices: lo
+                prefill:
+                  count: 3
+                  requestGPU: 1
+                  sideChannelPortBase: 5600
+                  sideChannelPortStride: 16
+                  profile: /profiles/prefill-tp1.yaml
+                decode:
+                  count: 5
+                  requestGPU: 1
+                  sideChannelPortBase: 5700
+                  sideChannelPortStride: 16
+                  profile: /profiles/decode-tp1.yaml
+          YAML
+
+          helm template pd-p3d5 ./helm -n inference \
+            -f /tmp/pd-nixl-p3d5-values.yaml \
+            > /tmp/pd-nixl-p3d5.yaml
+
+          [[ "$(grep -Fc -- '--prefill' /tmp/pd-nixl-p3d5.yaml)" == "3" ]]
+          [[ "$(grep -Fc -- '--decode' /tmp/pd-nixl-p3d5.yaml)" == "5" ]]
+
+          for url in \
+            http://127.0.0.1:8101 \
+            http://127.0.0.1:8102 \
+            http://127.0.0.1:8103 \
+            http://127.0.0.1:8201 \
+            http://127.0.0.1:8202 \
+            http://127.0.0.1:8203 \
+            http://127.0.0.1:8204 \
+            http://127.0.0.1:8205; do
+            grep -Fq -- "${url}" /tmp/pd-nixl-p3d5.yaml
+          done
+
+          for port in 5600 5616 5632 5700 5716 5732 5748 5764; do
+            grep -Fq -- "value: \"${port}\"" /tmp/pd-nixl-p3d5.yaml
+          done
 
       - name: Verify Mooncake protocol and device IDs are chart-owned
         shell: bash
@@ -395,4 +466,5 @@ jobs:
           path: |
             /tmp/pd-cell.yaml
             /tmp/pd-nixl.yaml
+            /tmp/pd-nixl-p3d5.yaml
             /tmp/pd-auth.yaml
