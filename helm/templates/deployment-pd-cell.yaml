@@ -578,6 +578,7 @@ spec:
             - "/bin/bash"
             - "-ceu"
             - |
+              echo "[pd-gpu] reservation starting: node=${NODE_NAME} pod=${POD_NAMESPACE}/${POD_NAME} uid=${POD_UID}"
               GPU_DIR=/var/run/pd-gpu
               TMP_FILE="${GPU_DIR}/gpus.tmp"
               FINAL_FILE="${GPU_DIR}/gpus"
@@ -602,9 +603,25 @@ spec:
 
               mv -f "${TMP_FILE}" "${FINAL_FILE}"
               trap - EXIT
-              echo "[pd-gpu] reservation ready: $(paste -sd, "${FINAL_FILE}")"
+              echo "[pd-gpu] reservation ready: node=${NODE_NAME} pod=${POD_NAMESPACE}/${POD_NAME} uid=${POD_UID} gpus=$(paste -sd, "${FINAL_FILE}")"
               exec sleep infinity
           env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
             - name: PD_GPU_TOTAL
               value: {{ $gpuReservationTotal | quote }}
           resources:
@@ -1083,6 +1100,10 @@ spec:
             - "python3"
             - "/opt/pd-cell-guardian/guardian.py"
           env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             # Never expose GPUs to the lifecycle guardian itself.
             - name: NVIDIA_VISIBLE_DEVICES
               value: "void"

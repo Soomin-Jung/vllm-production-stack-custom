@@ -14,6 +14,8 @@ on:
       - 'helm/examples/pd-cell-values-full.yaml'
       - 'helm/examples/pd-cell-nixl-qwen38-values.yaml'
       - 'helm/tests/pdCell_test.yaml'
+      - 'scripts/test_pd_cell_guardian.py'
+      - 'helm/docs/PD_CELL_DIAGNOSTICS_KO.md'
       - 'helm/docs/PD_CELL_0.1.8_KO.md'
       - 'helm/docs/PD_CELL_VALUES_REFERENCE_KO.md'
       - 'helm/docs/VLLM_ROUTER_IMAGE_BUILD_KO.md'
@@ -40,6 +42,10 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: v3.17.3
+
+      - name: Verify guardian failure diagnostics and lifecycle
+        shell: bash
+        run: python scripts/test_pd_cell_guardian.py
 
       - name: Validate closed-network Router packaging contract
         shell: bash
