@@ -1,0 +1,52 @@
+# Shared Mooncake/NIXL engine profile, normalized against vLLM v0.30.0.
+# Connector settings and environment are injected by the P/D Cell Helm chart.
+# MTP3 preserves the supplied Mooncake test configuration; hybrid NIXL + MTP
+# is not runtime-certified by this example. See README.md before testing.
+served-model-name:
+  - Qwen3.8-27B-test
+  - Qwen3.8-27B
+  - standard
+
+runner: generate
+model: /models/Qwen3.8-27B
+dtype: auto
+
+chat-template: /models/Qwen3.8-27B/chat_template_PDtest.jinja
+trust-remote-code: true
+safetensors-load-strategy: lazy
+gpu-memory-utilization: 0.90
+
+enable-prefix-caching: true
+max-model-len: 262144 # 256K; uppercase K means 1024 in vLLM.
+
+enable-auto-tool-choice: true
+tool-call-parser: qwen3_coder
+reasoning-parser: qwen3
+speculative-config:
+  method: mtp
+  num_speculative_tokens: 3
+
+compilation-config:
+  cudagraph_mode: PIECEWISE
+
+tensor-parallel-size: 2
+enable-chunked-prefill: true
+max-num-batched-tokens: 32768 # 32K
+max-num-seqs: 4
+
+api-server-count: 1
+disable-fastapi-docs: true
+enable-offline-docs: true
+enable-request-id-headers: true
+enable-force-include-usage: true
+enable-prompt-tokens-details: true
+enable-log-requests: true
+log-error-stack: true
+max-log-len: 100
+
+mm-encoder-tp-mode: data
+mm-processor-cache-gb: 0
+renderer-num-workers: 4
+
+enable-server-load-tracking: true
+enable-mfu-metrics: true
