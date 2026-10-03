@@ -695,8 +695,21 @@ pdCellSpec:
 
         # NIXL connector는 자동으로 side-channel env를 활성화한다.
         # MultiConnector 등 특수 케이스에서 수동 override가 필요할 때만 사용한다.
+        # NIXL connector 자체에서 false로 끄는 것은 허용하지 않는다.
         #
         # nixlSideChannelEnabled: true
+        #
+        # NIXL 전용 structured runtime config.
+        # 현재 active model은 Mooncake이므로 아래는 주석 예시다.
+        #
+        # nixl:
+        #   # 같은 Pod 안의 P/D engine끼리 side-channel metadata를 교환하므로 localhost.
+        #   sideChannelHost: localhost
+        #
+        #   # non-IB / same-node validation profile:
+        #   # IB RC transport를 제외하고 CUDA IPC + local transports만 허용한다.
+        #   ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+        #   ucxNetDevices: lo
 
         # 모든 phase에 공통 적용되는 KVTransferConfig.
         config:
@@ -796,6 +809,11 @@ pdCellSpec:
         # NIXL side channel base port.
         # NIXL 계열 connector 또는 nixlSideChannelEnabled=true일 때 사용.
         sideChannelPortBase: 5600
+
+        # NIXL engine index 간 side-channel base port 간격.
+        # vLLM DP>1이면 한 engine이 base+dp_rank port를 사용할 수 있으므로
+        # 다음 engine range와 겹치지 않게 DP span 이상으로 키운다.
+        sideChannelPortStride: 1
 
         # 일반 connector에서는 engine command를 직접 override할 수 있다.
         #
@@ -902,6 +920,9 @@ pdCellSpec:
         # NIXL side channel base port.
         sideChannelPortBase: 5700
 
+        # Prefill과 동일한 NIXL side-channel stride.
+        sideChannelPortStride: 1
+
         # Mooncake command override 규칙은 Prefill과 동일.
         #
         # command:
@@ -979,7 +1000,10 @@ pdCellSpec:
 #
 # kvTransfer:
 #   connector: NixlConnector
-#   nixlSideChannelEnabled: true
+#   nixl:
+#     sideChannelHost: localhost
+#     ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+#     ucxNetDevices: lo
 #   config:
 #     kv_buffer_device: cuda
 #     kv_load_failure_policy: fail
@@ -993,8 +1017,12 @@ pdCellSpec:
 # - Prefill/Decode가 기존처럼 각자 nvidia.com/gpu resource를 직접 요청한다.
 # - NVIDIA_VISIBLE_DEVICES=all을 Chart가 강제하지 않는다.
 # - CNTR_GPU_IDX / Mooncake launcher를 사용하지 않는다.
-# - VLLM_NIXL_SIDE_CHANNEL_PORT를 phase/index별로 자동 주입한다.
+# - VLLM_NIXL_SIDE_CHANNEL_PORT / HOST를 phase/index별로 자동 주입한다.
+# - kvTransfer.nixl.ucxTls / ucxNetDevices가 있으면 UCX_TLS / UCX_NET_DEVICES를 자동 주입한다.
 # - requestGPUMem/requestGPUCores 계열 extended resource를 기존 helper에서 사용할 수 있다.
+# - Docker의 수동 CUDA_VISIBLE_DEVICES 분할을 복제하지 않는다. Kubernetes device plugin
+#   resource allocation이 NIXL engine별 GPU visibility를 소유한다.
+# - --privileged / hostIPC는 NIXL 기본 요구사항으로 간주하지 않는다.
 #
 # 예:
 #
@@ -1008,12 +1036,16 @@ pdCellSpec:
 #   limitGPUMem: "81920"
 #   limitGPUMemPercentage: "100"
 #   limitGPUCores: "100"
+#   sideChannelPortBase: 8998
+#   sideChannelPortStride: 16
 #   profile: /profiles/qwen/prefill-tp4.yaml
 #
 # decode:
 #   count: 2
 #   requestGPU: 2
 #   requestGPUType: nvidia.com/gpu
+#   sideChannelPortBase: 9889
+#   sideChannelPortStride: 16
 #   profile: /profiles/qwen/decode-tp2.yaml
 #
 # NixlPullConnector / NixlPushConnector도 Router mode는 nixl로 자동 매핑된다.
