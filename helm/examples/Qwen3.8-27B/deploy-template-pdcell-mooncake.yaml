@@ -1,0 +1,49 @@
+# Existing Mooncake P/D Cell deployment baseline.
+# Captured before the NIXL rollout so the validated Mooncake configuration
+# remains available for A/B comparison and rollback/reference.
+
+pdCellSpec:
+  enabled: true
+  hostPID: true
+
+  router:
+    repository: "vllm/vllm-router"
+    tag: "v0.1.15"
+    extraArgs:
+      - "--request-timeout-secs"
+      - "86400"
+
+  models:
+    - name: qwen38-27b-test
+      repository: "vllm/vllm-openai"
+      tag: "v0.30.0-cu129-torch-family"
+
+      replicaCount: 1
+
+      prefill:
+        profile: /profiles/k8s-qwen38-27b-prefill-h200-tp2.yaml
+        requestGPU: 2
+        count: 1
+
+      decode:
+        profile: /profiles/k8s-qwen38-27b-decode-h200-tp2.yaml
+        requestGPU: 2
+        count: 1
+
+      kvTransfer:
+        connector: MooncakeConnector
+        abortRequestTimeout: 600
+        config:
+          kv_connector_extra_config:
+            num_workers: 20 # task: num_workers * 2
+
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.product
+              operator: "In"
+              values:
+                - "NVIDIA-H200"
+
+      env:
+        - name: MC_INTRANODE_NVLINK
+          value: "1"

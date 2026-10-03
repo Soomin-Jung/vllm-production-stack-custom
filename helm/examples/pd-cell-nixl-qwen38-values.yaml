@@ -1,0 +1,123 @@
+# Qwen3.8-27B node-local NIXL P/D baseline for vLLM v0.30.0.
+#
+# Target runtime shape:
+#   - DS Cloud: one H200 8-GPU node, no InfiniBand
+#   - Prefill: 1 engine x TP4
+#   - Decode : 1 engine x TP4
+#   - Cell Router: vllm-router v0.1.15 source + upstream PR #234
+#   - KV connector: NixlConnector / UCX
+#
+# This file intentionally keeps vLLM engine tuning in external --config profiles,
+# following the repository's existing profile-driven production convention.
+#
+# IMPORTANT:
+#   * Router PR #234 fixes reasoning_effort protocol deserialization (#233);
+#     it is not a NIXL transfer fix.
+#   * Start correctness certification with speculative decoding disabled.
+#     Enable Qwen3.8 MTP only after the base P/D + NIXL path is stable.
+#   * UCX_TLS below excludes IB RC and allows CUDA IPC/local transports.
+#     cuda_ipc can use same-node GPU P2P; actual NVLink vs PCIe path depends on topology.
+#   * The chart reserves the Cell GPU set once and exposes it to P/D.
+#     The launcher partitions compute GPUs with --device-ids; CUDA IPC can access peers.
+
+pdCellSpec:
+  enabled: true
+
+  # Preserve the tested Mooncake PID/device visibility baseline for CUDA IPC.
+  hostPID: true
+  hostIPC: false
+
+  router:
+    repository: internal-registry/vllm/vllm-router
+    tag: v0.1.15-pr234
+    imagePullPolicy: IfNotPresent
+    healthPath: /health
+    port: 8000
+    policy: round_robin
+    prometheusPort: 29000
+
+  models:
+    - name: qwen38-27b-nixl-p1d1
+      repository: internal-registry/vllm/vllm-openai
+      tag: v0.30.0
+      replicaCount: 1
+
+      # Hybrid-model state layout settings used by the customer test baseline.
+      # Keep these explicit so the NIXL rollout does not depend on inherited
+      # environment from an unrelated Mooncake profile.
+      env:
+        - name: VLLM_SSM_CONV_STATE_LAYOUT
+          value: DS
+        - name: VLLM_KV_CACHE_LAYOUT
+          value: HND
+
+      kvTransfer:
+        connector: NixlConnector
+        nixl:
+          # All engines are containers in the same P/D Cell Pod/network namespace.
+          sideChannelHost: localhost
+
+          # Non-IB, same-node validation profile.
+          # Do not add rc/rc_x unless IB is intentionally being tested.
+          ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+          ucxNetDevices: lo
+
+        config:
+          kv_buffer_device: cuda
+          kv_load_failure_policy: fail
+          kv_connector_extra_config:
+            backends:
+              - UCX
+
+      prefill:
+        count: 1
+        requestGPU: 4
+        requestGPUType: nvidia.com/gpu
+        portBase: 8101
+
+        # Customer Docker baseline used 8998. A stride > expected DP rank span
+        # prevents a future multi-engine/DP topology from reusing adjacent ports.
+        sideChannelPortBase: 8998
+        sideChannelPortStride: 16
+
+        profile: /profiles/qwen38-27b/nixl-prefill-tp4.yaml
+
+      decode:
+        count: 1
+        requestGPU: 4
+        requestGPUType: nvidia.com/gpu
+        portBase: 8201
+
+        # Customer Docker baseline used 9889.
+        sideChannelPortBase: 9889
+        sideChannelPortStride: 16
+
+        profile: /profiles/qwen38-27b/nixl-decode-tp4.yaml
+
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.product
+              operator: In
+              values:
+                - NVIDIA-H200
+
+# -----------------------------------------------------------------------------
+# Topology scaling
+# -----------------------------------------------------------------------------
+#
+# The chart is not limited to P1D1:
+#
+#   P1D3: prefill.count=1, decode.count=3
+#   P3D5: prefill.count=3, decode.count=5
+#
+# vllm-router receives one repeated --prefill argument per Prefill engine and
+# one repeated --decode argument per Decode engine.
+#
+# This is still a node-local one-Pod Cell. Kubernetes must be able to satisfy:
+#
+#   total GPUs = prefill.count * prefill.requestGPU
+#              + decode.count  * decode.requestGPU
+#
+# on a single node. Therefore P1D3/P3D5 with TP4 engines does NOT fit on one
+# 8-GPU H200 node even though the Helm topology is valid; reduce per-engine TP,
+# use a larger node, or change the cell architecture before selecting that shape.

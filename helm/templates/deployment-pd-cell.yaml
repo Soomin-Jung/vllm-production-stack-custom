@@ -116,6 +116,14 @@
     {{- $dDpMasterPortBase := int (default 34000 $decode.dpMasterPortBase) -}}
     {{- $pSideChannelPortBase := int (default 5600 $prefill.sideChannelPortBase) -}}
     {{- $dSideChannelPortBase := int (default 5700 $decode.sideChannelPortBase) -}}
+    {{- $pSideChannelPortStride := int (default 1 $prefill.sideChannelPortStride) -}}
+    {{- $dSideChannelPortStride := int (default 1 $decode.sideChannelPortStride) -}}
+    {{- if lt $pSideChannelPortStride 1 -}}
+      {{- fail (printf "pdCellSpec model %s: prefill.sideChannelPortStride must be >= 1" $name) -}}
+    {{- end -}}
+    {{- if lt $dSideChannelPortStride 1 -}}
+      {{- fail (printf "pdCellSpec model %s: decode.sideChannelPortStride must be >= 1" $name) -}}
+    {{- end -}}
     {{- $pInternalPortStride := int (default 100 $prefill.internalPortStride) -}}
     {{- $dInternalPortStride := int (default 100 $decode.internalPortStride) -}}
     {{- $pInternalPortMode := default "vllm" $prefill.internalPortMode -}}
@@ -160,8 +168,16 @@
     {{- $kv := deepCopy ($modelSpec.kvTransfer | default dict) -}}
     {{- $kvConnector := required (printf "pdCellSpec model %s: models[].kvTransfer.connector is required" $name) $kv.connector -}}
     {{- $isMooncakeConnector := eq $kvConnector "MooncakeConnector" -}}
+    {{- $isNixlConnector := contains "Nixl" $kvConnector -}}
     {{- $kvBaseConfig := deepCopy ($kv.config | default dict) -}}
     {{- $bootstrapPortBase := int (default 9001 $kv.bootstrapPortBase) -}}
+    {{- $nixl := deepCopy ($kv.nixl | default dict) -}}
+    {{- $useGpuReservation := or $isMooncakeConnector $isNixlConnector -}}
+    {{- $gpuMapVolume := ternary "pd-mooncake-gpu-map" "pd-shared-gpu-map" $isMooncakeConnector -}}
+    {{- $gpuLauncherVolume := ternary "pd-mooncake-gpu-launcher" "pd-shared-gpu-launcher" $isMooncakeConnector -}}
+    {{- $nixlSideChannelHost := default "localhost" $nixl.sideChannelHost -}}
+    {{- $nixlUcxTls := default "" $nixl.ucxTls -}}
+    {{- $nixlUcxNetDevices := default "" $nixl.ucxNetDevices -}}
 
     {{- $pGpuCount := int (required (printf "pdCellSpec model %s: prefill.requestGPU is required" $name) $prefill.requestGPU) -}}
     {{- $dGpuCount := int (required (printf "pdCellSpec model %s: decode.requestGPU is required" $name) $decode.requestGPU) -}}
@@ -170,50 +186,50 @@
     {{- $prefillVllmBin := ternary "/opt/venv/bin/vllm" "vllm" (eq $repository "lmcache/vllm-openai") -}}
     {{- $decodeVllmBin := $prefillVllmBin -}}
 
-    {{- if $isMooncakeConnector -}}
+    {{- if $useGpuReservation -}}
       {{- if ne $gpuResourceType "nvidia.com/gpu" -}}
-        {{- fail (printf "pdCellSpec model %s: MooncakeConnector pod-local reservation requires requestGPUType=nvidia.com/gpu; MIG/time-slicing/shared GPU resources are not supported" $name) -}}
+        {{- fail (printf "pdCellSpec model %s: shared GPU reservation requires requestGPUType=nvidia.com/gpu; MIG/time-slicing/shared GPU resources are not supported" $name) -}}
       {{- end -}}
       {{- if lt $pGpuCount 1 -}}
-        {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill.requestGPU must be >= 1" $name) -}}
+        {{- fail (printf "pdCellSpec model %s: shared GPU reservation prefill.requestGPU must be >= 1" $name) -}}
       {{- end -}}
       {{- if lt $dGpuCount 1 -}}
-        {{- fail (printf "pdCellSpec model %s: MooncakeConnector decode.requestGPU must be >= 1" $name) -}}
+        {{- fail (printf "pdCellSpec model %s: shared GPU reservation decode.requestGPU must be >= 1" $name) -}}
       {{- end -}}
       {{- $decodeGpuResourceType := default "nvidia.com/gpu" $decode.requestGPUType -}}
       {{- if ne $gpuResourceType $decodeGpuResourceType -}}
-        {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill/decode requestGPUType must match because one pod-local reservation owns the full GPU set" $name) -}}
+        {{- fail (printf "pdCellSpec model %s: shared GPU reservation prefill/decode requestGPUType must match because one pod-local reservation owns the full GPU set" $name) -}}
       {{- end -}}
       {{- $gpuReservationTotal = add (mul $pCount $pGpuCount) (mul $dCount $dGpuCount) -}}
 
       {{- range $arg := ($prefill.extraArgs | default (list)) -}}
         {{- $argString := printf "%v" $arg -}}
         {{- if or (eq $argString "--device-ids") (hasPrefix "--device-ids=" $argString) -}}
-          {{- fail (printf "pdCellSpec model %s: prefill --device-ids is chart-managed for MooncakeConnector" $name) -}}
+          {{- fail (printf "pdCellSpec model %s: prefill --device-ids is chart-managed for shared GPU reservation" $name) -}}
         {{- end -}}
       {{- end -}}
       {{- range $arg := ($decode.extraArgs | default (list)) -}}
         {{- $argString := printf "%v" $arg -}}
         {{- if or (eq $argString "--device-ids") (hasPrefix "--device-ids=" $argString) -}}
-          {{- fail (printf "pdCellSpec model %s: decode --device-ids is chart-managed for MooncakeConnector" $name) -}}
+          {{- fail (printf "pdCellSpec model %s: decode --device-ids is chart-managed for shared GPU reservation" $name) -}}
         {{- end -}}
       {{- end -}}
 
       {{- if $prefill.command -}}
         {{- if or (not (kindIs "slice" $prefill.command)) (ne (len $prefill.command) 2) (ne (printf "%v" (index $prefill.command 1)) "serve") -}}
-          {{- fail (printf "pdCellSpec model %s: MooncakeConnector prefill.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
+          {{- fail (printf "pdCellSpec model %s: shared GPU reservation prefill.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
         {{- end -}}
         {{- $prefillVllmBin = printf "%v" (index $prefill.command 0) -}}
       {{- end -}}
       {{- if $decode.command -}}
         {{- if or (not (kindIs "slice" $decode.command)) (ne (len $decode.command) 2) (ne (printf "%v" (index $decode.command 1)) "serve") -}}
-          {{- fail (printf "pdCellSpec model %s: MooncakeConnector decode.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
+          {{- fail (printf "pdCellSpec model %s: shared GPU reservation decode.command may only be [<vllm-binary>, serve]; the chart owns the GPU launcher" $name) -}}
         {{- end -}}
         {{- $decodeVllmBin = printf "%v" (index $decode.command 0) -}}
       {{- end -}}
     {{- end -}}
     {{- $guardianTargets := list "pd-router" -}}
-    {{- if $isMooncakeConnector -}}
+    {{- if $useGpuReservation -}}
       {{- $guardianTargets = append $guardianTargets "gpu-reservation" -}}
     {{- end -}}
     {{- range $i := until $pCount -}}
@@ -226,6 +242,9 @@
     {{- $abortTimeout := int (default 600 $kv.abortRequestTimeout) -}}
     {{- $nixlSideChannelEnabled := has $kvConnector (list "NixlConnector" "NixlPullConnector" "NixlPushConnector") -}}
     {{- if hasKey $kv "nixlSideChannelEnabled" -}}
+      {{- if and $isNixlConnector (not $kv.nixlSideChannelEnabled) -}}
+        {{- fail (printf "pdCellSpec model %s: nixlSideChannelEnabled=false is invalid for a NIXL connector; each engine requires a unique NIXL side-channel endpoint" $name) -}}
+      {{- end -}}
       {{- $nixlSideChannelEnabled = $kv.nixlSideChannelEnabled -}}
     {{- end -}}
 
@@ -305,7 +324,7 @@
       {{- $terminationGracePeriodSeconds = int $modelSpec.terminationGracePeriodSeconds -}}
     {{- end -}}
 
-    {{- $hostPID := false -}}
+    {{- $hostPID := $useGpuReservation -}}
     {{- if hasKey $pdCellSpec "hostPID" -}}
       {{- $hostPID = $pdCellSpec.hostPID -}}
     {{- end -}}
@@ -327,6 +346,13 @@
     {{- end -}}
     {{- if hasKey $modelSpec "shareProcessNamespace" -}}
       {{- $shareProcessNamespace = $modelSpec.shareProcessNamespace -}}
+    {{- end -}}
+
+    {{- if and $shareProcessNamespace (not (hasKey $pdCellSpec "hostPID")) (not (hasKey $modelSpec "hostPID")) -}}
+      {{- $hostPID = false -}}
+    {{- end -}}
+    {{- if and $useGpuReservation (not (or $hostPID $shareProcessNamespace)) -}}
+      {{- fail (printf "pdCellSpec model %s: shared GPU reservation requires hostPID=true or shareProcessNamespace=true for CUDA IPC process visibility" $name) -}}
     {{- end -}}
 
     {{- $modelEnvMap := deepCopy $commonEnvMap -}}
@@ -401,16 +427,16 @@
       {{- end -}}
     {{- end -}}
 
-    {{- if $isMooncakeConnector -}}
-      {{- range $reservedName := (list "pd-mooncake-gpu-map" "pd-mooncake-gpu-launcher") -}}
+    {{- if $useGpuReservation -}}
+      {{- range $reservedName := (list $gpuMapVolume $gpuLauncherVolume) -}}
         {{- if hasKey $podVolumeMap $reservedName -}}
-          {{- fail (printf "pdCellSpec model %s: volume name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
+          {{- fail (printf "pdCellSpec model %s: volume name %s is reserved by the shared GPU launcher" $name $reservedName) -}}
         {{- end -}}
         {{- if hasKey $prefillMountMap $reservedName -}}
-          {{- fail (printf "pdCellSpec model %s: prefill volumeMount name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
+          {{- fail (printf "pdCellSpec model %s: prefill volumeMount name %s is reserved by the shared GPU launcher" $name $reservedName) -}}
         {{- end -}}
         {{- if hasKey $decodeMountMap $reservedName -}}
-          {{- fail (printf "pdCellSpec model %s: decode volumeMount name %s is reserved by the Mooncake GPU launcher" $name $reservedName) -}}
+          {{- fail (printf "pdCellSpec model %s: decode volumeMount name %s is reserved by the shared GPU launcher" $name $reservedName) -}}
         {{- end -}}
       {{- end -}}
     {{- end -}}
@@ -544,7 +570,7 @@ spec:
       terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
 
       containers:
-        {{- if $isMooncakeConnector }}
+        {{- if $useGpuReservation }}
         - name: gpu-reservation
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ $engineImagePullPolicy | quote }}
@@ -599,7 +625,7 @@ spec:
             periodSeconds: 2
             failureThreshold: 150
           volumeMounts:
-            - name: pd-mooncake-gpu-map
+            - name: {{ $gpuMapVolume }}
               mountPath: /var/run/pd-gpu
         {{- end }}
 
@@ -725,10 +751,10 @@ spec:
           {{- $bootstrapPort := add $bootstrapPortBase $i -}}
           {{- $internalPort := add $pInternalPortBase (mul $pInternalPortStride $i) -}}
           {{- $dpMasterPort := add $pDpMasterPortBase $i -}}
-          {{- $sideChannelPort := add $pSideChannelPortBase $i -}}
+          {{- $sideChannelPort := add $pSideChannelPortBase (mul $pSideChannelPortStride $i) -}}
           {{- $phaseEnvMap := deepCopy $modelEnvMap -}}
           {{- $containerGpuIndices := list -}}
-          {{- if $isMooncakeConnector -}}
+          {{- if $useGpuReservation -}}
             {{- $gpuOffset := mul $i $pGpuCount -}}
             {{- range $gpuIndex := until $pGpuCount -}}
               {{- $containerGpuIndices = append $containerGpuIndices (printf "%d" (add $gpuOffset $gpuIndex)) -}}
@@ -746,12 +772,19 @@ spec:
           {{- end -}}
           {{- if $nixlSideChannelEnabled -}}
             {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_PORT" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_PORT" "value" (printf "%d" $sideChannelPort)) -}}
+            {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_HOST" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_HOST" "value" $nixlSideChannelHost) -}}
+            {{- if $nixlUcxTls -}}
+              {{- $_ := set $phaseEnvMap "UCX_TLS" (dict "name" "UCX_TLS" "value" $nixlUcxTls) -}}
+            {{- end -}}
+            {{- if $nixlUcxNetDevices -}}
+              {{- $_ := set $phaseEnvMap "UCX_NET_DEVICES" (dict "name" "UCX_NET_DEVICES" "value" $nixlUcxNetDevices) -}}
+            {{- end -}}
           {{- end -}}
           {{- if eq $routerKvConnector "mooncake" -}}
             {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_BOOTSTRAP_PORT" (dict "name" "VLLM_MOONCAKE_BOOTSTRAP_PORT" "value" (printf "%d" $bootstrapPort)) -}}
             {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) -}}
           {{- end -}}
-          {{- if $isMooncakeConnector -}}
+          {{- if $useGpuReservation -}}
             {{- $_ := set $phaseEnvMap "NVIDIA_VISIBLE_DEVICES" (dict "name" "NVIDIA_VISIBLE_DEVICES" "value" "all") -}}
             {{- $_ := set $phaseEnvMap "PD_GPU_TOTAL" (dict "name" "PD_GPU_TOTAL" "value" (printf "%d" $gpuReservationTotal)) -}}
             {{- $_ := set $phaseEnvMap "CNTR_GPU_IDX" (dict "name" "CNTR_GPU_IDX" "value" (join "," $containerGpuIndices)) -}}
@@ -774,7 +807,7 @@ spec:
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ $engineImagePullPolicy | quote }}
           command:
-            {{- if $isMooncakeConnector }}
+            {{- if $useGpuReservation }}
             - "/bin/bash"
             - "/opt/pd-cell-gpu/launch-vllm.sh"
             {{- else if $prefill.command }}
@@ -853,7 +886,7 @@ spec:
             initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
             failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
-          {{- if $isMooncakeConnector }}
+          {{- if $useGpuReservation }}
           resources: {{- include "chart.pdEngineResourcesWithoutGpu" $prefill | nindent 12 }}
           {{- else }}
           resources: {{- include "chart.resources" $prefill | nindent 12 }}
@@ -865,11 +898,11 @@ spec:
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- if $isMooncakeConnector }}
-            - name: pd-mooncake-gpu-map
+            {{- if $useGpuReservation }}
+            - name: {{ $gpuMapVolume }}
               mountPath: /var/run/pd-gpu
               readOnly: true
-            - name: pd-mooncake-gpu-launcher
+            - name: {{ $gpuLauncherVolume }}
               mountPath: /opt/pd-cell-gpu
               readOnly: true
             {{- end }}
@@ -882,10 +915,10 @@ spec:
           {{- $enginePort := add $dPortBase $i -}}
           {{- $internalPort := add $dInternalPortBase (mul $dInternalPortStride $i) -}}
           {{- $dpMasterPort := add $dDpMasterPortBase $i -}}
-          {{- $sideChannelPort := add $dSideChannelPortBase $i -}}
+          {{- $sideChannelPort := add $dSideChannelPortBase (mul $dSideChannelPortStride $i) -}}
           {{- $phaseEnvMap := deepCopy $modelEnvMap -}}
           {{- $containerGpuIndices := list -}}
-          {{- if $isMooncakeConnector -}}
+          {{- if $useGpuReservation -}}
             {{- $decodeGpuBase := mul $pCount $pGpuCount -}}
             {{- $gpuOffset := add $decodeGpuBase (mul $i $dGpuCount) -}}
             {{- range $gpuIndex := until $dGpuCount -}}
@@ -904,11 +937,18 @@ spec:
           {{- end -}}
           {{- if $nixlSideChannelEnabled -}}
             {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_PORT" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_PORT" "value" (printf "%d" $sideChannelPort)) -}}
+            {{- $_ := set $phaseEnvMap "VLLM_NIXL_SIDE_CHANNEL_HOST" (dict "name" "VLLM_NIXL_SIDE_CHANNEL_HOST" "value" $nixlSideChannelHost) -}}
+            {{- if $nixlUcxTls -}}
+              {{- $_ := set $phaseEnvMap "UCX_TLS" (dict "name" "UCX_TLS" "value" $nixlUcxTls) -}}
+            {{- end -}}
+            {{- if $nixlUcxNetDevices -}}
+              {{- $_ := set $phaseEnvMap "UCX_NET_DEVICES" (dict "name" "UCX_NET_DEVICES" "value" $nixlUcxNetDevices) -}}
+            {{- end -}}
           {{- end -}}
           {{- if eq $routerKvConnector "mooncake" -}}
             {{- $_ := set $phaseEnvMap "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" (dict "name" "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT" "value" (printf "%d" $abortTimeout)) -}}
           {{- end -}}
-          {{- if $isMooncakeConnector -}}
+          {{- if $useGpuReservation -}}
             {{- $_ := set $phaseEnvMap "NVIDIA_VISIBLE_DEVICES" (dict "name" "NVIDIA_VISIBLE_DEVICES" "value" "all") -}}
             {{- $_ := set $phaseEnvMap "PD_GPU_TOTAL" (dict "name" "PD_GPU_TOTAL" "value" (printf "%d" $gpuReservationTotal)) -}}
             {{- $_ := set $phaseEnvMap "CNTR_GPU_IDX" (dict "name" "CNTR_GPU_IDX" "value" (join "," $containerGpuIndices)) -}}
@@ -931,7 +971,7 @@ spec:
           image: "{{ $repository }}:{{ $tag }}"
           imagePullPolicy: {{ $engineImagePullPolicy | quote }}
           command:
-            {{- if $isMooncakeConnector }}
+            {{- if $useGpuReservation }}
             - "/bin/bash"
             - "/opt/pd-cell-gpu/launch-vllm.sh"
             {{- else if $decode.command }}
@@ -1010,7 +1050,7 @@ spec:
             initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ default 5 $root.Values.servingEngineSpec.readinessProbe.periodSeconds }}
             failureThreshold: {{ default 3 $root.Values.servingEngineSpec.readinessProbe.failureThreshold }}
-          {{- if $isMooncakeConnector }}
+          {{- if $useGpuReservation }}
           resources: {{- include "chart.pdEngineResourcesWithoutGpu" $decode | nindent 12 }}
           {{- else }}
           resources: {{- include "chart.resources" $decode | nindent 12 }}
@@ -1022,11 +1062,11 @@ spec:
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- if $isMooncakeConnector }}
-            - name: pd-mooncake-gpu-map
+            {{- if $useGpuReservation }}
+            - name: {{ $gpuMapVolume }}
               mountPath: /var/run/pd-gpu
               readOnly: true
-            - name: pd-mooncake-gpu-launcher
+            - name: {{ $gpuLauncherVolume }}
               mountPath: /opt/pd-cell-gpu
               readOnly: true
             {{- end }}
@@ -1116,10 +1156,10 @@ spec:
             path: {{ $guardianLogHostPath | quote }}
             type: DirectoryOrCreate
         {{- end }}
-        {{- if $isMooncakeConnector }}
-        - name: pd-mooncake-gpu-map
+        {{- if $useGpuReservation }}
+        - name: {{ $gpuMapVolume }}
           emptyDir: {}
-        - name: pd-mooncake-gpu-launcher
+        - name: {{ $gpuLauncherVolume }}
           configMap:
             name: "{{ $root.Release.Name }}-pd-cell-gpu-launcher"
             defaultMode: 0555

@@ -1,16 +1,16 @@
 {{- $root := . -}}
 {{- $pdCellSpec := $root.Values.pdCellSpec | default dict -}}
-{{- $needsMooncakeGpuLauncher := false -}}
+{{- $needsGpuLauncher := false -}}
 {{- if ($pdCellSpec.enabled | default false) -}}
   {{- range $modelSpec := ($pdCellSpec.models | default (list)) -}}
     {{- $kv := $modelSpec.kvTransfer | default dict -}}
-    {{- if eq ($kv.connector | default "") "MooncakeConnector" -}}
-      {{- $needsMooncakeGpuLauncher = true -}}
+    {{- if or (eq ($kv.connector | default "") "MooncakeConnector") (contains "Nixl" ($kv.connector | default "")) -}}
+      {{- $needsGpuLauncher = true -}}
     {{- end -}}
   {{- end -}}
 {{- end -}}
 
-{{- if $needsMooncakeGpuLauncher }}
+{{- if $needsGpuLauncher }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

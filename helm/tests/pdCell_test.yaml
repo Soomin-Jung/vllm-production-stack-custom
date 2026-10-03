@@ -50,6 +50,10 @@ tests:
             tag: test
             kvTransfer:
               connector: NixlConnector
+              nixl:
+                sideChannelHost: localhost
+                ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+                ucxNetDevices: lo
               config:
                 kv_buffer_device: cuda
                 kv_load_failure_policy: fail
@@ -59,11 +63,15 @@ tests:
               count: 2
               requestGPU: 2
               portBase: 8101
+              sideChannelPortBase: 5600
+              sideChannelPortStride: 10
               profile: /profiles/prefill.yaml
             decode:
               count: 2
               requestGPU: 2
               portBase: 8201
+              sideChannelPortBase: 5700
+              sideChannelPortStride: 10
               profile: /profiles/decode.yaml
     asserts:
       - template: deployment-pd-cell.yaml
@@ -76,42 +84,78 @@ tests:
           value: nixl
       - template: deployment-pd-cell.yaml
         equal:
-          path: spec.template.spec.containers[0].command[0]
+          path: spec.template.spec.containers[1].command[0]
           value: vllm-router
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: --vllm-pd-disaggregation
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: --kv-connector
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: nixl
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: --health-check-interval-secs
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].args
+          path: spec.template.spec.containers[1].args
           content: --health-check-timeout-secs
       - template: deployment-pd-cell.yaml
         equal:
-          path: spec.template.spec.containers[0].ports[1].containerPort
+          path: spec.template.spec.containers[1].ports[1].containerPort
           value: 29000
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[1].args
+          path: spec.template.spec.containers[2].args
           content: pd-test-alias
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[1].env
+          path: spec.template.spec.containers[2].env
           content:
             name: VLLM_NIXL_SIDE_CHANNEL_PORT
             value: "5600"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_HOST
+            value: localhost
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
+          content:
+            name: UCX_TLS
+            value: cuda_ipc,cuda_copy,sm,self,tcp
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[2].env
+          content:
+            name: UCX_NET_DEVICES
+            value: lo
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[3].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_PORT
+            value: "5610"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[4].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_PORT
+            value: "5700"
+      - template: deployment-pd-cell.yaml
+        contains:
+          path: spec.template.spec.containers[5].env
+          content:
+            name: VLLM_NIXL_SIDE_CHANNEL_PORT
+            value: "5710"
       - template: service-pd-cell.yaml
         equal:
           path: metadata.name
@@ -414,33 +458,32 @@ tests:
     asserts:
       - template: deployment-pd-cell.yaml
         notExists:
-          path: spec.template.spec.containers[0].ports[1]
+          path: spec.template.spec.containers[1].ports[1]
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[0].env
+          path: spec.template.spec.containers[1].env
           content:
             name: ROUTER_ENV
             value: router
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[1].env
+          path: spec.template.spec.containers[2].env
           content:
             name: PREFILL_ENV
             value: prefill
       - template: deployment-pd-cell.yaml
         contains:
-          path: spec.template.spec.containers[2].env
+          path: spec.template.spec.containers[3].env
           content:
             name: DECODE_ENV
             value: decode
       - template: deployment-pd-cell.yaml
         equal:
-          path: spec.template.spec.containers[1].resources.requests["nvidia.com/gpu"]
-          value: "4"
+          path: spec.template.spec.containers[0].resources.requests["nvidia.com/gpu"]
+          value: "8"
       - template: deployment-pd-cell.yaml
-        equal:
-          path: spec.template.spec.containers[2].resources.requests["nvidia.com/gpu"]
-          value: "2"
+        notExists:
+          path: spec.template.spec.containers[3].resources.requests["nvidia.com/gpu"]
 
   - it: should retain inert guardian support resources when guardian is disabled
     set:
@@ -502,3 +545,331 @@ tests:
       - template: service-pd-cell.yaml
         hasDocuments:
           count: 0
+
+  - it: should reserve the shared GPU set for NIXL by default
+    set:
+      pdCellSpec:
+        enabled: true
+        router:
+          repository: registry.example/vllm-router
+          tag: v0.1.15
+          prometheusPort: 29000
+        models:
+        - name: pd-test
+          servedModelNames:
+          - pd-test-model
+          - pd-test-alias
+          repository: vllm/vllm-openai
+          tag: test
+          kvTransfer:
+            connector: NixlConnector
+            nixl:
+              sideChannelHost: localhost
+              ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+              ucxNetDevices: lo
+            config:
+              kv_buffer_device: cuda
+              kv_load_failure_policy: fail
+              kv_connector_extra_config:
+                backends:
+                - UCX
+          prefill:
+            count: 2
+            requestGPU: 2
+            portBase: 8101
+            sideChannelPortBase: 5600
+            sideChannelPortStride: 10
+            profile: /profiles/prefill.yaml
+          decode:
+            count: 2
+            requestGPU: 2
+            portBase: 8201
+            sideChannelPortBase: 5700
+            sideChannelPortStride: 10
+            profile: /profiles/decode.yaml
+    asserts:
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.metadata.annotations.pd-orchestrator
+        value: vllm-router
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.metadata.annotations.pd-kv-connector
+        value: nixl
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.containers[1].command[0]
+        value: vllm-router
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[1].args
+        content: --vllm-pd-disaggregation
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[1].args
+        content: --kv-connector
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[1].args
+        content: nixl
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[1].args
+        content: --health-check-interval-secs
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[1].args
+        content: --health-check-timeout-secs
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.containers[1].ports[1].containerPort
+        value: 29000
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[2].args
+        content: pd-test-alias
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[2].env
+        content:
+          name: VLLM_NIXL_SIDE_CHANNEL_PORT
+          value: '5600'
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[2].env
+        content:
+          name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          value: localhost
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[2].env
+        content:
+          name: UCX_TLS
+          value: cuda_ipc,cuda_copy,sm,self,tcp
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[2].env
+        content:
+          name: UCX_NET_DEVICES
+          value: lo
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[3].env
+        content:
+          name: VLLM_NIXL_SIDE_CHANNEL_PORT
+          value: '5610'
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[4].env
+        content:
+          name: VLLM_NIXL_SIDE_CHANNEL_PORT
+          value: '5700'
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[5].env
+        content:
+          name: VLLM_NIXL_SIDE_CHANNEL_PORT
+          value: '5710'
+    - template: service-pd-cell.yaml
+      equal:
+        path: metadata.name
+        value: RELEASE-NAME-pd-test-pd-engine-service
+    - template: service-pd-cell.yaml
+      equal:
+        path: spec.selector.pd-deployment
+        value: pd-test
+    - template: service-pd-cell.yaml
+      equal:
+        path: spec.ports[0].targetPort
+        value: pd-router
+    - template: configmap-pd-cell-gpu-launcher.yaml
+      isKind:
+        of: ConfigMap
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.containers[0].name
+        value: gpu-reservation
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.containers[0].resources.requests["nvidia.com/gpu"]
+        value: '8'
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.containers[0].resources.limits["nvidia.com/gpu"]
+        value: '8'
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.hostPID
+        value: true
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.containers[2].command[1]
+        value: /opt/pd-cell-gpu/launch-vllm.sh
+    - template: deployment-pd-cell.yaml
+      notExists:
+        path: spec.template.spec.containers[2].resources.requests["nvidia.com/gpu"]
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[2].env
+        content:
+          name: CNTR_GPU_IDX
+          value: 0,1
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[2].env
+        content:
+          name: NVIDIA_VISIBLE_DEVICES
+          value: all
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.containers[3].command[1]
+        value: /opt/pd-cell-gpu/launch-vllm.sh
+    - template: deployment-pd-cell.yaml
+      notExists:
+        path: spec.template.spec.containers[3].resources.requests["nvidia.com/gpu"]
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[3].env
+        content:
+          name: CNTR_GPU_IDX
+          value: 2,3
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[3].env
+        content:
+          name: NVIDIA_VISIBLE_DEVICES
+          value: all
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.containers[4].command[1]
+        value: /opt/pd-cell-gpu/launch-vllm.sh
+    - template: deployment-pd-cell.yaml
+      notExists:
+        path: spec.template.spec.containers[4].resources.requests["nvidia.com/gpu"]
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[4].env
+        content:
+          name: CNTR_GPU_IDX
+          value: 4,5
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[4].env
+        content:
+          name: NVIDIA_VISIBLE_DEVICES
+          value: all
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.containers[5].command[1]
+        value: /opt/pd-cell-gpu/launch-vllm.sh
+    - template: deployment-pd-cell.yaml
+      notExists:
+        path: spec.template.spec.containers[5].resources.requests["nvidia.com/gpu"]
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[5].env
+        content:
+          name: CNTR_GPU_IDX
+          value: 6,7
+    - template: deployment-pd-cell.yaml
+      contains:
+        path: spec.template.spec.containers[5].env
+        content:
+          name: NVIDIA_VISIBLE_DEVICES
+          value: all
+  - it: should allow Pod scoped PID sharing for NIXL shared reservation
+    set:
+      pdCellSpec:
+        enabled: true
+        router:
+          repository: registry.example/vllm-router
+          tag: v0.1.15
+          prometheusPort: 29000
+        models:
+        - name: pd-test
+          servedModelNames:
+          - pd-test-model
+          - pd-test-alias
+          repository: vllm/vllm-openai
+          tag: test
+          kvTransfer:
+            connector: NixlConnector
+            nixl:
+              sideChannelHost: localhost
+              ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+              ucxNetDevices: lo
+            config:
+              kv_buffer_device: cuda
+              kv_load_failure_policy: fail
+              kv_connector_extra_config:
+                backends:
+                - UCX
+          prefill:
+            count: 2
+            requestGPU: 2
+            portBase: 8101
+            sideChannelPortBase: 5600
+            sideChannelPortStride: 10
+            profile: /profiles/prefill.yaml
+          decode:
+            count: 2
+            requestGPU: 2
+            portBase: 8201
+            sideChannelPortBase: 5700
+            sideChannelPortStride: 10
+            profile: /profiles/decode.yaml
+        hostPID: false
+        shareProcessNamespace: true
+    asserts:
+    - template: deployment-pd-cell.yaml
+      equal:
+        path: spec.template.spec.shareProcessNamespace
+        value: true
+  - it: should reject NIXL shared reservation without shared PID visibility
+    set:
+      pdCellSpec:
+        enabled: true
+        router:
+          repository: registry.example/vllm-router
+          tag: v0.1.15
+          prometheusPort: 29000
+        models:
+        - name: pd-test
+          servedModelNames:
+          - pd-test-model
+          - pd-test-alias
+          repository: vllm/vllm-openai
+          tag: test
+          kvTransfer:
+            connector: NixlConnector
+            nixl:
+              sideChannelHost: localhost
+              ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+              ucxNetDevices: lo
+            config:
+              kv_buffer_device: cuda
+              kv_load_failure_policy: fail
+              kv_connector_extra_config:
+                backends:
+                - UCX
+          prefill:
+            count: 2
+            requestGPU: 2
+            portBase: 8101
+            sideChannelPortBase: 5600
+            sideChannelPortStride: 10
+            profile: /profiles/prefill.yaml
+          decode:
+            count: 2
+            requestGPU: 2
+            portBase: 8201
+            sideChannelPortBase: 5700
+            sideChannelPortStride: 10
+            profile: /profiles/decode.yaml
+        hostPID: false
+        shareProcessNamespace: false
+    asserts:
+    - template: deployment-pd-cell.yaml
+      failedTemplate:
+        errorMessage: 'pdCellSpec model pd-test: shared GPU reservation requires
+          hostPID=true or shareProcessNamespace=true for CUDA IPC process visibility'

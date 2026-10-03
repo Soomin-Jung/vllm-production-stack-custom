@@ -1,0 +1,74 @@
+# NIXL P/D Cell deployment baseline corresponding to
+# deploy-template-pdcell-mooncake.yaml.
+#
+# The deployment shape and model/profile settings are intentionally kept close
+# to the Mooncake baseline. Transfer-dependent layouts still differ; see
+# helm/examples/Qwen3.8-27B/README.md for the A/B comparison conditions.
+#
+# Router v0.1.15-pr234 means v0.1.15 rebuilt with upstream router PR #234.
+# PR #234 fixes reasoning_effort request deserialization; it is independent of
+# the NIXL KV transport itself.
+
+pdCellSpec:
+  enabled: true
+
+  # Preserve the tested Mooncake PID/device visibility baseline for CUDA IPC.
+  hostPID: true
+  hostIPC: false
+
+  router:
+    repository: "vllm/vllm-router"
+    tag: "v0.1.15-pr234"
+    policy: round_robin
+    extraArgs:
+      - "--request-timeout-secs"
+      - "86400"
+
+  models:
+    - name: qwen38-27b-test
+      repository: "vllm/vllm-openai"
+      tag: "v0.30.0-cu129-torch-family"
+
+      replicaCount: 1
+
+      prefill:
+        profile: /profiles/k8s-qwen38-27b-prefill-h200-tp2.yaml
+        requestGPU: 2
+        count: 1
+        sideChannelPortBase: 8998
+        sideChannelPortStride: 16
+
+      decode:
+        profile: /profiles/k8s-qwen38-27b-decode-h200-tp2.yaml
+        requestGPU: 2
+        count: 1
+        sideChannelPortBase: 9889
+        sideChannelPortStride: 16
+
+      kvTransfer:
+        connector: NixlConnector
+        nixl:
+          sideChannelHost: localhost
+          ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+          ucxNetDevices: lo
+        config:
+          kv_buffer_device: cuda
+          kv_load_failure_policy: fail
+          kv_connector_extra_config:
+            backends:
+              - UCX
+
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.product
+              operator: "In"
+              values:
+                - "NVIDIA-H200"
+
+      # vLLM v0.30.0 NIXL Mamba/GDN state transfer asserts DS, even with TP2/TP2.
+      # HND pins the head-major layout that non-MLA NIXL also selects automatically.
+      env:
+        - name: VLLM_SSM_CONV_STATE_LAYOUT
+          value: "DS"
+        - name: VLLM_KV_CACHE_LAYOUT
+          value: "HND"

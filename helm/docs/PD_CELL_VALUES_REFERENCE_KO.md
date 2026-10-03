@@ -53,7 +53,7 @@ pdCellSpec:
 | `strategy` | RollingUpdate, maxSurge 0/maxUnavailable 1 | Deployment strategy |
 | `podAnnotations` | `{}` | Pod annotations |
 | `securityContext` | `{}` | Pod securityContext |
-| `hostPID` | `false` | Pod가 host PID namespace를 사용. 현재 Mooncake `nvlink_intra` 검증 baseline에서는 `true` 필요 |
+| `hostPID` | `true` (Mooncake/NIXL), 그 외 `false` | Pod가 host PID namespace를 사용. 현재 Mooncake `nvlink_intra` 검증 baseline에서는 `true` 필요 |
 | `hostIPC` | `false` | Pod가 host IPC namespace를 사용. Issue #6 final A/B에서는 요구되지 않음 |
 | `shareProcessNamespace` | `false` | Pod 내부 container끼리 process namespace 공유. `hostPID`와는 별개이며 Issue #6 fix가 아님 |
 | `containerSecurityContext` | `{}` | P/D engine common container securityContext |
@@ -107,7 +107,7 @@ pdCellSpec:
   -> restartCount > 0이면 partial-restart generation으로 판정
   -> ARMED 전에 whole-cell DELETE
 
-restart 없이 P/D/Router/(Mooncake gpu-reservation) 모두 Ready
+restart 없이 P/D/Router/(공유 gpu-reservation) 모두 Ready
   -> restartCount=0 baseline 저장
   -> ARMED
 
@@ -173,9 +173,10 @@ Cell Router는 vLLM Router 전용 설정이다.
 ```yaml
 router:
   repository: registry.internal/vllm/vllm-router
-  tag: v0.1.15
+  # NIXL rollout에서는 v0.1.15 + upstream PR #234가 반영된 사내 image를 pin한다.
+  tag: v0.1.15-pr234
   port: 8000
-  policy: consistent_hash
+  policy: round_robin
   prometheusPort: 29000
 ```
 
@@ -184,7 +185,7 @@ router:
 | field | 설명 |
 |---|---|
 | `repository` | vllm-project/router 기반 image repository |
-| `tag` | 검증한 version/tag. Mooncake baseline은 `v0.1.15` |
+| `tag` | 검증한 version/tag. Mooncake baseline은 `v0.1.15`; NIXL rollout에서는 `v0.1.15 + PR #234` 소스 build를 별도 immutable tag/digest로 pin |
 
 ### 선택
 
@@ -258,6 +259,30 @@ command: [vllm-router]
 
 NIXL에서는 bootstrap port를 `--prefill` 뒤에 붙이지 않는다.
 
+NIXL P1D1에서 `router.policy: round_robin`을 지정하면 고객사 공유 command와
+핵심 orchestration argument가 동일하게 렌더된다.
+
+```text
+--policy round_robin
+--vllm-pd-disaggregation
+--kv-connector nixl
+--prefill http://127.0.0.1:8101
+--decode http://127.0.0.1:8201
+--host 0.0.0.0
+--port 8000
+```
+
+`prefill.count` / `decode.count`가 증가하면 동일한 `--prefill` /
+`--decode` option을 반복 생성하므로 P1D3, P3D5 등 비대칭 topology도
+manifest 수준에서 지원한다. 단, 이 Chart의 P/D Cell은 한 Pod/한 Node이므로
+`P_count * P_requestGPU + D_count * D_requestGPU`에 해당하는 전체 GPU resource가
+한 Node에 실제로 존재해야 schedule된다.
+
+Router upstream issue #233 / PR #234는 NIXL protocol bug가 아니다. Router가
+`reasoning_effort`를 역직렬화할 때 `none/minimal/xhigh/max`를 enum에 포함하지 않아
+backend 도달 전에 HTTP 400을 반환하던 protocol parsing 문제다. 따라서
+KV connector 전환과 Router patch는 독립적인 변경축으로 관리한다.
+
 ---
 
 ## `models[]`
@@ -310,7 +335,10 @@ kvTransfer:
 | `decodeConfig` | `{}` | Decode merge override |
 | `bootstrapPortBase` | `9001` | Mooncake Prefill bootstrap base |
 | `abortRequestTimeout` | `600` | Mooncake abort timeout env |
-| `nixlSideChannelEnabled` | connector 자동 판정 | MultiConnector 등에서 NIXL side channel 강제 시 사용 |
+| `nixlSideChannelEnabled` | connector 자동 판정 | MultiConnector 등에서 NIXL side channel 강제 시 사용. NIXL connector 자체에서는 `false` 금지 |
+| `nixl.sideChannelHost` | `localhost` | `VLLM_NIXL_SIDE_CHANNEL_HOST`. 현재 node-local/same-Pod Cell에서는 localhost 권장 |
+| `nixl.ucxTls` | 미설정 | 설정 시 `UCX_TLS`를 모든 P/D NIXL engine에 주입 |
+| `nixl.ucxNetDevices` | 미설정 | 설정 시 `UCX_NET_DEVICES`를 모든 P/D NIXL engine에 주입 |
 
 Helm이 마지막에 강제로 설정:
 
@@ -358,7 +386,7 @@ Decode에는 bootstrap server를 띄우지 않는다.
 
 ---
 
-## Mooncake 전용 GPU reservation / launcher
+## 공유 GPU reservation / launcher (Mooncake 및 NIXL 공통)
 
 exact `MooncakeConnector`에서는 GPU allocation semantics가 다른 connector와 다르다.
 
@@ -445,15 +473,85 @@ native multiprocessing 기준이다.
 
 ---
 
-## NIXL 전용 env
+## NIXL 전용 env / UCX contract
 
-NIXL connector일 때:
+NIXL connector일 때 Chart는 각 P/D engine에 최소 다음 값을 주입한다.
 
 ```text
 VLLM_NIXL_SIDE_CHANNEL_PORT
+VLLM_NIXL_SIDE_CHANNEL_HOST
 ```
 
-을 phase/index별로 고유하게 생성한다.
+side-channel port는 phase/index별로 고유하게 생성한다.
+
+```text
+Prefill i = prefill.sideChannelPortBase + i * prefill.sideChannelPortStride
+Decode  i = decode.sideChannelPortBase  + i * decode.sideChannelPortStride
+```
+
+기본값은 각각 `5600/5700`, stride는 `1`이다. vLLM DP를 한 engine process 안에서
+사용하면 NIXL이 base port에서 DP rank만큼 추가 port를 사용할 수 있으므로,
+**다음 engine의 base port와 겹치지 않도록 stride를 DP rank span 이상으로 잡는다.**
+예를 들어 DP=8이면 stride 16처럼 여유 있게 둔다.
+
+현재 DS Cloud처럼 **single-node / non-IB / NVLink-capable** 환경을 우선 검증할 때는
+다음 값을 명시적으로 사용할 수 있다.
+
+```yaml
+kvTransfer:
+  connector: NixlConnector
+  nixl:
+    sideChannelHost: localhost
+    ucxTls: cuda_ipc,cuda_copy,sm,self,tcp
+    ucxNetDevices: lo
+```
+
+이 설정은 UCX의 IB RC transport를 목록에서 제외하고 node-local CUDA IPC 경로를
+허용하기 위한 검증 profile이다. `cuda_ipc`는 같은 node의 GPU P2P 전송에 사용되며
+실제 물리 경로는 topology에 따라 NVLink 또는 PCIe가 될 수 있다.
+따라서 `UCX_NET_DEVICES=lo` 또는 NIXL log에 특정 문자열이 없다는 사실만으로
+"NVLink를 강제/증명했다"고 해석하지 않는다. 실제 경로 확인은
+`nvidia-smi topo -m`, UCX/NIXL debug log, 그리고 동일 payload 전송 성능으로
+교차 검증한다.
+
+### NIXL CUDA IPC와 공유 GPU reservation
+
+NIXL은 Mooncake와 동일하게 Cell 전체 GPU reservation/launcher를 항상 사용한다.
+별도의 GPU 할당 방식 옵션은 없다.
+
+```yaml
+pdCellSpec:
+  hostPID: true
+  hostIPC: false
+  models:
+    - name: example
+      kvTransfer:
+        connector: NixlConnector
+```
+
+두 connector는 같은 예약/노출 계약을 사용한다. reservation container만
+`sum(count * requestGPU)` GPU를 요청하고 P/D engine은 전체 예약 UUID를 공통으로
+보며, launcher의 `--device-ids`로 서로 겹치지 않는 compute GPU를 선택한다.
+NIXL backend, side-channel, connector role과 UCX 설정은 유지되며 Mooncake protocol은
+주입하지 않는다. guardian도 reservation container를 감시한다.
+
+공유 reservation의 `hostPID` 기본값은 `true`이다. `shareProcessNamespace=true`만
+지정하면 hostPID 기본값은 false가 되어 Pod-scoped PID 공유를 사용한다.
+`hostPID=true` 또는 `shareProcessNamespace=true`가 필요하며 둘 다 false이면 렌더링을 거부한다. 제공 예제는 기존 Mooncake 현장 A/B가 검증한 `hostPID=true`를
+유지한다. Pod-scoped PID 공유는 대안으로 지원하지만 이 환경에서 NIXL 검증은 필요하다.
+`hostIPC`나 `privileged`를 자동 활성화하지 않는다.
+
+이 판단은 [CUDA IPC Kubernetes 실험](https://harche.github.io/2025/10/15/kubernetes-cuda-ipc-permissions.html)과
+그 [단일 Pod CUDA IPC 코드](https://github.com/harche/cuda-ipc-debugging/tree/main/single-pod-example),
+[UCX 컨테이너 GPU 가시성 가이드](https://docs.nvidia.com/cudf-spark/latest/additional-functionality/rapids-shuffle.html)에
+근거한다. 자료의 privileged 예제가 reservation 필요성을 직접 증명하는 것은 아니다.
+우리의 기존 NVIDIA runtime에서 검증한 GPU 노출 구조를 재사용하는 선택이다.
+
+`NVIDIA_VISIBLE_DEVICES=all`이 실제 장치 접근을 제공하는지는 NVIDIA runtime/device
+plugin 설정에 달려 있다. launcher는 NVML UUID 가시성을 확인하지만 CUDA IPC 권한이나
+NVLink 경로까지 증명하지 않는다. 컨테이너별 device node/cgroup 접근, 실제 UCX 선택 경로,
+장시간 전송은 GPU 노드에서 확인해야 한다. broad device exposure는 hard isolation이 아니며,
+MIG/time-slicing/DRA 계약으로 사용하면 안 된다.
 
 `internalPortMode`:
 
@@ -493,15 +591,16 @@ OPENAI_API_KEY
 | field | 기본값 | 설명 |
 |---|---|---|
 | `count` | 필수 | phase container 수 |
-| `requestGPU` | 필수 | engine local GPU worker 수. Mooncake에서는 reservation sidecar 합계/자동 device index 계산 기준 |
+| `requestGPU` | 필수 | engine local GPU worker 수. 공유 reservation에서는 reservation sidecar 합계/자동 device index 계산 기준 |
 | `profile` | 필수 | vLLM `--config` path |
 | `portBase` | P 8101 / D 8201 | HTTP base |
 | `internalPortMode` | `vllm` | `vllm\|dp\|auto` |
 | `internalPortBase` | P 20000 / D 30000 | internal port |
 | `internalPortStride` | `100` | index stride |
 | `dpMasterPortBase` | P 24000 / D 34000 | DP master |
-| `sideChannelPortBase` | P 5600 / D 5700 | NIXL side channel |
-| `command` | `[vllm, serve]` 계열 | engine command override. Mooncake에서는 `[<binary>, serve]`만 허용 |
+| `sideChannelPortBase` | P 5600 / D 5700 | NIXL side-channel base port |
+| `sideChannelPortStride` | `1` | engine index 간 NIXL side-channel base port 간격. DP 사용 시 DP rank port span보다 크게 설정 |
+| `command` | `[vllm, serve]` 계열 | engine command override. 공유 reservation에서는 `[<binary>, serve]`만 허용 |
 | `extraArgs` | `[]` | engine extra flags |
 | `env` | `[]` | phase env |
 | `envFrom` | `[]` | phase envFrom |
@@ -510,10 +609,9 @@ OPENAI_API_KEY
 | `containerSecurityContext` | `{}` | phase security |
 | `kvTransferConfig` | `{}` | final phase KV override |
 
-NIXL/기타 connector의 resource behavior는 기존 `chart.resources` helper를 그대로
-사용한다.
+기타 connector는 기존 `chart.resources` helper를 사용한다.
 
-MooncakeConnector는 `requestGPU`에 비례한 CPU/memory sizing은 유지하지만 engine
+MooncakeConnector와 NIXL은 `requestGPU`에 비례한 CPU/memory sizing은 유지하지만 engine
 container의 GPU extended resource를 제거하고, 모든 P/D GPU 합계를
 `gpu-reservation` container에 한 번만 요청한다.
 
