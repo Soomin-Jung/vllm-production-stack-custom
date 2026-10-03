@@ -27,6 +27,24 @@ PyPI wheel 역시 Rust core를 포함한 공식 release artifact지만, P/D Cell
 production primary는 upstream `Dockerfile.router` 및 Mooncake 예제와 실행
 경로가 가장 가까운 **standalone Rust binary**로 한다.
 
+## NIXL rollout용 v0.1.15 patch baseline
+
+고객사 NIXL rollout에서는 plain `v0.1.15` release source가 아니라
+**v0.1.15 + upstream router PR #234**를 반영한 source tree를 build한다.
+
+PR #234는 NIXL transport 수정이 아니다. Router의 OpenAI protocol model에서
+`reasoning_effort` enum이 `low/medium/high`만 허용하여
+`none/minimal/xhigh/max` 요청을 backend에 전달하기 전에 400으로 거절하던
+issue #233을 수정한다. 따라서 운영 기록에는 다음 두 축을 별도로 남긴다.
+
+```text
+Router protocol baseline = v0.1.15 + PR #234
+KV transfer baseline      = NixlConnector / UCX
+```
+
+사내 image tag는 예를 들어 `v0.1.15-pr234`처럼 사람이 식별 가능한 값을 사용할 수
+있지만, 실제 배포 승인 기록에는 build한 source commit과 image digest도 함께 남긴다.
+
 ## upstream v0.1.15 기본 환경
 
 공식 `Dockerfile.router`의 OS family는 두 stage 모두 Debian 11 Bullseye다.
@@ -287,7 +305,8 @@ Prefill KV send 및 Decode KV receive/load까지 실제 runtime으로 증명해�
 pdCellSpec:
   router:
     repository: <internal-registry>/vllm/vllm-router
-    tag: v0.1.15
+    # NIXL rollout example: v0.1.15 source + upstream PR #234
+    tag: v0.1.15-pr234
 ```
 
 운영 배포 기록에는 가능하면 human-readable tag와 함께 immutable image digest도
