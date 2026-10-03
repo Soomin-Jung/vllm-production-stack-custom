@@ -140,8 +140,8 @@ NIXL side-channel 등을 넣지 않는다. 환경변수 역시 Helm env로 주�
 | SSM conv state layout | 명시 없음; vLLM 기본 SD | DS 명시 필요 |
 | Attention KV layout | 자동 | HND 명시; NIXL도 자동으로 LBHNC/HND 계열 선호 |
 | Router | v0.1.15, chart 기본 정책 | v0.1.15-pr234, round_robin |
-| hostPID | true | false |
-| GPU 할당 | pod-local aggregate reservation/launcher | P/D container별 2GPU 요청 |
+| hostPID | true | true |
+| GPU 할당 | pod-local aggregate reservation/launcher | 동일 구조; `sharedGpuReservation: true`, 합계 4GPU |
 
 ### DS 필수조건 정정
 
@@ -178,7 +178,7 @@ EAGLE/MTP method 및 draft model 설정, push/pull 모드가 호환돼야 한다
 default로 남긴 backend/dtype/block size도 실제 시작 로그와 NIXL handshake에서 확인한다.
 
 성능 A/B 시 같은 프로파일만으로 완전한 단일 변수 실험이 되지는 않는다.
-DS/HND, Router PR234/정책, hostPID/GPU 노출 방식도 두 템플릿 사이에 다르다.
+DS/HND, Router PR234/정책은 두 템플릿 사이에 다르다. PID/GPU 노출 조건은 맞췄다.
 순수 connector 비용을 비교하려면 지원되는 공통 레이아웃과 Router 설정을 검증하여 맞추고,
 캐시 warm/cold 상태와 요청 trace를 고정한다. 특히 NIXL에서 필수 DS를 제거해서 맞추면 안 된다.
 `UCX_NET_DEVICES=lo`는 같은 Pod/network namespace를 전제로 하는 이 node-local Cell 설정이다.

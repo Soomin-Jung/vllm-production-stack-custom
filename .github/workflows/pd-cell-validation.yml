@@ -323,26 +323,14 @@ jobs:
           grep -Fq -- 'name: VLLM_KV_CACHE_LAYOUT' /tmp/pd-nixl.yaml
           grep -Fq -- 'value: HND' /tmp/pd-nixl.yaml
 
-          # NIXL remains on the normal per-engine GPU allocation path. The
-          # Mooncake GPU reservation wrapper must never leak into this render.
-          if grep -Fq -- 'name: gpu-reservation' /tmp/pd-nixl.yaml; then
-            echo 'NIXL render must not contain Mooncake gpu-reservation'
-            exit 1
-          fi
-          if grep -Fq -- 'pd-mooncake-gpu-launcher' /tmp/pd-nixl.yaml; then
-            echo 'NIXL render must not contain Mooncake GPU launcher'
-            exit 1
-          fi
-          if grep -A1 -F -- 'name: NVIDIA_VISIBLE_DEVICES' /tmp/pd-nixl.yaml | grep -Fq -- 'value: all'; then
-            echo 'NIXL engine render must not inherit Mooncake NVIDIA_VISIBLE_DEVICES=all'
-            exit 1
-          fi
-
-          # P1D1 TP4 baseline: Prefill and Decode independently request 4 GPUs,
-          # each under requests and limits.
-          nixl_gpu_resource_count="$(grep -Fc -- 'nvidia.com/gpu: "4"' /tmp/pd-nixl.yaml || true)"
-          if [[ "${nixl_gpu_resource_count}" != "4" ]]; then
-            echo "Expected four NIXL per-engine GPU resource lines, got ${nixl_gpu_resource_count}"
+          # The local CUDA IPC baseline reserves the complete Cell GPU set once.
+          grep -Fq -- 'name: gpu-reservation' /tmp/pd-nixl.yaml
+          grep -Fq -- 'pd-shared-gpu-launcher' /tmp/pd-nixl.yaml
+          grep -Fq -- 'hostPID: true' /tmp/pd-nixl.yaml
+          grep -Fq -- 'name: CNTR_GPU_IDX' /tmp/pd-nixl.yaml
+          [[ "$(grep -Fc -- 'nvidia.com/gpu: "8"' /tmp/pd-nixl.yaml)" == "2" ]]
+          if grep -Fq -- 'nvlink_intra' /tmp/pd-nixl.yaml; then
+            echo 'NIXL must not inherit the Mooncake protocol'
             exit 1
           fi
 

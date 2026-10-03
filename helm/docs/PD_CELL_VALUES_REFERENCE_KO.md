@@ -107,7 +107,7 @@ pdCellSpec:
   -> restartCount > 0이면 partial-restart generation으로 판정
   -> ARMED 전에 whole-cell DELETE
 
-restart 없이 P/D/Router/(Mooncake gpu-reservation) 모두 Ready
+restart 없이 P/D/Router/(공유 gpu-reservation) 모두 Ready
   -> restartCount=0 baseline 저장
   -> ARMED
 
@@ -386,7 +386,7 @@ Decode에는 bootstrap server를 띄우지 않는다.
 
 ---
 
-## Mooncake 전용 GPU reservation / launcher
+## 공유 GPU reservation / launcher (Mooncake 및 NIXL 옵션)
 
 exact `MooncakeConnector`에서는 GPU allocation semantics가 다른 connector와 다르다.
 
@@ -514,11 +514,45 @@ kvTransfer:
 `nvidia-smi topo -m`, UCX/NIXL debug log, 그리고 동일 payload 전송 성능으로
 교차 검증한다.
 
-Docker 검증에서 사용한 `--privileged`, `--ipc=host`, 수동
-`CUDA_VISIBLE_DEVICES`는 NIXL Chart 기본 contract로 승격하지 않는다.
-Kubernetes에서는 NIXL engine container가 각각 `nvidia.com/gpu` resource를 직접
-요청하고 NVIDIA device plugin이 container별 device visibility를 제공한다.
-Mooncake의 shared reservation/CVD/`--device-ids` workaround는 NIXL에 적용하지 않는다.
+### NIXL CUDA IPC와 공유 GPU reservation
+
+`kvTransfer.nixl.sharedGpuReservation`은 기본 `false`이며, 기존 NIXL container별
+GPU 할당을 보존한다. 제공하는 node-local UCX/NVLink 예제는 `true`로 설정한다.
+
+```yaml
+pdCellSpec:
+  hostPID: true
+  hostIPC: false
+  models:
+    - name: example
+      kvTransfer:
+        connector: NixlConnector
+        nixl:
+          sharedGpuReservation: true
+```
+
+활성화 시 Mooncake와 같은 예약/노출 계약을 사용한다. reservation container만
+`sum(count * requestGPU)` GPU를 요청하고 P/D engine은 전체 예약 UUID를 공통으로
+보며, launcher의 `--device-ids`로 서로 겹치지 않는 compute GPU를 선택한다.
+NIXL backend, side-channel, connector role과 UCX 설정은 유지되며 Mooncake protocol은
+주입하지 않는다. guardian도 reservation container를 감시한다.
+
+`hostPID=true` 또는 `shareProcessNamespace=true`가 필요하며 둘 다 false이면
+렌더링을 거부한다. 제공 예제는 기존 Mooncake 현장 A/B가 검증한 `hostPID=true`를
+유지한다. Pod-scoped PID 공유는 대안으로 지원하지만 이 환경에서 NIXL 검증은 필요하다.
+`hostIPC`나 `privileged`를 자동 활성화하지 않는다.
+
+이 판단은 [CUDA IPC Kubernetes 실험](https://harche.github.io/2025/10/15/kubernetes-cuda-ipc-permissions.html)과
+그 [단일 Pod CUDA IPC 코드](https://github.com/harche/cuda-ipc-debugging/tree/main/single-pod-example),
+[UCX 컨테이너 GPU 가시성 가이드](https://docs.nvidia.com/cudf-spark/latest/additional-functionality/rapids-shuffle.html)에
+근거한다. 자료의 privileged 예제가 reservation 필요성을 직접 증명하는 것은 아니다.
+우리의 기존 NVIDIA runtime에서 검증한 GPU 노출 구조를 재사용하는 선택이다.
+
+`NVIDIA_VISIBLE_DEVICES=all`이 실제 장치 접근을 제공하는지는 NVIDIA runtime/device
+plugin 설정에 달려 있다. launcher는 NVML UUID 가시성을 확인하지만 CUDA IPC 권한이나
+NVLink 경로까지 증명하지 않는다. 컨테이너별 device node/cgroup 접근, 실제 UCX 선택 경로,
+장시간 전송은 GPU 노드에서 확인해야 한다. broad device exposure는 hard isolation이 아니며,
+MIG/time-slicing/DRA 계약으로 사용하면 안 된다.
 
 `internalPortMode`:
 
@@ -558,7 +592,7 @@ OPENAI_API_KEY
 | field | 기본값 | 설명 |
 |---|---|---|
 | `count` | 필수 | phase container 수 |
-| `requestGPU` | 필수 | engine local GPU worker 수. Mooncake에서는 reservation sidecar 합계/자동 device index 계산 기준 |
+| `requestGPU` | 필수 | engine local GPU worker 수. 공유 reservation에서는 reservation sidecar 합계/자동 device index 계산 기준 |
 | `profile` | 필수 | vLLM `--config` path |
 | `portBase` | P 8101 / D 8201 | HTTP base |
 | `internalPortMode` | `vllm` | `vllm\|dp\|auto` |
@@ -567,7 +601,7 @@ OPENAI_API_KEY
 | `dpMasterPortBase` | P 24000 / D 34000 | DP master |
 | `sideChannelPortBase` | P 5600 / D 5700 | NIXL side-channel base port |
 | `sideChannelPortStride` | `1` | engine index 간 NIXL side-channel base port 간격. DP 사용 시 DP rank port span보다 크게 설정 |
-| `command` | `[vllm, serve]` 계열 | engine command override. Mooncake에서는 `[<binary>, serve]`만 허용 |
+| `command` | `[vllm, serve]` 계열 | engine command override. 공유 reservation에서는 `[<binary>, serve]`만 허용 |
 | `extraArgs` | `[]` | engine extra flags |
 | `env` | `[]` | phase env |
 | `envFrom` | `[]` | phase envFrom |
@@ -576,10 +610,9 @@ OPENAI_API_KEY
 | `containerSecurityContext` | `{}` | phase security |
 | `kvTransferConfig` | `{}` | final phase KV override |
 
-NIXL/기타 connector의 resource behavior는 기존 `chart.resources` helper를 그대로
-사용한다.
+NIXL `sharedGpuReservation=false`와 기타 connector는 기존 `chart.resources` helper를 사용한다.
 
-MooncakeConnector는 `requestGPU`에 비례한 CPU/memory sizing은 유지하지만 engine
+MooncakeConnector와 NIXL `sharedGpuReservation=true`는 `requestGPU`에 비례한 CPU/memory sizing은 유지하지만 engine
 container의 GPU extended resource를 제거하고, 모든 P/D GPU 합계를
 `gpu-reservation` container에 한 번만 요청한다.
 

@@ -17,16 +17,14 @@
 #     Enable Qwen3.8 MTP only after the base P/D + NIXL path is stable.
 #   * UCX_TLS below excludes IB RC and allows CUDA IPC/local transports.
 #     cuda_ipc can use same-node GPU P2P; actual NVLink vs PCIe path depends on topology.
-#   * NIXL does not use the Mooncake aggregate gpu-reservation/CNTR_GPU_IDX launcher.
-#     Each engine requests its own GPUs and the Kubernetes NVIDIA device plugin owns
-#     container device visibility.
+#   * sharedGpuReservation reserves the Cell GPU set once and exposes it to P/D.
+#     The launcher partitions compute GPUs with --device-ids; CUDA IPC can access peers.
 
 pdCellSpec:
   enabled: true
 
-  # Unlike the validated Mooncake nvlink_intra workaround, NIXL does not inherit
-  # hostPID/hostIPC/privileged as a chart requirement.
-  hostPID: false
+  # Preserve the tested Mooncake PID/device visibility baseline for CUDA IPC.
+  hostPID: true
   hostIPC: false
 
   router:
@@ -56,6 +54,7 @@ pdCellSpec:
       kvTransfer:
         connector: NixlConnector
         nixl:
+          sharedGpuReservation: true
           # All engines are containers in the same P/D Cell Pod/network namespace.
           sideChannelHost: localhost
 
