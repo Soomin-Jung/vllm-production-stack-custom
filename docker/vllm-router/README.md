@@ -40,6 +40,45 @@ In production, mirror both base images into the internal registry and pin them
 by immutable internal tag or digest. `nightly-bullseye` is kept only as the
 upstream reference default in the example Dockerfile.
 
+## Pinned PR234 source preparation
+
+Plain `v0.1.15` remains the Mooncake Router baseline. The supplied NIXL rollout
+uses `v0.1.15` plus [PR234](https://github.com/vllm-project/router/pull/234)
+for `reasoning_effort` parsing; this is independent of the transport backend.
+The Rust build reads `router-src/` without automatically applying the patch.
+
+On the Internet-connected staging host, from `docker/vllm-router/`:
+
+```bash
+git clone https://github.com/vllm-project/router.git router-src
+git -C router-src checkout --detach 1fbcde7443d75b36befb61bc081f64c2a1f13a4b
+# PR234 merge result pinned separately from the release base.
+git -C router-src diff \
+  a0f46733bf63c0d57d5f710a47706aba43036b56^ \
+  a0f46733bf63c0d57d5f710a47706aba43036b56 \
+  -- src/protocols/spec.rs src/protocols/validation.rs > router-pr234.patch
+printf '%s  %s\n' \
+  8e6bb9dc363930ce05acb8218f07a492f99968aad5677c338cc6e7c6d1cf9b3c \
+  router-pr234.patch | sha256sum -c -
+git -C router-src apply --check ../router-pr234.patch
+git -C router-src apply ../router-pr234.patch
+git -C router-src diff --check
+git -C router-src diff --stat
+```
+
+Expected patch scope: `src/protocols/spec.rs` and `src/protocols/validation.rs`,
+44 insertions and 10 deletions. This patch applies to the pinned release source;
+record the base SHA, patch SHA256, toolchain and final image digest together.
+Use an empty `router-src/` destination; do not apply the patch twice.
+
+For this patched tree, run the Rust build recipe below with
+`--build-arg VLLM_ROUTER_VERSION=0.1.15-pr234` and
+`-t <internal-registry>/vllm/vllm-router:v0.1.15-pr234`.
+The plain release-wheel fallback does **not** contain PR234. The `--help` check
+verifies CLI capability only; also send each required `reasoning_effort` value
+through the built Router and confirm it reaches the backend without Router
+schema rejection before accepting the image.
+
 ## Required closed-network inputs
 
 Prepare these local files before building. They are ignored by Git.

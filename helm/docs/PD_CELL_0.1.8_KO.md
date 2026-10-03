@@ -1,5 +1,11 @@
 # vLLM Production Stack 0.1.8 Custom — P/D Cell 설계 및 운영 가이드
 
+> 범위: Mooncake 현장 검증 이력과 P/D Cell 운영 구조. 현재 NIXL도 같은 GPU
+> reservation/UUID/`--device-ids` 계약을 사용하지만 transport는 UCX이다.
+> NIXL 상세 설정은 [Values Reference](PD_CELL_VALUES_REFERENCE_KO.md),
+> v0.30.0 모델 검증 범위는 [Qwen3.8 예제](../examples/Qwen3.8-27B/README.md)를 따른다.
+> 아래 Mooncake runtime PASS 기록을 NIXL runtime 인증으로 해석하지 않는다.
+
 ## 1. 문서 목적
 
 이 문서는 custom vLLM Production Stack 0.1.8에서 단기 운영하는 **node-local Prefill/Decode Cell**의 확정 설계를 설명한다.
@@ -526,8 +532,9 @@ pdCellSpec:
 `hostIPC`와 `shareProcessNamespace`는 Issue #6 final fix에 필요하지 않았다.
 `shareProcessNamespace`는 `hostPID`와 다른 Kubernetes 옵션이며 이를 켰다고 host
 PID namespace 조건이 충족되는 것은 아니다. 보안상 `hostPID`는 process isolation을
-약화시키므로 Mooncake profile에서 명시적으로 사용하고 일반 connector 기본값은 false로
-유지한다. Engine의 기존 `/dev/shm` mount는 vLLM/NCCL/multiprocessing 용도로 유지한다.
+약화시킨다. 현재 Mooncake/NIXL 공유 reservation의 기본값은 `hostPID=true`이며
+다른 connector의 기본값은 false이다. `shareProcessNamespace=true`만 지정하면
+`hostPID` 기본값은 false로 바뀌지만, 현장 Mooncake A/B와 동등한 검증 결과를 뜻하지 않는다. Engine의 기존 `/dev/shm` mount는 vLLM/NCCL/multiprocessing 용도로 유지한다.
 
 ## 10. KVTransferConfig
 
@@ -660,8 +667,8 @@ OPENAI_API_KEY=<same secret>
 | Decode vLLM internal | 30000 + stride |
 | Prefill DP master | 24000 + index |
 | Decode DP master | 34000 + index |
-| Prefill NIXL side channel | 5600 + index |
-| Decode NIXL side channel | 5700 + index |
+| Prefill NIXL side channel | prefill.sideChannelPortBase + index × sideChannelPortStride (기본 5600 / stride 1) |
+| Decode NIXL side channel | decode.sideChannelPortBase + index × sideChannelPortStride (기본 5700 / stride 1) |
 
 한 Pod에서 모든 container가 network namespace를 공유하므로 port collision은 금지한다.
 
@@ -781,7 +788,7 @@ Chart는 기본적으로 각 P/D Cell Pod에 `pd-cell-guardian` sidecar를 추�
 
 ```text
 pd-router
-gpu-reservation    # MooncakeConnector인 경우
+gpu-reservation    # Mooncake/NIXL 공유 reservation인 경우
 prefill-*
 decode-*
 ```
@@ -825,6 +832,11 @@ Alloy 같은 node log collector가 수집할 수 있다.
 
 단, node 자체가 hard-fail하여 guardian이 failure를 관찰하지 못한 경우까지 이 파일이
 보장하는 것은 아니다. 그 경우 Kubernetes event/kubelet/node telemetry를 함께 본다.
+
+`guardian.enabled=false`로 Helm upgrade하면 guardian container와 Role/RoleBinding은
+제거하지만 chart 소유 ServiceAccount와 guardian ConfigMap은 유지한다. 구 ReplicaSet과
+동일한 ServiceAccount를 사용하는 새 Pod가 생성되지 못하는 문제를 방지하기 위한
+동작이다. 커스텀 ServiceAccount는 운영자가 별도로 관리한다.
 
 ### 16.2 Kubernetes API / RBAC
 

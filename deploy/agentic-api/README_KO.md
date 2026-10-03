@@ -75,7 +75,7 @@ mount하고 `DATABASE_URL`에 `sslrootcert`의 mount 경로를 지정한다.
 kubectl -n inference create secret generic agentic-api \
   --from-literal=DATABASE_URL='postgresql://agentic-api:REPLACE_ME@postgres.example.invalid:5432/agentic_api?sslmode=verify-full'
 
-kubectl apply -k deploy/agentic-api
+kubectl apply -k .
 kubectl -n inference rollout status deployment/agentic-api --timeout=16m
 kubectl -n inference get pods,service -l app.kubernetes.io/name=agentic-api
 ```
@@ -140,7 +140,7 @@ v0.5.0에는 response/conversation retention, session TTL, HTTP body limit, SSE 
 
 PostgreSQL 튜닝 변수의 v0.5.0 기본값은 다음과 같다.
 
-| 변수 | 기본값(초) | 설명 |
+| 변수 | 기본값 | 설명 |
 | --- | ---: | --- |
 | `POSTGRES_MAX_CONNECTIONS` | `10` | replica 하나의 최대 pool 크기 |
 | `POSTGRES_ACQUIRE_TIMEOUT_SECONDS` | `30` | pool connection 획득 대기 |

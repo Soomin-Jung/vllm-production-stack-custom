@@ -352,6 +352,11 @@ extension_loaded=True
 
 ## 12. nvlink_intra runtime
 
+아래 YAML은 Helm PD Cell용이다. `mooncake_protocol`을 values에 직접 넣으면
+차트가 렌더링을 거부한다. 독립 vLLM 실행에서는 `--kv-transfer-config` JSON의
+`kv_connector_extra_config.mooncake_protocol`을 직접 지정하며, Helm 필드인
+`kvTransfer` wrapper는 사용하지 않는다.
+
 ~~~yaml
 env:
   - name: MC_INTRANODE_NVLINK
@@ -362,8 +367,8 @@ kvTransfer:
   config:
     kv_buffer_device: cuda
     kv_load_failure_policy: fail
-    kv_connector_extra_config:
-      mooncake_protocol: nvlink_intra
+    # PD Cell 차트가 mooncake_protocol=nvlink_intra를 주입한다.
+    kv_connector_extra_config: {}
 ~~~
 
 MC_INTRANODE_NVLINK는 값이 아니라 환경변수 존재 여부로 판정한다.

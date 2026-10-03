@@ -1,5 +1,7 @@
 # vLLM Production Stack: reference stack for production vLLM deployment
 
+Custom deployment and build documentation: [documentation index](helm/docs/README.md).
+
 > **Internal downstream production baseline**
 > This repository preserves the upstream `vllm-project/production-stack` Git history and layers the currently operated vLLM Production Stack 0.1.8 customizations on top of the official release.
 
@@ -40,7 +42,7 @@ deploy-models.yaml               model-specific final overrides
 /profiles/*.yaml                 vLLM runtime profiles referenced through extraArgs
 ```
 
-`deploy-models.yaml` is captured as a representative production `modelSpec` pattern rather than a complete model inventory, because the deployed model list changes frequently. Production `/profiles/*.yaml` remain external hostPath runtime configuration and are intentionally not duplicated here until exact offline profile contents are captured.
+`deploy-models.yaml` is captured as a representative production `modelSpec` pattern rather than a complete model inventory, because the deployed model list changes frequently. Production `/profiles/*.yaml` remain external hostPath runtime configuration. The bundled [Qwen3.8-27B profiles](helm/examples/Qwen3.8-27B/README.md) are versioned deployment examples; they do not represent every production profile.
 
 ### Downstream change map
 
@@ -111,7 +113,7 @@ The downstream workflow runs:
 
 The content below is retained from the official vLLM Production Stack 0.1.8 repository.
 
-| [**Blog**](https://lmcache.github.io) | [**Docs**](https://docs.vllm.ai/projects/production-stack) | [**Production-Stack Slack Channel**](https://vllm-dev.slack.com/archives/C089SMEAKRA) | [**LMCache Slack**](https://join.slack.com/t/lmcacheworkspace/shared_invite/zt-2viziwhue-5Amprc9k5hcIdXT7XevTaQ) | [**Interest Form**](https://forms.gle/mQfQDUXbKfp2St1z7) | [**Official Email**](contact@lmcache.ai) |
+| [**Blog**](https://lmcache.github.io) | [**Docs**](https://docs.vllm.ai/projects/production-stack) | [**Production-Stack Slack Channel**](https://vllm-dev.slack.com/archives/C089SMEAKRA) | [**LMCache Slack**](https://join.slack.com/t/lmcacheworkspace/shared_invite/zt-2viziwhue-5Amprc9k5hcIdXT7XevTaQ) | [**Interest Form**](https://forms.gle/mQfQDUXbKfp2St1z7) | [**Official Email**](mailto:contact@lmcache.ai) |
 
 ## Latest News
 

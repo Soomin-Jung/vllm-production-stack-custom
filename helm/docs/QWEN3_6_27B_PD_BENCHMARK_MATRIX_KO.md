@@ -30,7 +30,7 @@ queue, KV pressure, GPU compute, NVLink 중 어느 하나도 지속적인 병목
 
 ---
 
-# 2. Qwen3.6 hybrid cache 구조
+## 2. Qwen3.6 hybrid cache 구조
 
 Qwen3.6-27B:
 
@@ -49,7 +49,7 @@ fixed recurrent GDN state
 
 로 보는 것이 맞다.
 
-## TP2 / FP8 KV planning model
+### TP2 / FP8 KV planning model
 
 Qwen3.6 config:
 
@@ -79,7 +79,7 @@ resolved hybrid block ~= 1792 tokens
 
 실제 engine startup log의 resolved block size를 source of truth로 사용한다.
 
-### MBT와 hybrid block size는 다른 축
+#### MBT와 hybrid block size는 다른 축
 
 Decode MBT=2048이 좋은 후보라고 해서:
 
@@ -102,7 +102,7 @@ max-num-batched-tokens
 
 ---
 
-# 3. Context length별 per-rank cache planning
+## 3. Context length별 per-rank cache planning
 
 TP2 + FP8 attention KV + block-size=256 + resolved block~=1792 가정.
 
@@ -146,13 +146,13 @@ startup log를 기록한다.
 
 ---
 
-# 4. max-num-seqs = 1024
+## 4. max-num-seqs = 1024
 
 H100/H200-class GPU에서 vLLM 0.26.0 OpenAI API server의 자동 default가 1024인 것은 맞다.
 
 그러나 단순 scheduler upper bound만은 아니다.
 
-## 영향을 받는 영역
+### 영향을 받는 영역
 
 ~~~text
 scheduler active sequence ceiling
@@ -172,7 +172,7 @@ CUDA Graph capture envelope
 min(max_num_seqs * 2, 512)
 ~~~
 
-## Hybrid + FULL decode CUDA Graph
+### Hybrid + FULL decode CUDA Graph
 
 vLLM 0.26.0은 Mamba/GDN cache가 있는 model에서 full decode cudagraph를 사용할 때:
 
@@ -197,9 +197,9 @@ available Mamba blocks 700
 
 이면 FULL decode CUDA Graph 초기화가 실패할 수 있다.
 
-## 권장
+### 권장
 
-### Prefill
+#### Prefill
 
 ~~~text
 max-num-seqs = 1024
@@ -219,7 +219,7 @@ KV admission
 
 쪽에서 먼저 올 수 있다.
 
-### Decode
+#### Decode
 
 초기 권장:
 
@@ -243,7 +243,7 @@ max-num-seqs = 512
 
 ---
 
-# 5. CUDA Graph mode 전체
+## 5. CUDA Graph mode 전체
 
 vLLM 0.26.0 CUDAGraphMode:
 
@@ -255,7 +255,7 @@ FULL_DECODE_ONLY
 FULL_AND_PIECEWISE
 ~~~
 
-## C0 NONE
+### C0 NONE
 
 CUDA Graph 사용 안 함.
 
@@ -275,7 +275,7 @@ kernel launch / CPU dispatch overhead 노출
 
 P/D 모두 baseline.
 
-## C1 PIECEWISE
+### C1 PIECEWISE
 
 CUDA Graph-compatible partition을 capture하고 attention/GDN 등 incompatible op는 graph 밖에서 실행.
 
@@ -297,7 +297,7 @@ capture memory 존재
 
 Prefill primary candidate.
 
-## C2 FULL
+### C2 FULL
 
 전체 model forward를 full graph로 capture하는 single mode.
 
@@ -319,7 +319,7 @@ Qwen3.6 main matrix에서는 제외.
 
 requested mode와 resolved mode를 startup log에서 구분한다.
 
-## C3 FULL_DECODE_ONLY
+### C3 FULL_DECODE_ONLY
 
 ~~~text
 uniform decode -> FULL
@@ -346,7 +346,7 @@ max-num-seqs <= Mamba blocks
 
 Decode primary candidate.
 
-## C4 FULL_AND_PIECEWISE
+### C4 FULL_AND_PIECEWISE
 
 ~~~text
 uniform decode -> FULL
@@ -370,7 +370,7 @@ role-separated P/D에서는 사용하지 않는 graph까지 보유 가능
 
 Decode에서는 FULL_DECODE_ONLY와 비교하는 fallback/control.
 
-## P/D 권장
+### P/D 권장
 
 | Engine | Primary | Control | Follow-up |
 |---|---|---|---|
@@ -380,7 +380,7 @@ Decode에서는 FULL_DECODE_ONLY와 비교하는 fallback/control.
 
 ---
 
-# 6. Prefill fixed baseline
+## 6. Prefill fixed baseline
 
 ~~~text
 TP=2
@@ -393,7 +393,7 @@ same GPU pair
 same P/D topology
 ~~~
 
-## P-A MBT
+### P-A MBT
 
 ~~~text
 8K
@@ -402,7 +402,7 @@ same P/D topology
 64K optional
 ~~~
 
-## P-B MTP
+### P-B MTP
 
 ~~~text
 OFF
@@ -423,14 +423,14 @@ KV capacity regression
 P/D correctness
 ~~~
 
-## P-C CUDA Graph
+### P-C CUDA Graph
 
 ~~~text
 NONE
 PIECEWISE
 ~~~
 
-## Prefill interactions
+### Prefill interactions
 
 ~~~text
 P-A x P-B
@@ -450,11 +450,11 @@ main/pairwise에서 명확히 열세인 level은 final ABC에서 제거한다.
 
 ---
 
-# 7. Decode MBT
+## 7. Decode MBT
 
 Decode-only에서는 Prefill 수준의 큰 MBT를 유지할 이유가 거의 없다.
 
-## Pure decode
+### Pure decode
 
 MTP OFF:
 
@@ -464,7 +464,7 @@ approximately 1 scheduled token / active request / step
 
 max-num-seqs=512라면 MBT=512만으로도 pure decode 512-request envelope를 덮는다.
 
-## MTP
+### MTP
 
 uniform decode planning:
 
@@ -484,7 +484,7 @@ scheduled tokens / request ~= 1 + K
 
 실제 long-context workload는 KV/state capacity 때문에 이 수치 전에 saturation될 가능성이 높다.
 
-## D-MBT sweep
+### D-MBT sweep
 
 ~~~text
 512
@@ -525,7 +525,7 @@ target decode concurrency x (1 + K)
 
 ---
 
-# 8. Decode benchmark factors
+## 8. Decode benchmark factors
 
 고정 baseline:
 
@@ -539,7 +539,7 @@ KV dtype fp8
 same GPU pair
 ~~~
 
-## D-A MBT
+### D-A MBT
 
 ~~~text
 512
@@ -548,7 +548,7 @@ same GPU pair
 4096 optional
 ~~~
 
-## D-B MTP
+### D-B MTP
 
 ~~~text
 OFF
@@ -557,7 +557,7 @@ K2
 K3
 ~~~
 
-## D-C CUDA Graph
+### D-C CUDA Graph
 
 ~~~text
 NONE
@@ -567,7 +567,7 @@ FULL_AND_PIECEWISE
 
 FULL은 hybrid backend automatic downgrade 때문에 main factor에서 제외.
 
-## D-D max cudagraph capture size
+### D-D max cudagraph capture size
 
 초기:
 
@@ -592,7 +592,7 @@ capture coverage
 >= target concurrent decode seqs x (1 + K)
 ~~~
 
-## Decode interaction 우선순위
+### Decode interaction 우선순위
 
 ~~~text
 1. MBT x MTP
@@ -603,7 +603,7 @@ capture coverage
 
 ---
 
-# 9. Context-length matrix
+## 9. Context-length matrix
 
 P/D 모두:
 
@@ -624,7 +624,7 @@ Output:
 2K
 ~~~
 
-## Prefill 관점
+### Prefill 관점
 
 ~~~text
 context up
@@ -634,7 +634,7 @@ context up
 -> chunking behavior
 ~~~
 
-## Decode 관점
+### Decode 관점
 
 ~~~text
 context up
@@ -643,7 +643,7 @@ context up
 -> TPOT / memory-bandwidth pressure
 ~~~
 
-## MTP 관점
+### MTP 관점
 
 ~~~text
 K up
@@ -655,7 +655,7 @@ K up
 
 ---
 
-# 10. KV capacity validation
+## 10. KV capacity validation
 
 각 engine startup마다 기록:
 
@@ -688,7 +688,7 @@ preemption approximately 0
 
 ---
 
-# 11. TP2와 NVLink
+## 11. TP2와 NVLink
 
 P/D 모두 TP2 고정은 합리적인 baseline이다.
 
@@ -712,7 +712,7 @@ layer별 TP collective
 
 ---
 
-# 12. NVLink traffic을 분리해서 측정
+## 12. NVLink traffic을 분리해서 측정
 
 P/D node-local에서는 최소 두 종류가 겹친다.
 
@@ -725,7 +725,7 @@ B. inter-engine P->D KV/state transfer
    Prefill GPU pair -> Decode GPU pair
 ~~~
 
-## N0 Idle
+### N0 Idle
 
 ~~~text
 no request
@@ -733,7 +733,7 @@ no request
 
 fabric noise baseline.
 
-## N1 Prefill TP2 control
+### N1 Prefill TP2 control
 
 Prefill compute 위주 run.
 
@@ -748,13 +748,13 @@ SM Active
 
 P-side TP collective baseline.
 
-## N2 Decode TP2 control
+### N2 Decode TP2 control
 
 Decode generation 위주 run.
 
 D-side TP collective baseline.
 
-## N3 Transfer-focused P/D
+### N3 Transfer-focused P/D
 
 ~~~text
 128K / output 16~32
@@ -773,7 +773,7 @@ Mooncake transfer success
 PCIe보다 NVLink activity 우세
 ~~~
 
-## N4 Production shape
+### N4 Production shape
 
 ~~~text
 170K input
@@ -785,7 +785,7 @@ TP traffic + P->D transfer + MTP가 동시에 있을 때 fabric saturation 여�
 
 ---
 
-# 13. NVLink metrics
+## 13. NVLink metrics
 
 ~~~text
 DCGM_FI_PROF_NVLINK_TX_BYTES
@@ -817,7 +817,7 @@ CRC/replay/recovery
   healthy at load?
 ~~~
 
-## fabric utilization reference
+### fabric utilization reference
 
 spec sheet peak만 기준으로 삼지 않는다.
 
@@ -841,9 +841,9 @@ same-topology empirical NVLink ceiling
 
 ---
 
-# 14. 최종 staged benchmark
+## 14. 최종 staged benchmark
 
-## Stage 0 Hardware / cache baseline
+### Stage 0 Hardware / cache baseline
 
 ~~~text
 P TP2 / D TP2
@@ -853,7 +853,7 @@ NVLink topology 확인
 same-placement NCCL/P2P ceiling 측정
 ~~~
 
-## Stage 1 Prefill main effects
+### Stage 1 Prefill main effects
 
 ~~~text
 MBT
@@ -861,7 +861,7 @@ MTP
 CG NONE vs PIECEWISE
 ~~~
 
-## Stage 2 Prefill interactions
+### Stage 2 Prefill interactions
 
 ~~~text
 MBT x MTP
@@ -870,7 +870,7 @@ MBT x CG
 survivor ABC
 ~~~
 
-## Stage 3 Decode max-num-seqs non-binding check
+### Stage 3 Decode max-num-seqs non-binding check
 
 ~~~text
 256
@@ -880,7 +880,7 @@ survivor ABC
 
 short context / high concurrency에서 1회.
 
-## Stage 4 Decode main effects
+### Stage 4 Decode main effects
 
 ~~~text
 MBT 512 / 1K / 2K
@@ -888,7 +888,7 @@ MTP OFF / K1 / K2 / K3
 CG NONE / FULL_DECODE_ONLY / FULL_AND_PIECEWISE
 ~~~
 
-## Stage 5 Decode interactions
+### Stage 5 Decode interactions
 
 ~~~text
 MBT x MTP
@@ -896,7 +896,7 @@ MTP x CG
 MBT x CG
 ~~~
 
-## Stage 6 Capture-size sweep
+### Stage 6 Capture-size sweep
 
 winner 기준:
 
@@ -907,7 +907,7 @@ auto
 512
 ~~~
 
-## Stage 7 Context/cache surface
+### Stage 7 Context/cache surface
 
 ~~~text
 8K
@@ -920,7 +920,7 @@ auto
 
 KV capacity / maximum concurrency를 같이 기록.
 
-## Stage 8 NVLink isolation
+### Stage 8 NVLink isolation
 
 ~~~text
 N0 idle
@@ -932,7 +932,7 @@ N4 production workload
 
 ---
 
-# 15. Selection rule
+## 15. Selection rule
 
 Prefill winner:
 
