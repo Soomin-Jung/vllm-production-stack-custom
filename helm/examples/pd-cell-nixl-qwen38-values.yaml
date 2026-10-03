@@ -33,7 +33,7 @@ pdCellSpec:
     repository: internal-registry/vllm/vllm-router
     tag: v0.1.15-pr234
     imagePullPolicy: IfNotPresent
-    hostPath: /health
+    healthPath: /health
     port: 8000
     policy: round_robin
     prometheusPort: 29000
