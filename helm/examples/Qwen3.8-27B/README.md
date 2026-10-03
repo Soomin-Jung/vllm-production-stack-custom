@@ -46,7 +46,7 @@ Mooncake 비교 시 마지막 `-f`만 Mooncake values로 교체한다.
 | --- | --- | --- |
 | `truest-remote-code` | `trust-remote-code` | 실제 CLI 이름 |
 | `gpu-memory-utilizaiton` | `gpu-memory-utilization` | 실제 CLI 이름 |
-| `ture` | `true` | YAML boolean |
+| boolean 오타 | `true` | YAML boolean |
 | `enable-chunked-prefil` | `enable-chunked-prefill` | 실제 CLI 이름 |
 | `enable-log-request` | `enable-log-requests` | v0.30.0은 복수형 |
 | `tensor-parallel-size:2` | `tensor-parallel-size: 2` | YAML key/value 구분 |
