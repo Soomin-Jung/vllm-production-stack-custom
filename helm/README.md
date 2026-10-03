@@ -1,5 +1,9 @@
 # vLLM Production Stack helm chart
 
+> This page preserves the upstream chart reference. For downstream P/D Cell
+> configuration and operational contracts, use the [custom documentation index](docs/README.md).
+> The table below does not enumerate `pdCellSpec` customizations.
+
 This helm chart lets users deploy multiple serving engines and a router into the Kubernetes cluster.
 
 ## Key features

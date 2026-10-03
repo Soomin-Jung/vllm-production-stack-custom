@@ -1,5 +1,11 @@
 # Issue #6 — Mooncake v0.3.10 minimal Driver-API IPC fix candidate
 
+> **보관된 실험 기록 — 현재 운영 해결책이 아님.** Runtime API를 Driver API로
+> 교체한 후보도 `hostPID=false`에서 invalid context를 재현했다. 이후
+> `hostPID=true` 단독 적용으로 해결됐고 pristine Mooncake v0.3.10도 검증했다.
+> 최종 결과는 [P/D Cell 운영 가이드 §9](../../../helm/docs/PD_CELL_0.1.8_KO.md#9-mooncake-transport와-gpu-namespace-contract)를 따른다.
+> 아래 내용은 당시 후보와 검증 계획을 보존한다.
+
 ## 목적
 
 이 문서는 `Mooncake v0.3.10`의
@@ -59,9 +65,9 @@ debug/issue-6/mooncake-v0.3.10/
 
 ---
 
-# 1. 원본 v0.3.10 구조
+## 1. 원본 v0.3.10 구조
 
-## Export side
+### Export side
 
 원본은 remote-accessible GPU allocation에 대해:
 
@@ -72,7 +78,7 @@ cudaIpcGetMemHandle(&handle, (void *)base_ptr);
 
 를 수행하고 handle bytes를 `BufferDesc.shm_name`에 serialize한다.
 
-## Import side
+### Import side
 
 remote address가 처음 사용될 때:
 
@@ -97,7 +103,7 @@ local mapped address
 
 형태로 `remap_entries_`에 저장된다.
 
-## Close side
+### Close side
 
 transport destructor에서:
 
@@ -124,7 +130,7 @@ cudaIpcCloseMemHandle
 
 ---
 
-# 2. 이번 수정 구조
+## 2. 이번 수정 구조
 
 이번 수정에서는 **IPC lifecycle만 CUDA Driver API로 통일**한다.
 
@@ -154,9 +160,9 @@ IPC mapping 생성만 Driver API로 수행하고 copy path는 기존 Runtime API
 
 ---
 
-# 3. Export 변경
+## 3. Export 변경
 
-## 원본
+### 3. Export 변경 — 원본
 
 ```cpp
 cudaIpcMemHandle_t handle;
@@ -170,7 +176,7 @@ desc.shm_name = serializeBinaryData(
     sizeof(cudaIpcMemHandle_t));
 ```
 
-## 수정
+### 3. Export 변경 — 수정
 
 ```cpp
 CUipcMemHandle handle;
@@ -184,7 +190,7 @@ desc.shm_name = serializeBinaryData(
     sizeof(CUipcMemHandle));
 ```
 
-### 의미
+#### 의미
 
 GPU allocation, base address, allocation size는 바뀌지 않는다.
 
@@ -193,9 +199,9 @@ Driver API entry point로 호출한다.
 
 ---
 
-# 4. Import 변경
+## 4. Import 변경
 
-## 원본
+### 4. Import 변경 — 원본
 
 ```cpp
 cudaIpcMemHandle_t handle;
@@ -207,7 +213,7 @@ cudaError_t err = cudaIpcOpenMemHandle(
     cudaIpcMemLazyEnablePeerAccess);
 ```
 
-## 수정
+### 4. Import 변경 — 수정
 
 먼저 current Driver context가 실제로 존재하는지만 확인한다.
 
@@ -241,7 +247,7 @@ shm_entry.shm_addr =
     reinterpret_cast<void *>(mapped_addr);
 ```
 
-### 중요한 점
+#### 중요한 점
 
 이번 수정은 새로운 CUDA context를 생성하지 않는다.
 
@@ -273,16 +279,16 @@ CU_IPC_MEM_LAZY_ENABLE_PEER_ACCESS
 
 ---
 
-# 5. Close 변경
+## 5. Close 변경
 
-## 원본
+### 5. Close 변경 — 원본
 
 ```cpp
 cudaIpcCloseMemHandle(
     entry.second.shm_addr);
 ```
 
-## 수정
+### 5. Close 변경 — 수정
 
 ```cpp
 cuIpcCloseMemHandle(
@@ -294,7 +300,7 @@ Open을 Driver API로 수행했기 때문에 close까지 같은 API family로 �
 
 ---
 
-# 6. 왜 이 방향을 먼저 시도하는가
+## 6. 왜 이 방향을 먼저 시도하는가
 
 이번 Issue #6에서는 실제 실패가:
 
@@ -352,7 +358,7 @@ cuIpcOpenMemHandle -> CUDA_ERROR_INVALID_CONTEXT
 
 ---
 
-# 7. 성능 영향
+## 7. 성능 영향
 
 정상 경로에서 추가되는 것은 사실상 없다.
 
@@ -401,7 +407,7 @@ CPU staging, TCP fallback, RDMA fallback은 추가하지 않는다.
 
 ---
 
-# 8. 이번 수정에서 의도적으로 하지 않은 것
+## 8. 이번 수정에서 의도적으로 하지 않은 것
 
 다음은 이번 candidate에 포함하지 않는다.
 
@@ -424,7 +430,7 @@ CPU staging, TCP fallback, RDMA fallback은 추가하지 않는다.
 
 ---
 
-# 9. 테스트 기준
+## 9. 테스트 기준
 
 이 build에서는 별도 analyzer를 우선 사용하지 않아도 된다.
 
@@ -468,7 +474,7 @@ CPU staging, TCP fallback, RDMA fallback은 추가하지 않는다.
 
 ---
 
-# 10. 실패 시 필요한 로그
+## 10. 실패 시 필요한 로그
 
 이 candidate가 실패하면 기존 NVDBG 전체 로그는 필요하지 않다.
 
@@ -490,7 +496,7 @@ IntraNodeNvlinkTransport: cuIpcOpenMemHandle failed:
 
 ---
 
-## 현재 상태
+## 당시 후보 상태
 
 ```text
 candidate type:
@@ -510,5 +516,5 @@ unchanged:
   cudaMemcpy copy path
 
 status:
-  requires runtime validation
+  historical candidate; superseded by hostPID=true deployment fix
 ```

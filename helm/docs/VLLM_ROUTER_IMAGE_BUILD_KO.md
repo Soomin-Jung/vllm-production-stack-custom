@@ -45,6 +45,13 @@ KV transfer baseline      = NixlConnector / UCX
 사내 image tag는 예를 들어 `v0.1.15-pr234`처럼 사람이 식별 가능한 값을 사용할 수
 있지만, 실제 배포 승인 기록에는 build한 source commit과 image digest도 함께 남긴다.
 
+PR234 적용 방법과 고정 base/merge SHA, patch checksum은
+[Router 빌드 실행 절차](../../docker/vllm-router/README.md#pinned-pr234-source-preparation)를
+단일 기준으로 사용한다. 아래 source/build 예제는 plain v0.1.15 설명이므로 NIXL용
+이미지는 먼저 위 절차로 `router-src`를 패치하고 version/tag를 `0.1.15-pr234`로 바꾼다.
+공식 release wheel fallback에는 이 패치가 없다. `--help` 성공만으로
+`reasoning_effort` 회귀 해결을 인증하지 않는다.
+
 ## upstream v0.1.15 기본 환경
 
 공식 `Dockerfile.router`의 OS family는 두 stage 모두 Debian 11 Bullseye다.

@@ -1,5 +1,11 @@
 # Qwen3.8-27B P/D Disaggregation Tuning Guide
 
+> 버전/검증 범위: 이 문서는 Mooncake 성능 실험 계획이다. 인프라 검증은
+> 모델별 MTP correctness/performance 검증 완료를 뜻하지 않는다. 현재 제공된
+> vLLM v0.30.0 TP2/TP2 프로파일과 NIXL 검증 순서는
+> [Qwen3.8 예제](../examples/Qwen3.8-27B/README.md)를 따른다.
+> NIXL hybrid state+MTP는 먼저 MTP-off correctness를 통과한 뒤 비교한다.
+
 > 상태: P/D Cell runtime functional baseline 이후의 모델별 성능 최적화 계획
 >
 > 범위: NVIDIA H100/H200, node-local P/D Cell, Mooncake nvlink_intra
@@ -56,9 +62,9 @@ model fits on one H200
 
 References:
 
-- https://recipes.vllm.ai/Qwen/Qwen3.8-27B
-- https://huggingface.co/Qwen/Qwen3.8-27B
-- https://docs.vllm.ai/en/latest/features/disagg_prefill/
+- <https://recipes.vllm.ai/Qwen/Qwen3.8-27B>
+- <https://huggingface.co/Qwen/Qwen3.8-27B>
+- <https://docs.vllm.ai/en/latest/features/disagg_prefill/>
 
 ## 3. vLLM version gate
 
@@ -81,7 +87,9 @@ long-context correctness
 
 ### P/D 양쪽에 켜는가?
 
-초기 production baseline은 YES로 잡는다.
+MTP 기능을 평가하는 단계에서는 P/D 양쪽을 켜는 구성을 시작점으로 삼는다.
+이는 검증된 production 기본값이 아니다. Stage 0의 MTP-off correctness baseline을
+먼저 통과하고, backend/version별 MTP correctness를 확인한 뒤 적용한다.
 
 Built-in MTP를 쓰는 P/D에서는 Prefill과 Decode가 모두 speculative/MTP-aware cache/model layout으로 시작하도록 한다. 공개 P/D MTP 예시들도 producer와 consumer 양쪽에 speculative config를 둔다.
 
@@ -106,9 +114,9 @@ Qwen3.8 공식 NVIDIA recipe는 일반 serving 예시에서 MTP K=3을 제시한
 
 References:
 
-- https://recipes.vllm.ai/Qwen/Qwen3.8-27B
-- https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/tutorials/models/GLM5.2.md
-- https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/tutorials/features/pd_disaggregation_mooncake_multi_node.md
+- <https://recipes.vllm.ai/Qwen/Qwen3.8-27B>
+- <https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/tutorials/models/GLM5.2.md>
+- <https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/tutorials/features/pd_disaggregation_mooncake_multi_node.md>
 
 ### MTP acceptance를 반드시 측정
 
@@ -136,31 +144,31 @@ MTP off / K1 / K2 / K3에 대해 다음을 같이 비교한다.
 
 초기 baseline: PP=1.
 
-- https://github.com/vllm-project/vllm/issues/52069
-- https://github.com/vllm-project/vllm/issues/49355
-- https://github.com/vllm-project/vllm/issues/44697
+- <https://github.com/vllm-project/vllm/issues/52069>
+- <https://github.com/vllm-project/vllm/issues/49355>
+- <https://github.com/vllm-project/vllm/issues/44697>
 
 ### Prefix cache + MTP
 
 Qwen3.8 hybrid GDN + MTP에서 prefix-cache retention/reuse 관련 최근 issue가 있다.
 MTP correctness/performance를 먼저 끝낸 후 별도 A/B로 추가한다.
 
-- https://github.com/vllm-project/vllm/issues/53504
-- https://github.com/vllm-project/vllm/issues/53670
+- <https://github.com/vllm-project/vllm/issues/53504>
+- <https://github.com/vllm-project/vllm/issues/53670>
 
 ### TurboQuant KV + MTP
 
 Qwen3.8 MTP에서 TurboQuant KV 사용 시 silent repetition collapse 보고가 있다.
 초기 NVIDIA baseline은 FP8 KV로 둔다.
 
-- https://github.com/vllm-project/vllm/issues/52475
+- <https://github.com/vllm-project/vllm/issues/52475>
 
 ### Async scheduling + hybrid MTP
 
 accepted-token state와 async scheduling 관련 최근 issue가 있다.
 초기 correctness baseline은 --no-async-scheduling으로 두고 후속 A/B로 본다.
 
-- https://github.com/vllm-project/vllm/issues/51571
+- <https://github.com/vllm-project/vllm/issues/51571>
 
 ## 6. Stage 0 — Functional baseline
 
@@ -275,7 +283,7 @@ MTP on + chunked prefill
 
 Reference:
 
-- https://github.com/vllm-project/vllm/issues/51008
+- <https://github.com/vllm-project/vllm/issues/51008>
 
 ## 8. Stage 2 — Decode tuning
 
@@ -445,17 +453,17 @@ Transport:
 
 Official / project:
 
-- https://recipes.vllm.ai/Qwen/Qwen3.8-27B
-- https://huggingface.co/Qwen/Qwen3.8-27B
-- https://docs.vllm.ai/en/latest/features/disagg_prefill/
-- https://docs.vllm.ai/en/stable/api/vllm/engine/arg_utils/
+- <https://recipes.vllm.ai/Qwen/Qwen3.8-27B>
+- <https://huggingface.co/Qwen/Qwen3.8-27B>
+- <https://docs.vllm.ai/en/latest/features/disagg_prefill/>
+- <https://docs.vllm.ai/en/stable/api/vllm/engine/arg_utils/>
 
 Current caveats:
 
-- https://github.com/vllm-project/vllm/issues/52069
-- https://github.com/vllm-project/vllm/issues/49355
-- https://github.com/vllm-project/vllm/issues/51008
-- https://github.com/vllm-project/vllm/issues/51571
-- https://github.com/vllm-project/vllm/issues/53504
-- https://github.com/vllm-project/vllm/issues/53670
-- https://github.com/vllm-project/vllm/issues/52475
+- <https://github.com/vllm-project/vllm/issues/52069>
+- <https://github.com/vllm-project/vllm/issues/49355>
+- <https://github.com/vllm-project/vllm/issues/51008>
+- <https://github.com/vllm-project/vllm/issues/51571>
+- <https://github.com/vllm-project/vllm/issues/53504>
+- <https://github.com/vllm-project/vllm/issues/53670>
+- <https://github.com/vllm-project/vllm/issues/52475>

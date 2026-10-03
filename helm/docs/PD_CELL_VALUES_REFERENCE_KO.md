@@ -388,7 +388,7 @@ Decode에는 bootstrap server를 띄우지 않는다.
 
 ## 공유 GPU reservation / launcher (Mooncake 및 NIXL 공통)
 
-exact `MooncakeConnector`에서는 GPU allocation semantics가 다른 connector와 다르다.
+`MooncakeConnector`와 NIXL connector는 동일한 공유 GPU reservation/launcher를 사용한다.
 
 운영자는 기존 topology field만 선언한다.
 
@@ -415,7 +415,7 @@ decode-0        -> CNTR_GPU_IDX=4,5,6,7
 
 을 만든다.
 
-Mooncake engine container에는 GPU extended resource를 직접 붙이지 않는다. 대신:
+Mooncake/NIXL engine container에는 GPU extended resource를 직접 붙이지 않는다. 대신:
 
 ```text
 NVIDIA_VISIBLE_DEVICES=all
@@ -423,9 +423,10 @@ NVIDIA_VISIBLE_DEVICES=all
 
 을 manifest에 넣고, Chart launcher가 reservation sidecar의 PCI-bus 정렬 UUID 목록을 읽어
 모든 P/D engine에 동일한 `CUDA_VISIBLE_DEVICES`를 설정한다. 실제 compute GPU는
-vLLM 0.26.0 `--device-ids=<CNTR_GPU_IDX>`로 선택한다.
+배포 이미지에서 지원하는 vLLM `--device-ids=<CNTR_GPU_IDX>`로 선택한다.
+Mooncake 현장 baseline은 v0.26.0, 제공 NIXL 예제는 v0.30.0이다.
 
-따라서 `requestGPU`의 의미는 Mooncake에서:
+따라서 `requestGPU`의 의미는 두 connector에서:
 
 ```text
 engine topology / local worker GPU count
@@ -442,9 +443,9 @@ kv_connector_extra_config.mooncake_protocol
 --device-ids
 ```
 
-`mooncake_protocol`은 `nvlink_intra`로 강제된다.
+`mooncake_protocol`은 Mooncake에서만 `nvlink_intra`로 강제된다. NIXL에는 주입하지 않는다.
 
-`prefill.command` / `decode.command`를 Mooncake에서 지정해야 한다면
+`prefill.command` / `decode.command`를 공유 reservation에서 지정해야 한다면
 `[<vllm-binary>, serve]` 형태만 허용되며, 실제 container command는 Chart launcher로
 override된다.
 
@@ -461,8 +462,10 @@ pdCellSpec:
 
 이다. `hostIPC`와 `shareProcessNamespace`는 final fix의 요구사항으로 확인되지 않았다.
 특히 `shareProcessNamespace=true`는 Pod 내부 PID namespace 공유일 뿐 `hostPID=true`
-와 동일하지 않다. `hostPID`는 process isolation을 약화시키므로 connector 공통
-기본값은 계속 `false`로 유지하고 Mooncake deployment profile에서 명시한다.
+와 동일하지 않다. Mooncake/NIXL 공유 reservation은 기본적으로 `hostPID=true`를
+사용한다. `shareProcessNamespace=true`만 명시하면 `hostPID` 기본값은 false가 된다.
+이 Pod-scoped 대안의 실제 CUDA IPC 동작은 대상 runtime에서 별도 검증해야 한다.
+다른 connector의 `hostPID` 기본값은 false이다.
 기존 engine `/dev/shm` mount는 별도로 유지한다.
 
 주의: engine container는 node GPU device가 inject될 수 있으므로 Linux `/dev` 수준의

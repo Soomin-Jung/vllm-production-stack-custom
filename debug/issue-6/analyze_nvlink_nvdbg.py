@@ -24,10 +24,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-
-PREFIX_RE = re.compile(
-    r"^\[pod/(?P<pod>[^/]+)/(?P<container>[^\]]+)\]\s*(?P<msg>.*)$"
-)
+PREFIX_RE = re.compile(r"^\[pod/(?P<pod>[^/]+)/(?P<container>[^\]]+)\]\s*(?P<msg>.*)$")
 TAG_RE = re.compile(r"\[NVDBG\]\[(?P<tag>[A-Z_]+)\]")
 FIELD_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)")
 
@@ -88,9 +85,7 @@ class Finding:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Analyze Mooncake nvlink_intra NVDBG logs."
-    )
+    p = argparse.ArgumentParser(description="Analyze Mooncake nvlink_intra NVDBG logs.")
     p.add_argument("logfile", type=Path, help="kubectl logs output text file")
     p.add_argument(
         "--max-failures",
@@ -255,11 +250,7 @@ def nearest_after(
     if not candidates:
         return None
 
-    exact = [
-        e
-        for e in candidates
-        if match_fields(e, target, ("target_id",))
-    ]
+    exact = [e for e in candidates if match_fields(e, target, ("target_id",))]
     if exact:
         return min(exact, key=lambda e: e.line_no)
     return min(candidates, key=lambda e: e.line_no)
@@ -348,7 +339,11 @@ def classify_fail(
     source_ptr_ctx_rc = int_field(abort, "source_ptr_ctx_rc")
 
     # H1: importer worker has no usable current CUcontext.
-    if is_null_ctx(ctx) or (ctx_rc is not None and ctx_rc != 0) or (dev_rc is not None and dev_rc != 0):
+    if (
+        is_null_ctx(ctx)
+        or (ctx_rc is not None and ctx_rc != 0)
+        or (dev_rc is not None and dev_rc != 0)
+    ):
         findings.append(
             Finding(
                 "Importer current CUDA context",
@@ -377,7 +372,12 @@ def classify_fail(
         )
 
     # H2: worker active device differs from source pointer device.
-    if abort is not None and ptr_rc == 0 and src_dev is not None and ctx_dev is not None:
+    if (
+        abort is not None
+        and ptr_rc == 0
+        and src_dev is not None
+        and ctx_dev is not None
+    ):
         if src_dev != ctx_dev:
             findings.append(
                 Finding(
@@ -569,7 +569,12 @@ def thread_context_summary(events: list[Event]) -> list[str]:
         key = (e.pod, e.container, pid)
         g = grouped.setdefault(
             key,
-            {"ok_ctx": set(), "fail_ctx": set(), "ok_threads": set(), "fail_threads": set()},
+            {
+                "ok_ctx": set(),
+                "fail_ctx": set(),
+                "ok_threads": set(),
+                "fail_threads": set(),
+            },
         )
         sig = f"ctx={e.fields.get('ctx','?')}/dev={e.fields.get('ctx_device','?')}"
         tid = e.fields.get("tid", "?")
@@ -676,7 +681,9 @@ def print_counts(events: list[Event], decode_failures: list[tuple[int, str]]) ->
         print("NVDBG event를 찾지 못했습니다.")
         return
 
-    by_scope: dict[tuple[str, str], collections.Counter[str]] = collections.defaultdict(collections.Counter)
+    by_scope: dict[tuple[str, str], collections.Counter[str]] = collections.defaultdict(
+        collections.Counter
+    )
     for e in events:
         by_scope[(e.pod, e.container)][e.tag] += 1
 
@@ -741,7 +748,9 @@ def print_failures(
             )
 
     if len(fails) > max_failures:
-        print(f"\n... {len(fails) - max_failures} additional IPC_OPEN_FAIL cases omitted.")
+        print(
+            f"\n... {len(fails) - max_failures} additional IPC_OPEN_FAIL cases omitted."
+        )
 
 
 def print_global_findings(events: list[Event]) -> None:
@@ -757,7 +766,9 @@ def print_global_findings(events: list[Event]) -> None:
             "초기화 차이를 우선 확인할 가치가 큼."
         )
     else:
-        print("- 동일 process 내 IPC_OPEN_OK/FAIL 혼재 패턴은 제공된 로그에서 확인되지 않음.")
+        print(
+            "- 동일 process 내 IPC_OPEN_OK/FAIL 혼재 패턴은 제공된 로그에서 확인되지 않음."
+        )
 
     copy_fails = [e for e in events if e.tag == "COPY_FAIL"]
     range_misses = [e for e in events if e.tag == "RANGE_MISS"]
