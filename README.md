@@ -107,14 +107,27 @@ The downstream workflow runs:
 - [`deploy/agentic-api/README_KO.md`](deploy/agentic-api/README_KO.md): minimal PostgreSQL-backed Kubernetes deployment, runtime options, and release checks
 - `docker/Dockerfile.agentic-api`: Rust-only standalone gateway image; Python, vLLM, CUDA, and model weights remain in the serving stack
 
-### Self-hosted JEV decision MCP integration
+### Self-hosted JEV decision skill
 
-- [`integrations/jev-decide-mcp/README.md`](integrations/jev-decide-mcp/README.md): AutoTrust JEV `POST /v1/decide`를 Codex, Claude Code 및 다른 MCP clients에 연결하는 stdio/Streamable HTTP bridge
-- [`integrations/jev-decide-mcp/skills/jev-decide/SKILL.md`](integrations/jev-decide-mcp/skills/jev-decide/SKILL.md): decision input/output 해석, 지원 primitive, 호출 판단, escalation 및 활용 workflow
-- [client setup](integrations/jev-decide-mcp/docs/clients.md): Codex/Claude MCP와 skill 설치
-- [API contract](integrations/jev-decide-mcp/docs/contract.md): `choice`, `noul`, `score`, advanced controls, output/error contract
+- [`skills/jev-decide/SKILL.md`](skills/jev-decide/SKILL.md): Codex/Claude Code가 self-hosted JEV `POST /v1/decide`를 직접 호출하고 결과를 해석하는 사용자 설치형 skill
+- [API contract](skills/jev-decide/references/api-contract.md): `choice`, `noul`, `score`, advanced controls 및 응답 해석
+- [direct-call script](skills/jev-decide/scripts/decide.py): Python 표준 라이브러리만 사용하는 REST client
 
-이 integration은 지정한 self-hosted backend만 호출한다. TypeSafe, OpenRouter 또는 다른 provider로 자동 전환하지 않는다. MCP/skill은 agent가 JEV를 활용하도록 연결하지만 필수 policy gate와 선택 결과의 실행 권한은 host workflow가 소유한다.
+사용자는 skill directory를 자신의 agent skill 경로에 복사하고 `JEV_BASE_URL`을 설정한다. 별도 MCP server는 필요하지 않으며 agent의 shell 실행 권한과 JEV endpoint에 대한 네트워크 접근이 필요하다.
+
+```bash
+export JEV_BASE_URL="https://jev.example.internal"
+export JEV_API_KEY="optional-backend-token"
+
+python skills/jev-decide/scripts/decide.py \
+  --kind choice \
+  --question "Which action should the workflow take?" \
+  --option proceed \
+  --option hold \
+  --state-json '{"tests":"passed","risk":"low"}'
+```
+
+이 skill은 지정한 self-hosted backend만 호출한다. 다른 provider로 자동 전환하지 않으며, JEV 결과에 따른 실제 명령 실행과 승인 권한은 host workflow가 소유한다.
 
 ---
 
