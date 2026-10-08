@@ -10,10 +10,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import uvicorn
+from contract_cases import decision
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from contract_cases import decision
 
 from jev_decide_mcp.client import DecideClient, Settings
 from jev_decide_mcp.server import BearerAuth, create_http_app
