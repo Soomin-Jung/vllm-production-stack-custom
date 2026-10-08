@@ -1,0 +1,31 @@
+name: jev-decide-skill-ci
+
+on:
+  pull_request:
+    paths:
+      - "skills/jev-decide/**"
+      - "checks/jev_decide_skill_cases.py"
+      - ".github/workflows/jev-decide-skill-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "skills/jev-decide/**"
+      - "checks/jev_decide_skill_cases.py"
+      - ".github/workflows/jev-decide-skill-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m py_compile skills/jev-decide/scripts/decide.py
+      - run: python -m unittest checks/jev_decide_skill_cases.py

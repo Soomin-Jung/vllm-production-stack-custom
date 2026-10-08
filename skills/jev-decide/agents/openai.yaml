@@ -1,0 +1,6 @@
+interface:
+  display_name: "JEV Decide"
+  short_description: "Call and interpret a self-hosted JEV decision endpoint"
+  default_prompt: "Use $jev-decide to evaluate the supplied evidence and report the decision distribution."
+policy:
+  allow_implicit_invocation: true

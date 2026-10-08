@@ -107,6 +107,28 @@ The downstream workflow runs:
 - [`deploy/agentic-api/README_KO.md`](deploy/agentic-api/README_KO.md): minimal PostgreSQL-backed Kubernetes deployment, runtime options, and release checks
 - `docker/Dockerfile.agentic-api`: Rust-only standalone gateway image; Python, vLLM, CUDA, and model weights remain in the serving stack
 
+### Self-hosted JEV decision skill
+
+- [`skills/jev-decide/SKILL.md`](skills/jev-decide/SKILL.md): Codex/Claude Code가 self-hosted JEV `POST /v1/decide`를 직접 호출하고 결과를 해석하는 사용자 설치형 skill
+- [API contract](skills/jev-decide/references/api-contract.md): `choice`, `noul`, `score`, advanced controls 및 응답 해석
+- [direct-call script](skills/jev-decide/scripts/decide.py): Python 표준 라이브러리만 사용하는 REST client
+
+사용자는 skill directory를 자신의 agent skill 경로에 복사하고 `JEV_BASE_URL`을 설정한다. 별도 MCP server는 필요하지 않으며 agent의 shell 실행 권한과 JEV endpoint에 대한 네트워크 접근이 필요하다.
+
+```bash
+export JEV_BASE_URL="https://jev.example.internal"
+export JEV_API_KEY="optional-backend-token"
+
+python skills/jev-decide/scripts/decide.py \
+  --kind choice \
+  --question "Which action should the workflow take?" \
+  --option proceed \
+  --option hold \
+  --state-json '{"tests":"passed","risk":"low"}'
+```
+
+이 skill은 지정한 self-hosted backend만 호출한다. 다른 provider로 자동 전환하지 않으며, JEV 결과에 따른 실제 명령 실행과 승인 권한은 host workflow가 소유한다.
+
 ---
 
 ## Upstream README
