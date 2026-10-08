@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "jev-local": {
+      "type": "stdio",
+      "command": "/opt/jev-decide-mcp-venv/bin/jev-decide-mcp",
+      "args": [],
+      "env": {
+        "JEV_BASE_URL": "http://your-vllm-service:8000",
+        "JEV_TIMEOUT_SECONDS": "60"
+      }
+    }
+  }
+}
