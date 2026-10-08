@@ -41,14 +41,14 @@ def endpoint(base_url, info=False):
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ClientError("JEV_BASE_URL must be an absolute http(s) URL")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ClientError("JEV_BASE_URL must not contain credentials, query, or fragment")
+        raise ClientError(\n            "JEV_BASE_URL must not contain credentials, query, or fragment"\n        )
     path = parsed.path.rstrip("/")
     if path.endswith("/v1/decide"):
         path = path[: -len("/v1/decide")]
     elif path.endswith("/v1"):
         path = path[: -len("/v1")]
     suffix = "/v1/decide/info" if info else "/v1/decide"
-    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path + suffix, "", ""))
+    return urllib.parse.urlunsplit(\n        (parsed.scheme, parsed.netloc, path + suffix, "", "")\n    )
 
 
 def load_json(text, source):
@@ -92,7 +92,7 @@ def validate(body):
 
 def ssl_context():
     bundle = os.environ.get("JEV_CA_BUNDLE")
-    return ssl.create_default_context(cafile=bundle) if bundle else ssl.create_default_context()
+    return (\n        ssl.create_default_context(cafile=bundle)\n        if bundle\n        else ssl.create_default_context()\n    )
 
 
 def opener():
@@ -117,7 +117,7 @@ def request_json(url, method, body=None):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError
     except ValueError as exc:
-        raise ClientError("JEV_TIMEOUT_SECONDS must be a positive finite number") from exc
+        raise ClientError(\n            "JEV_TIMEOUT_SECONDS must be a positive finite number"\n        ) from exc
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with opener().open(req, timeout=timeout) as response:
@@ -152,7 +152,7 @@ def parser():
 
 def build_body(args):
     if args.request_file:
-        text = sys.stdin.read() if args.request_file == "-" else Path(args.request_file).read_text()
+        text = (\n            sys.stdin.read()\n            if args.request_file == "-"\n            else Path(args.request_file).read_text()\n        )
         return validate(load_json(text, "request file"))
     if not args.kind or args.question is None:
         raise ClientError("--kind and --question are required")

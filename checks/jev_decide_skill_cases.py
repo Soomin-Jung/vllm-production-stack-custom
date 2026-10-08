@@ -49,8 +49,8 @@ class Handler(BaseHTTPRequestHandler):
 
 class DecideScriptTest(unittest.TestCase):
     def test_endpoint_normalization(self):
-        self.assertEqual(MOD.endpoint("https://host/prefix/v1"), "https://host/prefix/v1/decide")
-        self.assertEqual(MOD.endpoint("https://host/v1/decide", True), "https://host/v1/decide/info")
+        self.assertEqual(\n            MOD.endpoint("https://host/prefix/v1"), "https://host/prefix/v1/decide"\n        )
+        self.assertEqual(\n            MOD.endpoint("https://host/v1/decide", True), "https://host/v1/decide/info"\n        )
         with self.assertRaises(MOD.ClientError):
             MOD.endpoint("https://user:pass@host/v1")
 
