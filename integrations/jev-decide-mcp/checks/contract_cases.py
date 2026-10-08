@@ -2,10 +2,9 @@ import json
 
 import httpx
 import pytest
-from pydantic import ValidationError
-
 from jev_decide_mcp.client import BackendError, DecideClient, Settings, endpoint_url
 from jev_decide_mcp.contract import ContractError, DecideRequest, validate_decision
+from pydantic import ValidationError
 
 
 def decision(body):
