@@ -38,3 +38,10 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["contract_cases", "jev_decide_mcp"]
+
+[tool.isort]
+profile = "black"
+known_first_party = ["contract_cases", "jev_decide_mcp"]
