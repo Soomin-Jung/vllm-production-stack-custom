@@ -129,9 +129,9 @@ The intended benefit is less frontier-model generation and less repeated semanti
 
 ## Sources and model-specific cautions
 
-- AutoTrust model card: https://huggingface.co/autotrust/JEV-27B
-- AutoTrust serving implementation: https://huggingface.co/autotrust/JEV-27B/blob/main/serve_decide.py
-- jev-code skill examined for workflow patterns: https://github.com/FrancoisChastel/jev-code/blob/main/skills/jev/SKILL.md
-- Evaluation/simulation boundary: https://arxiv.org/abs/2610.01834
+- [AutoTrust model card](https://huggingface.co/autotrust/JEV-27B)
+- [AutoTrust serving implementation](https://huggingface.co/autotrust/JEV-27B/blob/main/serve_decide.py)
+- [jev-code skill examined for workflow patterns](https://github.com/FrancoisChastel/jev-code/blob/main/skills/jev/SKILL.md)
+- [Evaluation/simulation boundary](https://arxiv.org/abs/2610.01834)
 
 AutoTrust JEV-27B is an independent student model and is not TypeSafe's hosted Jev. Validate behavior and thresholds on the deployed model rather than inheriting hosted-service claims.

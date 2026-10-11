@@ -48,7 +48,6 @@ Successful responses are JSON on stdout. Validation, HTTP, TLS, timeout, redirec
 
 Endpoint normalization accepts a base URL with no suffix, `/v1`, or `/v1/decide`. A URL containing credentials, query parameters, or fragments is rejected. Proxy environment variables are ignored.
 
-
 ## JEV-27B model boundaries
 
 - `noul` and `score` use fixed canonical option sets. `choice` is the only free-option primitive.
