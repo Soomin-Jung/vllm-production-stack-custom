@@ -1,6 +1,6 @@
 interface:
   display_name: "JEV Decide"
-  short_description: "Call and interpret a self-hosted JEV decision endpoint"
-  default_prompt: "Use $jev-decide to evaluate the supplied evidence and report the decision distribution."
+  short_description: "Delegate bounded judgments to self-hosted JEV-27B"
+  default_prompt: "Use $jev-decide only if this task is a bounded evaluation over explicit evidence; report the full distribution and escalation decision."
 policy:
   allow_implicit_invocation: true

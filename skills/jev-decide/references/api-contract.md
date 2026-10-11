@@ -47,3 +47,15 @@ decide.py --info
 Successful responses are JSON on stdout. Validation, HTTP, TLS, timeout, redirect, or malformed-JSON errors are JSON on stderr and return a nonzero exit code.
 
 Endpoint normalization accepts a base URL with no suffix, `/v1`, or `/v1/decide`. A URL containing credentials, query parameters, or fragments is rejected. Proxy environment variables are ignored.
+
+
+## JEV-27B model boundaries
+
+- `noul` and `score` use fixed canonical option sets. `choice` is the only free-option primitive.
+- Up to 16 choice labels were represented during training. The vLLM serving path extends choice to 256 options, but labels beyond 16 have limited calibration evidence.
+- Option order can change probabilities and sometimes the selected answer. Use stable ordering; use `strategy: "permute"` when supported and justified by the additional model requests.
+- `thinking: "off"` is the default System 1 path. `auto` and `on` can invoke the unmodified base model and produce additional reasoning; that path is not guaranteed to agree with System 1.
+- Context capacity does not establish difficult long-document reasoning quality. Reduce to deciding evidence where possible.
+- The training corpus is English-centric. Validate other languages before automating.
+- Do not use the base weights for memory-relevance scoring without separate validation or fine-tuning; the model card identifies an uninformative memory-relevance training stream.
+- Use confidence gating only with thresholds validated on the deployed model and local data.
