@@ -1,0 +1,37 @@
+# AutoTrust JEV-27B deployment using the model repository's serve_decide.py.
+# global-values.yaml must mount the model repository at /models/JEV-27B and
+# the profile directory at /profiles.
+servingEngineSpec:
+  modelSpec:
+    - name: jev-27b-h100-tp1
+      repository: vllm/vllm-openai
+      tag: v0.30.0-cu129-torch-family
+
+      modelURL: /models/JEV-27B
+      replicaCount: 1
+      requestGPU: 1
+      requestCPU: 8
+      requestMemory: 64Gi
+      pvcStorage: 1Gi
+
+      # /v1/decide is added by serve_decide.py, not by the stock vllm CLI.
+      command:
+        - python3
+      args:
+        - /models/JEV-27B/serve_decide.py
+        - --config
+        - /profiles/k8s-jev-27b-h100-tp1.yaml
+
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.product
+              operator: In
+              values:
+                - NVIDIA-H100-80GB-HBM3
+                - NVIDIA-H100-NVL
+
+      env:
+        # The adapter is registered at startup by lora-modules in the profile.
+        # Runtime LoRA mutation is unnecessary for this deployment.
+        - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
+          value: "0"
