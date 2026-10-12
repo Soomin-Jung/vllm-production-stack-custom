@@ -59,9 +59,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def canonical_json(value):
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def sha256_json(value):
@@ -198,9 +196,7 @@ def request_json(url, method, body=None):
             except json.JSONDecodeError as exc:
                 raise ClientError("upstream returned invalid JSON", attempts) from exc
             if not isinstance(result, dict):
-                raise ClientError(
-                    "upstream response must be a JSON object", attempts
-                )
+                raise ClientError("upstream response must be a JSON object", attempts)
             return result, attempts
 
         if backoff:
