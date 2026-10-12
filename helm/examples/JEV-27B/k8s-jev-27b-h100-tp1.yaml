@@ -1,0 +1,23 @@
+# AutoTrust JEV-27B quickstart translated to a vLLM YAML config.
+host: 0.0.0.0
+port: 8000
+
+model: /models/JEV-27B
+served-model-name:
+  - autotrust/JEV-27B
+dtype: auto
+tensor-parallel-size: 1
+gpu-memory-utilization: 0.90
+max-model-len: 32768
+
+# Required for System 1 decisions. The named adapter combines the backbone
+# LoRA with the decision head represented as an lm_head LoRA.
+enable-lora: true
+max-lora-rank: 32
+lora-modules:
+  - jev-decision=/models/JEV-27B/adapter_vllm
+logprobs-mode: processed_logprobs
+
+# Optional paired optimization for repeated questions over the same state:
+# enable-prefix-caching: true
+# mamba-cache-mode: align
