@@ -126,6 +126,14 @@ spec:
           image: "{{ required "Required value 'modelSpec.repository' must be defined !" $modelSpec.repository }}:{{ required "Required value 'modelSpec.tag' must be defined !" $modelSpec.tag }}"
           securityContext:
             {{- toYaml .Values.servingEngineSpec.containerSecurityContext | nindent 12 }}
+          {{- if $modelSpec.command }}
+          command:
+            {{- toYaml $modelSpec.command | nindent 12 }}
+          {{- if $modelSpec.args }}
+          args:
+            {{- toYaml $modelSpec.args | nindent 12 }}
+          {{- end }}
+          {{- else }}
           command:
           {{- if eq $modelSpec.repository "lmcache/vllm-openai" }}
           - "/opt/venv/bin/vllm"
@@ -155,6 +163,7 @@ spec:
              "kv_load_failure_policy": "recompute"{{ end }}
             }
           {{-   end }}
+          {{- end }}
           {{- end }}
           imagePullPolicy: "{{ .Values.servingEngineSpec.imagePullPolicy | default "Always" }}"
           env:
