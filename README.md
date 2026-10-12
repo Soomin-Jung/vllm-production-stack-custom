@@ -88,7 +88,7 @@ All non-dynamic vLLM engine arguments are centralized in a single profile YAML r
 - **Non-Ray `/dev/shm` uses hostPath `/dev/shm`.** This removes the prior TP-only mount condition and exposes host shared-memory capacity to every vLLM pod, but also reduces pod-level isolation and allows same-node workloads to contend for host shared memory.
 - **Ray `/dev/shm` remains memory-backed `emptyDir`**, with the default raised from `20Gi` to `100Gi`; `modelSpec.shmSize` can still override it.
 - **LMCache is legacy-disabled in the current production path.** The template hook remains, but current model deployments use `lmcacheConfig.enabled: false`. `LMCACHE_IP=status.hostIP` remains in global values from the standalone LMCache experiment and is currently unused.
-- **`VLLM_ALLOW_RUNTIME_LORA_UPDATING=1` is still present for the current baseline.** LoRA adapters are not supported in the current production environment, and this setting prevents use of `api_server_count > 1`; removing it requires a coordinated vLLM pod restart.
+- **`VLLM_ALLOW_RUNTIME_LORA_UPDATING=1` remains a legacy global default.** General production models do not use runtime LoRA updates. The JEV example explicitly sets it to `0` because its `jev-decision` adapter is loaded at startup from the profile; the adapter is required for `/v1/decide` but does not require the runtime load/unload API.
 - **Router resources are pinned to the production baseline.** Requests are `cpu: 1000m` and `memory: 5Gi`; limits contain `memory: 5Gi` and intentionally do not set a CPU limit.
 - Host paths in `global-values.yaml` represent the normalized intended production paths. Confirm them against the offline node filesystem before using this repository as a deployment source.
 
@@ -99,7 +99,7 @@ The downstream workflow runs:
 1. `helm lint` using schema-compliant synthetic non-Ray and Ray models.
 2. `helm template` and rendered invariant checks for global env/volume merging, profile arguments, non-Ray host `/dev/shm`, Ray `100Gi` shm, and `requestGPU: 0`.
 3. A separate render with the upstream schema temporarily excluded to exercise the customized GPU-derived CPU/memory fallback (`2 GPU → 8000m / 20Gi`).
-4. The actual offline production multi-model render was manually verified: each non-Ray Deployment is separated as its own YAML document (`---` followed by `# Source`, `apiVersion`, and `kind: Deployment`), with no separator/string concatenation. The earlier `---apiVersion` observation was limited to a synthetic fixture and is not treated as a production baseline defect.
+4. Multi-model non-Ray rendering is regression-tested with both the stock `vllm serve` path and a custom-entrypoint model. The template preserves a YAML document separator between every Deployment, preventing `---apiVersion` concatenation across range iterations.
 
 ### Agentic API v0.5.0 offline deployment
 
