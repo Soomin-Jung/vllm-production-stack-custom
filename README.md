@@ -112,6 +112,9 @@ The downstream workflow runs:
 - [`skills/jev-decide/SKILL.md`](skills/jev-decide/SKILL.md): Codex/Claude Code가 self-hosted JEV `POST /v1/decide`를 직접 호출하고 결과를 해석하는 사용자 설치형 skill
 - [API contract](skills/jev-decide/references/api-contract.md): `choice`, `noul`, `score`, advanced controls 및 응답 해석
 - [direct-call script](skills/jev-decide/scripts/decide.py): Python 표준 라이브러리만 사용하는 REST client
+- [JEV-27B deployment example](helm/examples/JEV-27B/README.md): `serve_decide.py` custom entrypoint, H100 TP1 profile, LoRA decision path 및 배포 검증 절차
+
+`/v1/decide`는 stock vLLM route가 아니므로 모델 저장소의 `serve_decide.py`로 서버를 시작해야 한다. non-Ray chart는 model-level `command`와 `args`가 있을 때만 container entrypoint를 override하며, 기존 모델은 계속 `vllm serve` 경로를 사용한다.
 
 사용자는 skill directory를 자신의 agent skill 경로에 복사하고 `JEV_BASE_URL`을 설정한다. 별도 MCP server는 필요하지 않으며 agent의 shell 실행 권한과 JEV endpoint에 대한 네트워크 접근이 필요하다.
 
