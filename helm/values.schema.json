@@ -64,6 +64,19 @@
               "tag": {
                 "type": "string"
               },
+              "command": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
               "modelURL": {
                 "type": "string"
               },

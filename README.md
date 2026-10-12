@@ -88,7 +88,7 @@ All non-dynamic vLLM engine arguments are centralized in a single profile YAML r
 - **Non-Ray `/dev/shm` uses hostPath `/dev/shm`.** This removes the prior TP-only mount condition and exposes host shared-memory capacity to every vLLM pod, but also reduces pod-level isolation and allows same-node workloads to contend for host shared memory.
 - **Ray `/dev/shm` remains memory-backed `emptyDir`**, with the default raised from `20Gi` to `100Gi`; `modelSpec.shmSize` can still override it.
 - **LMCache is legacy-disabled in the current production path.** The template hook remains, but current model deployments use `lmcacheConfig.enabled: false`. `LMCACHE_IP=status.hostIP` remains in global values from the standalone LMCache experiment and is currently unused.
-- **`VLLM_ALLOW_RUNTIME_LORA_UPDATING=1` is still present for the current baseline.** LoRA adapters are not supported in the current production environment, and this setting prevents use of `api_server_count > 1`; removing it requires a coordinated vLLM pod restart.
+- **`VLLM_ALLOW_RUNTIME_LORA_UPDATING=1` remains a legacy global default.** General production models do not use runtime LoRA updates. The JEV example explicitly sets it to `0` because its `jev-decision` adapter is loaded at startup from the profile; the adapter is required for `/v1/decide` but does not require the runtime load/unload API.
 - **Router resources are pinned to the production baseline.** Requests are `cpu: 1000m` and `memory: 5Gi`; limits contain `memory: 5Gi` and intentionally do not set a CPU limit.
 - Host paths in `global-values.yaml` represent the normalized intended production paths. Confirm them against the offline node filesystem before using this repository as a deployment source.
 
@@ -99,13 +99,38 @@ The downstream workflow runs:
 1. `helm lint` using schema-compliant synthetic non-Ray and Ray models.
 2. `helm template` and rendered invariant checks for global env/volume merging, profile arguments, non-Ray host `/dev/shm`, Ray `100Gi` shm, and `requestGPU: 0`.
 3. A separate render with the upstream schema temporarily excluded to exercise the customized GPU-derived CPU/memory fallback (`2 GPU → 8000m / 20Gi`).
-4. The actual offline production multi-model render was manually verified: each non-Ray Deployment is separated as its own YAML document (`---` followed by `# Source`, `apiVersion`, and `kind: Deployment`), with no separator/string concatenation. The earlier `---apiVersion` observation was limited to a synthetic fixture and is not treated as a production baseline defect.
+4. Multi-model non-Ray rendering is regression-tested with both the stock `vllm serve` path and a custom-entrypoint model. The template preserves a YAML document separator between every Deployment, preventing `---apiVersion` concatenation across range iterations.
 
 ### Agentic API v0.5.0 offline deployment
 
 - [`docker/agentic-api/README_KO.md`](docker/agentic-api/README_KO.md): exact-source/Cargo-vendored closed-network image build and Kaniko inputs
 - [`deploy/agentic-api/README_KO.md`](deploy/agentic-api/README_KO.md): minimal PostgreSQL-backed Kubernetes deployment, runtime options, and release checks
 - `docker/Dockerfile.agentic-api`: Rust-only standalone gateway image; Python, vLLM, CUDA, and model weights remain in the serving stack
+
+### Self-hosted JEV decision skill
+
+- [`skills/jev-decide/SKILL.md`](skills/jev-decide/SKILL.md): Codex/Claude Code가 self-hosted JEV `POST /v1/decide`를 직접 호출하고 결과를 해석하는 사용자 설치형 skill
+- [API contract](skills/jev-decide/references/api-contract.md): `choice`, `noul`, `score`, advanced controls 및 응답 해석
+- [direct-call script](skills/jev-decide/scripts/decide.py): Python 표준 라이브러리만 사용하는 REST client
+- [JEV-27B deployment example](helm/examples/JEV-27B/README.md): `serve_decide.py` custom entrypoint, H100 TP1 profile, LoRA decision path 및 배포 검증 절차
+
+`/v1/decide`는 stock vLLM route가 아니므로 모델 저장소의 `serve_decide.py`로 서버를 시작해야 한다. non-Ray chart는 model-level `command`와 `args`가 있을 때만 container entrypoint를 override하며, 기존 모델은 계속 `vllm serve` 경로를 사용한다.
+
+사용자는 skill directory를 자신의 agent skill 경로에 복사하고 `JEV_BASE_URL`을 설정한다. 별도 MCP server는 필요하지 않으며 agent의 shell 실행 권한과 JEV endpoint에 대한 네트워크 접근이 필요하다.
+
+```bash
+export JEV_BASE_URL="https://jev.example.internal"
+export JEV_API_KEY="optional-backend-token"
+
+python skills/jev-decide/scripts/decide.py \
+  --kind choice \
+  --question "Which action should the workflow take?" \
+  --option proceed \
+  --option hold \
+  --state-json '{"tests":"passed","risk":"low"}'
+```
+
+이 skill은 지정한 self-hosted backend만 호출한다. 다른 provider로 자동 전환하지 않으며, JEV 결과에 따른 실제 명령 실행과 승인 권한은 host workflow가 소유한다.
 
 ---
 

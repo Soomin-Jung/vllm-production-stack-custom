@@ -57,6 +57,22 @@ jobs:
                   - name: TZ
                     value: ModelOverride/Zone
 
+              - name: smoke-custom-entrypoint
+                repository: vllm/vllm-openai
+                tag: latest
+                replicaCount: 1
+                modelURL: /models/JEV-27B
+                requestGPU: 0
+                requestCPU: 1
+                requestMemory: 4Gi
+                pvcStorage: 1Gi
+                command:
+                  - python3
+                args:
+                  - /models/JEV-27B/serve_decide.py
+                  - --config
+                  - /profiles/k8s-jev-27b-h100-tp1.yaml
+
               - name: smoke-ray
                 repository: vllm/vllm-openai
                 tag: latest
@@ -104,11 +120,13 @@ jobs:
         run: |
           helm lint ./helm -f global-values.yaml -f /tmp/smoke-values.yaml
           helm lint ./helm -f global-values.yaml -f /tmp/lmcache-values.yaml
+          helm lint ./helm -f global-values.yaml -f helm/examples/JEV-27B/deploy-jev.yaml
 
       - name: Render schema-compliant charts
         run: |
           helm template llm ./helm -n inference -f global-values.yaml -f /tmp/smoke-values.yaml > /tmp/rendered.yaml
           helm template llm-lmcache ./helm -n inference -f global-values.yaml -f /tmp/lmcache-values.yaml > /tmp/lmcache-rendered.yaml
+          helm template llm-jev ./helm -n inference -f global-values.yaml -f helm/examples/JEV-27B/deploy-jev.yaml > /tmp/jev-rendered.yaml
 
       - name: Verify production runtime invariants
         shell: bash
@@ -129,6 +147,17 @@ jobs:
           contains /tmp/rendered.yaml 'requestGPU=0 model rendered' 'llm-smoke'
           contains /tmp/rendered.yaml 'profile flag rendered' '--config'
           contains /tmp/rendered.yaml 'non-Ray profile path rendered' '/profiles/smoke.yaml'
+          contains /tmp/rendered.yaml 'custom entrypoint model rendered' 'llm-smoke-custom-entrypoint'
+          contains /tmp/rendered.yaml 'custom Python command rendered' 'python3'
+          contains /tmp/rendered.yaml 'custom script argument rendered' '/models/JEV-27B/serve_decide.py'
+          contains /tmp/rendered.yaml 'custom config argument rendered' '/profiles/k8s-jev-27b-h100-tp1.yaml'
+          contains /tmp/jev-rendered.yaml 'JEV Python command rendered' 'python3'
+          contains /tmp/jev-rendered.yaml 'JEV decision server rendered' '/models/JEV-27B/serve_decide.py'
+          contains /tmp/jev-rendered.yaml 'JEV profile argument rendered' '/profiles/k8s-jev-27b-h100-tp1.yaml'
+          grep -Fq -- 'enable-lora: true' helm/examples/JEV-27B/k8s-jev-27b-h100-tp1.yaml
+          grep -Fq -- 'max-lora-rank: 32' helm/examples/JEV-27B/k8s-jev-27b-h100-tp1.yaml
+          grep -Fq -- 'jev-decision=/models/JEV-27B/adapter_vllm' helm/examples/JEV-27B/k8s-jev-27b-h100-tp1.yaml
+          grep -Fq -- 'logprobs-mode: processed_logprobs' helm/examples/JEV-27B/k8s-jev-27b-h100-tp1.yaml
           if grep -Fq -- '/models/unused-by-template' /tmp/rendered.yaml; then
             echo 'non-Ray modelURL unexpectedly rendered into workload output'
             exit 1
