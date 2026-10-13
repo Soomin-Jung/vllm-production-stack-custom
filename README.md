@@ -1,15 +1,16 @@
 # 메모장
 ```
 
+
 /**
  * DTGPT - HPC / OA 토큰 사용 비중
  * Query A: oa-total
  * Query B: hpc-total
  */
 
-// 1. Grafana 데이터 조회
 const frames = context.panel.data.series;
 
+// 1. DB 데이터 조회
 const getValue = (names) => {
   for (const frame of frames) {
     const field = frame.fields.find(f =>
@@ -27,13 +28,36 @@ const getValue = (names) => {
 const oa = getValue(["oa-total", "oa"]);
 const hpc = getValue(["hpc-total", "hpc"]);
 
-// 2. 데이터 검증
-const total = oa + hpc;
+// 2. 숫자 축약 함수
+const formatShort = (value) => {
+  const units = [
+    { threshold: 1e12, suffix: "Tri" },
+    { threshold: 1e9, suffix: "Bil" },
+    { threshold: 1e6, suffix: "Mil" },
+    { threshold: 1e3, suffix: "K" }
+  ];
 
-if (
-  oa === null || hpc === null ||
-  !Number.isFinite(total) || total <= 0
-) {
+  for (const unit of units) {
+    if (Math.abs(value) >= unit.threshold) {
+      const num = value / unit.threshold;
+      return `${Number(num.toFixed(2))} ${unit.suffix}`;
+    }
+  }
+
+  return value.toLocaleString("en-US");
+};
+
+// 3. 데이터 검증
+const valid =
+  oa !== null &&
+  hpc !== null &&
+  Number.isFinite(oa) &&
+  Number.isFinite(hpc) &&
+  oa >= 0 &&
+  hpc >= 0 &&
+  oa + hpc > 0;
+
+if (!valid) {
   return {
     title: {
       text: "사용량 데이터 없음",
@@ -43,41 +67,47 @@ if (
   };
 }
 
-// 3. 비율 계산
+// 4. 비율 계산
+const total = oa + hpc;
 const hpcPct = hpc / total * 100;
 const oaPct = oa / total * 100;
 
-// 4. 차트 공통 설정
-const makeSeries = (name, value, raw, color) => ({
+// 5. Bar Series
+const makeSeries = (name, percent, raw, color) => ({
   name,
   type: "bar",
   stack: "total",
-  barWidth: 52,
-  data: [value],
+  barWidth: 78,
+
+  data: [percent],
+
   itemStyle: {
     color,
     borderRadius: 0
   },
+
   label: {
     show: true,
     position: "inside",
     color: "#FFFFFF",
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: "bold",
+    lineHeight: 22,
+    align: "center",
     formatter: () =>
-      `${name}\n${value.toFixed(1)}%`
+      `${name}\n${formatShort(raw)}\n${percent.toFixed(1)}%`
   }
 });
 
-// 5. ECharts 설정
+// 6. ECharts Options
 return {
   backgroundColor: "transparent",
 
   grid: {
     left: "3%",
     right: "3%",
-    top: "25%",
-    bottom: "25%"
+    top: "20%",
+    bottom: "20%"
   },
 
   xAxis: {
@@ -95,13 +125,15 @@ return {
 
   tooltip: {
     trigger: "item",
+
     formatter: (params) => {
       const raw = params.seriesName === "HPC"
-        ? hpc : oa;
+        ? hpc
+        : oa;
 
       return (
-        `${params.seriesName}<br/>` +
-        `사용량: ${raw.toLocaleString("ko-KR")} tokens<br/>` +
+        `<b>${params.seriesName}</b><br/>` +
+        `사용량: ${formatShort(raw)} tokens<br/>` +
         `비중: ${Number(params.value).toFixed(1)}%`
       );
     }
