@@ -1,3 +1,123 @@
+# 메모장
+```
+
+/**
+ * DTGPT - HPC / OA 토큰 사용 비중
+ * Query A: oa-total
+ * Query B: hpc-total
+ */
+
+// 1. Grafana 데이터 조회
+const frames = context.panel.data.series;
+
+const getValue = (names) => {
+  for (const frame of frames) {
+    const field = frame.fields.find(f =>
+      names.includes(f.name.toLowerCase())
+    );
+
+    if (field) {
+      const v = field.values;
+      return Number(v?.[0] ?? v?.buffer?.[0] ?? 0);
+    }
+  }
+  return null;
+};
+
+const oa = getValue(["oa-total", "oa"]);
+const hpc = getValue(["hpc-total", "hpc"]);
+
+// 2. 데이터 검증
+const total = oa + hpc;
+
+if (
+  oa === null || hpc === null ||
+  !Number.isFinite(total) || total <= 0
+) {
+  return {
+    title: {
+      text: "사용량 데이터 없음",
+      left: "center",
+      top: "center"
+    }
+  };
+}
+
+// 3. 비율 계산
+const hpcPct = hpc / total * 100;
+const oaPct = oa / total * 100;
+
+// 4. 차트 공통 설정
+const makeSeries = (name, value, raw, color) => ({
+  name,
+  type: "bar",
+  stack: "total",
+  barWidth: 52,
+  data: [value],
+  itemStyle: {
+    color,
+    borderRadius: 0
+  },
+  label: {
+    show: true,
+    position: "inside",
+    color: "#FFFFFF",
+    fontSize: 17,
+    fontWeight: "bold",
+    formatter: () =>
+      `${name}\n${value.toFixed(1)}%`
+  }
+});
+
+// 5. ECharts 설정
+return {
+  backgroundColor: "transparent",
+
+  grid: {
+    left: "3%",
+    right: "3%",
+    top: "25%",
+    bottom: "25%"
+  },
+
+  xAxis: {
+    type: "value",
+    min: 0,
+    max: 100,
+    show: false
+  },
+
+  yAxis: {
+    type: "category",
+    data: ["전체"],
+    show: false
+  },
+
+  tooltip: {
+    trigger: "item",
+    formatter: (params) => {
+      const raw = params.seriesName === "HPC"
+        ? hpc : oa;
+
+      return (
+        `${params.seriesName}<br/>` +
+        `사용량: ${raw.toLocaleString("ko-KR")} tokens<br/>` +
+        `비중: ${Number(params.value).toFixed(1)}%`
+      );
+    }
+  },
+
+  series: [
+    makeSeries("HPC", hpcPct, hpc, "#2477B8"),
+    makeSeries("OA", oaPct, oa, "#169B83")
+  ]
+};
+
+```
+
+
+
+
 # vLLM Production Stack: reference stack for production vLLM deployment
 
 Custom deployment and build documentation: [documentation index](helm/docs/README.md).
