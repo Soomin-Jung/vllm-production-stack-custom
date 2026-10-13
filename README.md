@@ -1,45 +1,46 @@
 # 메모장
 ```
-// 타일별 라벨의 실제 높이를 계산
-function getLabelHeight(value) {
-  const pct = value / grandTotal * 100;
 
-  if (pct < CONFIG.HIDE_LABEL_BELOW_PERCENT) {
-    return 0;
-  }
-
-  if (pct < CONFIG.COMPACT_LABEL_MIN_PERCENT) {
-    return 17;
-  }
-
-  if (pct < CONFIG.FULL_LABEL_MIN_PERCENT) {
-    return 25 + (CONFIG.SHOW_VALUE ? 20 : 0);
-  }
-
-  return (
-    25 +
-    (CONFIG.SHOW_VALUE ? 29 : 0) +
-    (CONFIG.SHOW_PERCENT ? 22 : 0)
-  );
-}
-
-// 타일의 정중앙에 라벨 배치
 function centerLabel(params) {
   const rect = params.rect;
-  const item = treeData[params.dataIndex];
 
-  if (!rect || !item) return {};
+  if (!rect) return {};
 
-  const textHeight = getLabelHeight(item.value);
+  // 실제 렌더링할 텍스트 사용
+  const text = String(params.text ?? "");
 
-  // 텍스트가 들어갈 공간이 부족하면 숨김
+  if (!text.trim()) {
+    return { hide: true };
+  }
+
+  // Rich Text 스타일별 줄 높이
+  const lineHeights = {
+    name: 25,
+    value: 29,
+    percent: 22,
+    small: 17,
+    smallValue: 20
+  };
+
+  // 실제 라벨 높이 계산
+  const lines = text.split("\n");
+
+  const textHeight = lines.reduce((sum, line) => {
+    const match = line.match(/^\{(\w+)\|/);
+    const style = match?.[1];
+
+    return sum + (lineHeights[style] ?? 20);
+  }, 0);
+
+  // 공간 부족 시 라벨 숨김
   if (
-    textHeight <= 0 ||
-    rect.height < textHeight + 6
+    rect.height < textHeight + 6 ||
+    rect.width < 35
   ) {
     return { hide: true };
   }
 
+  // 정중앙 배치
   return {
     x: rect.x + rect.width / 2,
     y: rect.y + (rect.height - textHeight) / 2,
@@ -47,6 +48,7 @@ function centerLabel(params) {
     verticalAlign: "top"
   };
 }
+
 ```
 
 
