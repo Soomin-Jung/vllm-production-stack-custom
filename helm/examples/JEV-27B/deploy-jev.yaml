@@ -14,11 +14,19 @@ servingEngineSpec:
       requestMemory: 64Gi
       pvcStorage: 1Gi
 
-      # /v1/decide is added by serve_decide.py, not by the stock vllm CLI.
+      # The wrapper loads the model repository's serve_decide.py, then adds
+      # SQLite usage logging without forking the upstream endpoint logic.
       command:
         - python3
       args:
+        - /profiles/JEV-27B/serve_decide_sqlite.py
+        - --jev-upstream-script
         - /models/JEV-27B/serve_decide.py
+        - --jev-sqlite-path
+        - /vllm_cache/jev/decisions.sqlite3
+        # Retain question/options for usage analysis, but not the state body.
+        - --jev-sqlite-input-mode
+        - question
         - --config
         - /profiles/k8s-jev-27b-h100-tp1.yaml
 
