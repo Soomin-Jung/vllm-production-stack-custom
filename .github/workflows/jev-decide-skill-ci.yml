@@ -13,6 +13,8 @@ on:
     paths:
       - "skills/jev-decide/**"
       - "checks/jev_decide_skill_cases.py"
+      - "checks/jev_server_sqlite_cases.py"
+      - "helm/examples/JEV-27B/serve_decide_sqlite.py"
       - ".github/workflows/jev-decide-skill-ci.yml"
 
 permissions:
