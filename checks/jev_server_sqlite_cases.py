@@ -8,7 +8,8 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-MODULE_PATH = Path(__file__).with_name("serve_decide_sqlite.py")
+ROOT = Path(__file__).resolve().parents[1]
+MODULE_PATH = ROOT / "helm" / "examples" / "JEV-27B" / "serve_decide_sqlite.py"
 SPEC = importlib.util.spec_from_file_location("serve_decide_sqlite", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
