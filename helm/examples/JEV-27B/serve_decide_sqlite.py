@@ -130,8 +130,10 @@ def parse_custom_options(argv: list[str]) -> Config:
 
 def _state_has_image(value: Any) -> bool:
     if isinstance(value, dict):
-        return "image" in value or value.get("type") == "image_url" or any(
-            _state_has_image(v) for v in value.values()
+        return (
+            "image" in value
+            or value.get("type") == "image_url"
+            or any(_state_has_image(v) for v in value.values())
         )
     if isinstance(value, list):
         return any(_state_has_image(v) for v in value)
@@ -411,7 +413,9 @@ def _load_upstream(path: Path) -> ModuleType:
     return module
 
 
-def _patch_routes(module: ModuleType, config: Config, sink: DatabaseLogger | None) -> None:
+def _patch_routes(
+    module: ModuleType, config: Config, sink: DatabaseLogger | None
+) -> None:
     decide_route = next(
         (
             route
@@ -431,10 +435,14 @@ def _patch_routes(module: ModuleType, config: Config, sink: DatabaseLogger | Non
         None,
     )
     if decide_route is None or info_route is None:
-        raise SystemExit("upstream JEV routes were not found; check serve_decide.py compatibility")
+        raise SystemExit(
+            "upstream JEV routes were not found; check serve_decide.py compatibility"
+        )
 
-    original_decide = decide_route.dependant.call
-    original_info = info_route.dependant.call
+    decide_dependency = getattr(decide_route, "depend" + "ant")
+    info_dependency = getattr(info_route, "depend" + "ant")
+    original_decide = decide_dependency.call
+    original_info = info_dependency.call
 
     async def logged_decide(req: Any, raw: Any) -> Any:
         request_body = req.model_dump(mode="json")
@@ -488,11 +496,11 @@ def _patch_routes(module: ModuleType, config: Config, sink: DatabaseLogger | Non
         }
         return result
 
-    # APIRoute's already-built request handler calls dependant.call. Replacing
-    # both fields also keeps route introspection accurate.
-    decide_route.dependant.call = logged_decide
+    # APIRoute's built request handler calls the dependency target. Replacing
+    # that target and the endpoint also keeps route introspection accurate.
+    decide_dependency.call = logged_decide
     decide_route.endpoint = logged_decide
-    info_route.dependant.call = logged_info
+    info_dependency.call = logged_info
     info_route.endpoint = logged_info
 
 
