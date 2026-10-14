@@ -162,7 +162,10 @@ def request_json(url, method, body=None, audit_id=None):
     timeout = env_number("JEV_TIMEOUT_SECONDS", 60, 0.001, 3600)
     max_retries = env_number("JEV_MAX_RETRIES", 2, 0, 5, integer=True)
     backoff = env_number("JEV_RETRY_BACKOFF_SECONDS", 0.25, 0, 10)
-    headers = {"Accept": "application/json", "User-Agent": f"jev-decide-skill/{VERSION}"}
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": f"jev-decide-skill/{VERSION}",
+    }
     if audit_id:
         headers["X-JEV-Audit-ID"] = audit_id
     key = os.environ.get("JEV_API_KEY")
