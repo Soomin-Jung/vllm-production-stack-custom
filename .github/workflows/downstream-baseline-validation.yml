@@ -152,7 +152,10 @@ jobs:
           contains /tmp/rendered.yaml 'custom script argument rendered' '/models/JEV-27B/serve_decide.py'
           contains /tmp/rendered.yaml 'custom config argument rendered' '/profiles/k8s-jev-27b-h100-tp1.yaml'
           contains /tmp/jev-rendered.yaml 'JEV Python command rendered' 'python3'
-          contains /tmp/jev-rendered.yaml 'JEV decision server rendered' '/models/JEV-27B/serve_decide.py'
+          contains /tmp/jev-rendered.yaml 'JEV SQLite wrapper rendered' '/profiles/JEV-27B/serve_decide_sqlite.py'
+          contains /tmp/jev-rendered.yaml 'JEV upstream server rendered' '/models/JEV-27B/serve_decide.py'
+          contains /tmp/jev-rendered.yaml 'JEV SQLite path rendered' '/vllm_cache/jev/decisions.sqlite3'
+          contains /tmp/jev-rendered.yaml 'JEV input retention mode rendered' 'question'
           contains /tmp/jev-rendered.yaml 'JEV profile argument rendered' '/profiles/k8s-jev-27b-h100-tp1.yaml'
           grep -Fq -- 'enable-lora: true' helm/examples/JEV-27B/k8s-jev-27b-h100-tp1.yaml
           grep -Fq -- 'max-lora-rank: 32' helm/examples/JEV-27B/k8s-jev-27b-h100-tp1.yaml

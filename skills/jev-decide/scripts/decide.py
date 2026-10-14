@@ -22,7 +22,7 @@ try:
 except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 FIELDS = {
     "kind",
     "state",
@@ -158,11 +158,16 @@ def env_number(name, default, minimum, maximum, integer=False):
     return value
 
 
-def request_json(url, method, body=None):
+def request_json(url, method, body=None, audit_id=None):
     timeout = env_number("JEV_TIMEOUT_SECONDS", 60, 0.001, 3600)
     max_retries = env_number("JEV_MAX_RETRIES", 2, 0, 5, integer=True)
     backoff = env_number("JEV_RETRY_BACKOFF_SECONDS", 0.25, 0, 10)
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": f"jev-decide-skill/{VERSION}",
+    }
+    if audit_id:
+        headers["X-JEV-Audit-ID"] = audit_id
     key = os.environ.get("JEV_API_KEY")
     if key:
         headers["Authorization"] = "Bearer " + key
@@ -417,11 +422,13 @@ def main():
             ):
                 raise ClientError("--info cannot be combined with decision inputs")
             url = endpoint(base, info=True)
-            response_body, attempts = request_json(url, "GET")
+            response_body, attempts = request_json(url, "GET", audit_id=audit_id)
         else:
             request_body, evidence = build_body(args)
             url = endpoint(base)
-            response_body, attempts = request_json(url, "POST", request_body)
+            response_body, attempts = request_json(
+                url, "POST", request_body, audit_id=audit_id
+            )
 
         record = audit_record(
             audit_id,
