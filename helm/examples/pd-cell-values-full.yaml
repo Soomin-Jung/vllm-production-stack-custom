@@ -237,6 +237,15 @@ pdCellSpec:
   # Pod 종료 유예 시간.
   terminationGracePeriodSeconds: 60
 
+  # P/D 엔진 전용 Liveness Probe 공통 override (선택 사항).
+  # 지정하지 않으면 servingEngineSpec.livenessProbe 값과 Kubernetes 기본 timeout(1초)을 상속.
+  # 일반 servingEngineSpec.modelSpec으로 배포되는 엔진은 영향을 받지 않는다.
+  # phase별 override는 models[].prefill.livenessProbe 및 models[].decode.livenessProbe.
+  # livenessProbe:
+  #   timeoutSeconds: 5
+  #   periodSeconds: 10
+  #   failureThreshold: 6
+
   # P/D Cell 전체를 하나의 failure domain으로 관리하는 guardian.
   #
   # 기본값은 enabled=true이며 values에 아예 쓰지 않아도 활성화된다.
@@ -872,6 +881,14 @@ pdCellSpec:
       # -----------------------------------------------------------------------
 
       decode:
+        # Decode 컨테이너 전용 Liveness Probe (Prefill/일반 서빙 영향 없음).
+        # 장시간 무응답이 약 1분 지속되면 재시작하도록 완화한 운영 예시.
+        livenessProbe:
+          initialDelaySeconds: 15
+          timeoutSeconds: 5
+          periodSeconds: 10
+          failureThreshold: 6
+
         # 한 Pod 안에 생성할 Decode container 수.
         count: 2
 
