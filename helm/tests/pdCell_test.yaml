@@ -37,6 +37,9 @@ tests:
     set:
       pdCellSpec:
         enabled: true
+        livenessProbe:
+          timeoutSeconds: 3
+          failureThreshold: 4
         router:
           repository: registry.example/vllm-router
           tag: v0.1.15
@@ -73,7 +76,44 @@ tests:
               sideChannelPortBase: 5700
               sideChannelPortStride: 10
               profile: /profiles/decode.yaml
+              livenessProbe:
+                initialDelaySeconds: 15
+                timeoutSeconds: 5
+                periodSeconds: 10
+                failureThreshold: 6
     asserts:
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[2].livenessProbe.timeoutSeconds
+          value: 3
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[2].livenessProbe.failureThreshold
+          value: 4
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[3].livenessProbe.timeoutSeconds
+          value: 3
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[4].livenessProbe.initialDelaySeconds
+          value: 15
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[4].livenessProbe.timeoutSeconds
+          value: 5
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[4].livenessProbe.periodSeconds
+          value: 10
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[4].livenessProbe.failureThreshold
+          value: 6
+      - template: deployment-pd-cell.yaml
+        equal:
+          path: spec.template.spec.containers[5].livenessProbe.timeoutSeconds
+          value: 5
       - template: deployment-pd-cell.yaml
         contains:
           path: spec.template.spec.containers[0].env
