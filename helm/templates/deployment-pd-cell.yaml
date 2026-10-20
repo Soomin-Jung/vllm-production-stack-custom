@@ -97,6 +97,10 @@
 
     {{- $prefill := required (printf "pdCellSpec model %s: prefill is required" $name) $modelSpec.prefill -}}
     {{- $decode := required (printf "pdCellSpec model %s: decode is required" $name) $modelSpec.decode -}}
+    {{- /* Probe overrides are scoped to PD Cell and optionally each phase; normal serving uses servingEngineSpec only. */ -}}
+    {{- $commonLivenessProbe := mergeOverwrite (deepCopy ($root.Values.servingEngineSpec.livenessProbe | default dict)) ($pdCellSpec.livenessProbe | default dict) -}}
+    {{- $prefillLivenessProbe := mergeOverwrite (deepCopy $commonLivenessProbe) ($prefill.livenessProbe | default dict) -}}
+    {{- $decodeLivenessProbe := mergeOverwrite (deepCopy $commonLivenessProbe) ($decode.livenessProbe | default dict) -}}
     {{- $pCount := int (required (printf "pdCellSpec model %s: prefill.count is required" $name) $prefill.count) -}}
     {{- $dCount := int (required (printf "pdCellSpec model %s: decode.count is required" $name) $decode.count) -}}
     {{- if lt $pCount 1 -}}
@@ -891,11 +895,12 @@ spec:
             failureThreshold: {{ default 360 $root.Values.servingEngineSpec.startupProbe.failureThreshold }}
           livenessProbe:
             httpGet:
-              path: {{ default "/health" $root.Values.servingEngineSpec.livenessProbe.httpGet.path }}
+              path: {{ default "/health" $prefillLivenessProbe.httpGet.path }}
               port: {{ $enginePort }}
-            initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.livenessProbe.initialDelaySeconds }}
-            periodSeconds: {{ default 10 $root.Values.servingEngineSpec.livenessProbe.periodSeconds }}
-            failureThreshold: {{ default 3 $root.Values.servingEngineSpec.livenessProbe.failureThreshold }}
+            initialDelaySeconds: {{ default 15 $prefillLivenessProbe.initialDelaySeconds }}
+            timeoutSeconds: {{ default 1 $prefillLivenessProbe.timeoutSeconds }}
+            periodSeconds: {{ default 10 $prefillLivenessProbe.periodSeconds }}
+            failureThreshold: {{ default 3 $prefillLivenessProbe.failureThreshold }}
           readinessProbe:
             httpGet:
               path: {{ default "/health" $root.Values.servingEngineSpec.readinessProbe.httpGet.path }}
@@ -1055,11 +1060,12 @@ spec:
             failureThreshold: {{ default 360 $root.Values.servingEngineSpec.startupProbe.failureThreshold }}
           livenessProbe:
             httpGet:
-              path: {{ default "/health" $root.Values.servingEngineSpec.livenessProbe.httpGet.path }}
+              path: {{ default "/health" $decodeLivenessProbe.httpGet.path }}
               port: {{ $enginePort }}
-            initialDelaySeconds: {{ default 15 $root.Values.servingEngineSpec.livenessProbe.initialDelaySeconds }}
-            periodSeconds: {{ default 10 $root.Values.servingEngineSpec.livenessProbe.periodSeconds }}
-            failureThreshold: {{ default 3 $root.Values.servingEngineSpec.livenessProbe.failureThreshold }}
+            initialDelaySeconds: {{ default 15 $decodeLivenessProbe.initialDelaySeconds }}
+            timeoutSeconds: {{ default 1 $decodeLivenessProbe.timeoutSeconds }}
+            periodSeconds: {{ default 10 $decodeLivenessProbe.periodSeconds }}
+            failureThreshold: {{ default 3 $decodeLivenessProbe.failureThreshold }}
           readinessProbe:
             httpGet:
               path: {{ default "/health" $root.Values.servingEngineSpec.readinessProbe.httpGet.path }}
