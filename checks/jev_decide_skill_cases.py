@@ -23,6 +23,8 @@ class Handler(BaseHTTPRequestHandler):
     attempts = 0
     fail_remaining = 0
     authorization = None
+    audit_id = None
+    user_agent = None
 
     def log_message(self, *args):
         pass
@@ -34,6 +36,8 @@ class Handler(BaseHTTPRequestHandler):
         cls = self.__class__
         cls.attempts += 1
         cls.authorization = self.headers.get("Authorization")
+        cls.audit_id = self.headers.get("X-JEV-Audit-ID")
+        cls.user_agent = self.headers.get("User-Agent")
         cls.seen = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         if cls.fail_remaining:
             cls.fail_remaining -= 1
@@ -64,6 +68,8 @@ class DecideScriptTest(unittest.TestCase):
         Handler.attempts = 0
         Handler.fail_remaining = 0
         Handler.authorization = None
+        Handler.audit_id = None
+        Handler.user_agent = None
 
     def start_server(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -149,6 +155,8 @@ class DecideScriptTest(unittest.TestCase):
             self.assertEqual(output["_jev_client"]["attempts"], 1)
             self.assertEqual(Handler.seen["state"], {"tests": "passed"})
             self.assertEqual(Handler.authorization, "Bearer do-not-log-this-token")
+            self.assertEqual(Handler.audit_id, output["_jev_client"]["audit_id"])
+            self.assertEqual(Handler.user_agent, "jev-decide-skill/0.3.1")
 
             audit_text = audit_path.read_text(encoding="utf-8")
             self.assertNotIn("do-not-log-this-token", audit_text)

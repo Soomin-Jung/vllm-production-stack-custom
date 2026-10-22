@@ -1,6 +1,6 @@
 ---
 name: jev-decide
-version: "0.3.0"
+version: "0.3.1"
 description: "Delegate bounded, repeatable semantic judgments to a self-hosted AutoTrust JEV-27B /v1/decide endpoint to reduce frontier-model generation and repeated scanning. Use for evidence-grounded classification/routing, proposition checks, defined 0-5 scoring, explicit candidate selection, pointwise relevance ranking, and confidence-gated second opinions. Use only when explicit evidence and options determine the answer, a concrete workflow branch consumes it, and a safe fallback exists. Treat every JEV result as advisory: never use it as final approval, waiver, security bypass, failure suppression, or other signoff."
 ---
 
@@ -97,6 +97,8 @@ export JEV_DECIDE_SCRIPT="/path/to/jev-decide/scripts/decide.py"
 ```
 
 The client writes full request/response audit events by default to `~/.local/state/jev-decide/audit.jsonl`. The directory and file modes are `0700` and `0600`. The log never records `JEV_API_KEY`, but requests and responses may contain sensitive evidence. Set `JEV_AUDIT_LOG` only to a user-controlled secure path and apply an appropriate retention policy.
+
+The client also sends `User-Agent: jev-decide-skill/0.3.1` and the local audit UUID in `X-JEV-Audit-ID`. A compatible server may use these fields to correlate its SQLite usage event with the client audit record. The header is untrusted metadata, not authentication, approval, or proof that the referenced client log is intact.
 
 ```bash
 python "$JEV_DECIDE_SCRIPT" \
